@@ -134,5 +134,5 @@ d = Diagram(
         ],
     ),
 )
-d.save_all(Path(__file__).resolve().parent / "_out" / "ttt_mlp")
+d.save_all(Path(__file__).resolve().parents[1] / "_out" / "ttt_mlp")
 print("Rendered:", d.measure())

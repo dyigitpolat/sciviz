@@ -49,5 +49,5 @@ d = Diagram(
               "forwards flow right-and-down, backwards left-and-up"),
     body=Column(timeline, bubble, gap="lg", align="center"),
 )
-d.save_all(Path(__file__).resolve().parent / "_out" / "pipeline_parallelism")
+d.save_all(Path(__file__).resolve().parents[1] / "_out" / "pipeline_parallelism")
 print("Rendered:", d.measure())

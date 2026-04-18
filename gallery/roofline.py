@@ -49,5 +49,5 @@ d = Diagram(
     subtitle="peak 312 TFLOP/s, 2.0 TB/s HBM",
     body=Row(plot, Spacer(20, 0), notes, gap="lg", align="center"),
 )
-d.save_all(Path(__file__).resolve().parent / "_out" / "roofline")
+d.save_all(Path(__file__).resolve().parents[1] / "_out" / "roofline")
 print("Rendered:", d.measure())

@@ -77,7 +77,7 @@ class Grid(Element):
         self.trailer = trailer
         self.row_gap = row_gap
         self.col_gap = col_gap
-        self.panel_color = panel_color if panel_color is not None else Palette.gray.dark()
+        self.panel_color = panel_color if panel_color is not None else Palette.literal("#9aa7b5")
         self.column_flow = column_flow
         # Auto-flow arrows are skipped when the DESTINATION row (the upper
         # row, in "up" flow) is in this list.  Use this when a downstream
@@ -246,6 +246,16 @@ class Grid(Element):
                     lbl.render(canvas, lx, ly, theme)
 
         # --- column panels (dashed blue enclosures + labels INSIDE the border)
+        # Register each panel's bbox as a weak routing region so that
+        # outer :class:`Flow` routers can detour around the dashed
+        # border of an unrelated column instead of skimming along it.
+        # Registration uses the ``__region_<id>`` prefix which the flow
+        # router treats specially (panels are NOT obstacles for flows
+        # whose src or dst lives inside them).
+        try:
+            from .composition import _anchor_stack as _as
+        except Exception:  # pragma: no cover
+            _as = None
         pad = theme.unit * 0.8
         for c, col in enumerate(self.columns):
             panel_label = self._panel_of(col)
@@ -254,13 +264,17 @@ class Grid(Element):
             col_x = col_xs[c]
             col_w = col_widths[c]
             border_color = theme.color_of(self.panel_color)
-            # Border extends from slightly above top_pad to slightly below the grid
-            # contents, encompassing the label area + content area.
             border_y = y + theme.unit * 0.2
             border_h = (grid_y + grid_h_actual + bot_pad) - border_y
+            panel_bbox = (col_x - pad, border_y,
+                          col_w + 2 * pad, border_h)
+            if _as is not None:
+                stk = _as.get()
+                if stk is not None:
+                    for reg in stk:
+                        reg[f"__region_col{c}"] = panel_bbox
             canvas.rect(
-                col_x - pad, border_y,
-                col_w + 2 * pad, border_h,
+                *panel_bbox,
                 fill="none", stroke=border_color,
                 stroke_width=theme.hairline,
                 rx=theme.panel_radius * 1.5,
@@ -312,9 +326,9 @@ class Grid(Element):
         # --- auto flow arrows between consecutive cells in each column --
         if self.column_flow:
             text_col = theme.color_of("text")
-            arrow_marker = canvas.define_marker(color=text_col, size=5.5,
-                                                 name_hint="colflow")
             sw = theme.line
+            arrow_marker = canvas.define_arrow_marker(
+                color=text_col, stroke_width=sw, name_hint="colflow")
             for c in range(len(self.columns)):
                 # Collect rendered (top_y, bot_y, centre_x, row_index)
                 rendered = []

@@ -108,6 +108,7 @@ from .composition import (
     Anchor,
     Flow,
     Flowed,
+    Labeled,
     MatchSize,
     Group,
     Region,
@@ -153,7 +154,8 @@ __all__ = [
     "NNLayer", "Pipeline", "Tensor",
     # composition
     "Inline", "Card", "KeyValue", "Bullets", "Badge", "Brace",
-    "Annotated", "Anchor", "Flow", "Flowed", "MatchSize", "Group", "Region", "Bus",
+    "Annotated", "Anchor", "Flow", "Flowed", "Labeled",
+    "MatchSize", "Group", "Region", "Bus",
     "Grid",
     # graphs
     "Token", "Tokens", "BipartiteGraph", "NodeTree", "Sequence", "FlowChart",

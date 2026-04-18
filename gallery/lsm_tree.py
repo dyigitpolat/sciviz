@@ -70,5 +70,5 @@ d = Diagram(
     subtitle="writes coalesce in memory, then cascade down levels in ~10x size ratios",
     body=Row(flow, Spacer(40, 0), sidebar, gap="lg", align="center"),
 )
-d.save_all(Path(__file__).resolve().parent / "_out" / "lsm_tree")
+d.save_all(Path(__file__).resolve().parents[1] / "_out" / "lsm_tree")
 print("Rendered:", d.measure())

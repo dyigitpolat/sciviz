@@ -254,5 +254,5 @@ d = Diagram(
               "-- input, sequence, residual, or attention"),
     body=Column(top_row, Spacer(0, 18), table, gap="lg", align="start"),
 )
-d.save_all(Path(__file__).resolve().parent / "_out" / "action_conditioning_modes")
+d.save_all(Path(__file__).resolve().parents[1] / "_out" / "action_conditioning_modes")
 print("Rendered:", d.measure())

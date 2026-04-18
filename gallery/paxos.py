@@ -67,5 +67,5 @@ d = Diagram(
         gap="lg", align="center",
     ),
 )
-d.save_all(Path(__file__).resolve().parent / "_out" / "paxos")
+d.save_all(Path(__file__).resolve().parents[1] / "_out" / "paxos")
 print("Rendered:", d.measure())

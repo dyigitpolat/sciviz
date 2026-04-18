@@ -62,5 +62,5 @@ d = Diagram(
         gap="md", align="start",
     ),
 )
-d.save_all(Path(__file__).resolve().parent / "_out" / "speculative_decoding")
+d.save_all(Path(__file__).resolve().parents[1] / "_out" / "speculative_decoding")
 print("Rendered:", d.measure())

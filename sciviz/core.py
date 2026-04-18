@@ -87,6 +87,7 @@ class Theme:
     font_label: float = 10.0
     font_small: float = 9.0
     font_tiny: float = 8.0
+    font_micro: float = 6.5           # precision/metadata subscripts
 
     # -- spacing -----------------------------------------------------------
     unit: float = 6.0                 # base spacing unit (tighter for paper)
@@ -165,6 +166,7 @@ class Theme:
         "label": "font_label",
         "small": "font_small",
         "tiny": "font_tiny",
+        "micro": "font_micro",
     }
 
     def size_px(self, size: Union[str, float]) -> float:
@@ -439,10 +441,13 @@ class Canvas:
 
     def define_marker(self, *, color: str, size: float = 7.0,
                       name_hint: str = "arr") -> str:
-        """Register an arrowhead marker of the given colour and return its id.
+        """Register an arrowhead marker of the given absolute size.
 
-        Idempotent: repeated calls with the same ``(color, size)`` reuse the
-        previously emitted marker.
+        Prefer :meth:`define_arrow_marker` for arrows -- that sizes the
+        head to the stroke width so the triangle matches the shaft.
+
+        Idempotent: repeated calls with the same ``(color, size)`` reuse
+        the previously emitted marker.
         """
         key = (color, round(size, 2), name_hint)
         if key in self._marker_ids:
@@ -455,6 +460,25 @@ class Canvas:
             f'orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="{color}"/></marker>'
         )
         return mid
+
+    # Arrowhead size in pixels = ARROW_HEAD_SCALE * stroke_width.
+    # 4.5 gives small, neat heads that read as line terminators at the
+    # default 0.9 px stroke (~4 px head) while still scaling up for
+    # thick connectors -- matching the tight arrowheads in paper figures.
+    ARROW_HEAD_SCALE: float = 4.5
+
+    def define_arrow_marker(self, *, color: str, stroke_width: float,
+                            name_hint: str = "arrow") -> str:
+        """Register an arrowhead sized to the stroke width.
+
+        The marker width / height scale linearly with ``stroke_width``,
+        bounded to a sensible minimum so sub-pixel strokes still get a
+        visible (but still small) head.  Use this for every arrow drawn
+        via :meth:`Canvas.line` / :meth:`Canvas.path` so heads read as
+        line terminators, not filled triangles.
+        """
+        size = max(3.0, stroke_width * self.ARROW_HEAD_SCALE)
+        return self.define_marker(color=color, size=size, name_hint=name_hint)
 
     def raw_def(self, svg: str) -> None:
         self._defs.append(svg)

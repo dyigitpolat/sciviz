@@ -63,5 +63,5 @@ d = Diagram(
         gap="md", align="start",
     ),
 )
-d.save_all(Path(__file__).resolve().parent / "_out" / "moe_routing")
+d.save_all(Path(__file__).resolve().parents[1] / "_out" / "moe_routing")
 print("Rendered:", d.measure())

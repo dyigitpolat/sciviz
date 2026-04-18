@@ -77,5 +77,5 @@ d = Diagram(
         gap="lg", align="start",
     ),
 )
-d.save_all(Path(__file__).resolve().parent / "_out" / "quantization")
+d.save_all(Path(__file__).resolve().parents[1] / "_out" / "quantization")
 print("Rendered:", d.measure())

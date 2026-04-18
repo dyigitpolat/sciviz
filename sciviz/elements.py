@@ -236,6 +236,19 @@ class Box(Element):
             return []
         return self.label.split("\n")
 
+    # Size token used for bottom-right precision/metadata subscripts.
+    # "micro" is smaller than "tiny" so these tags read as a subscript
+    # even next to a 9-pt "small" main label.
+    _SUB_LABEL_SIZE = "micro"
+
+    def _sub_metrics(self, theme: Theme) -> Tuple[float, float]:
+        """Width and height of the sub_label when rendered, or (0, 0)."""
+        if not self.sub_label:
+            return 0.0, 0.0
+        sub_w = theme.text_width(self.sub_label, self._SUB_LABEL_SIZE)
+        sub_h = theme.text_height(self._SUB_LABEL_SIZE)
+        return sub_w, sub_h
+
     def _intrinsic(self, theme: Theme) -> Tuple[float, float]:
         bold = self.text_weight in ("bold", "600", "700")
         lines = self._label_lines()
@@ -246,17 +259,23 @@ class Box(Element):
         else:
             label_w = 0.0
             label_h = 0.0
-        sub_w = theme.text_width(self.sub_label or "", "tiny") if self.sub_label else 0.0
+        sub_w, sub_h = self._sub_metrics(theme)
         if self.vertical_text:
             # rotated label: width <-> height swap
             w = label_h + theme.unit * 1.2
             h = max(label_w, sub_w) + theme.unit * 2.0
         else:
-            # Corner-positioned sub_label adds to WIDTH (it sits beside the
-            # main label area), not to HEIGHT.  Intrinsic width must leave
-            # room for the main label AND the corner sub.
-            w = label_w + (sub_w + theme.unit * 0.8 if self.sub_label else 0) + theme.unit * 2.0
-            h = label_h + theme.unit * 1.4
+            # The sub_label sits in the bottom-right corner as a true
+            # subscript tag.  Reserve a dedicated "sub zone" (its width
+            # plus a gap) on the right of the main label area so the two
+            # never overlap, and a dedicated bottom strip so the main
+            # label's bottom is clear of the sub's top.
+            sub_gap = theme.unit * 0.6 if self.sub_label else 0.0
+            right_pad = theme.unit * 0.8
+            left_pad = theme.unit * 0.8
+            reserved_bottom = sub_h + theme.unit * 0.2 if self.sub_label else 0.0
+            w = label_w + sub_gap + sub_w + left_pad + right_pad
+            h = label_h + reserved_bottom + theme.unit * 0.9
         return max(w, theme.unit * 6), max(h, theme.unit * 3.2)
 
     def measure(self, theme: Theme) -> BBox:
@@ -312,9 +331,17 @@ class Box(Element):
                     f'{ln}</text>'
                 )
         else:
+            sub_w, sub_h = self._sub_metrics(theme)
+            sub_pad = theme.unit * 0.35
+            # Vertical region available to the main label = everything
+            # ABOVE the strip reserved for the sub_label.  This keeps the
+            # main label fully clear of the sub even when the main label
+            # happens to extend to the right of the box centre.
+            bottom_reserve = (sub_h + sub_pad) if self.sub_label else 0.0
             line_h = sz * 1.15
             block_h = line_h * len(lines)
-            block_top = y + (size.h - block_h) / 2
+            region_h = size.h - bottom_reserve
+            block_top = y + max(0.0, (region_h - block_h) / 2)
             for i, ln in enumerate(lines):
                 baseline_y = block_top + i * line_h + sz * 0.85
                 canvas.text(
@@ -324,12 +351,11 @@ class Box(Element):
                 )
             if self.sub_label:
                 # Precision/metadata labels sit in the BOTTOM-RIGHT corner,
-                # small italic, acting like a subscript tag on the block.
-                sub_sz = theme.size_px("tiny")
-                pad = theme.unit * 0.4
-                sub_baseline = y + size.h - pad
+                # micro italic, acting like a subscript tag on the block.
+                sub_sz = theme.size_px(self._SUB_LABEL_SIZE)
+                sub_baseline = y + size.h - sub_pad
                 canvas.text(
-                    x + size.w - pad, sub_baseline, self.sub_label,
+                    x + size.w - sub_pad, sub_baseline, self.sub_label,
                     size=sub_sz, fill=theme.color_of(self.sub_color),
                     weight="normal", italic=True, anchor="end",
                 )
@@ -399,7 +425,9 @@ class Arrow(Element):
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         size = self.measure(theme)
         color = theme.color_of(self.color)
-        marker = canvas.define_marker(color=color, size=6.5) if self.head else None
+        marker = (canvas.define_arrow_marker(color=color,
+                                             stroke_width=theme.connector)
+                  if self.head else None)
 
         if self.direction in ("right", "left"):
             axis_y = y + size.h / 2

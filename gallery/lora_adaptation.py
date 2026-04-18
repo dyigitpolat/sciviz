@@ -57,5 +57,5 @@ d = Diagram(
         gap="md", align="start",
     ),
 )
-d.save_all(Path(__file__).resolve().parent / "_out" / "lora_adaptation")
+d.save_all(Path(__file__).resolve().parents[1] / "_out" / "lora_adaptation")
 print("Rendered:", d.measure())

@@ -28,5 +28,5 @@ d = Diagram(
         gap="md", align="center",
     ),
 )
-d.save_all(Path(__file__).resolve().parent / "_out" / "memory_hierarchy")
+d.save_all(Path(__file__).resolve().parents[1] / "_out" / "memory_hierarchy")
 print("Rendered:", d.measure())

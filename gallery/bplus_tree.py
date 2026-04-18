@@ -51,5 +51,5 @@ d = Diagram(
     subtitle="internal pages route; leaves store data in key order with forward pointers",
     body=Column(node_tree, legend, complexity, gap="lg", align="center"),
 )
-d.save_all(Path(__file__).resolve().parent / "_out" / "bplus_tree")
+d.save_all(Path(__file__).resolve().parents[1] / "_out" / "bplus_tree")
 print("Rendered:", d.measure())

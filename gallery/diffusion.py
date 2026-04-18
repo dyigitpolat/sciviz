@@ -83,5 +83,5 @@ d = Diagram(
     body=Column(forward_panel, reverse_panel, objective,
                 gap="lg", align="center"),
 )
-d.save_all(Path(__file__).resolve().parent / "_out" / "diffusion")
+d.save_all(Path(__file__).resolve().parents[1] / "_out" / "diffusion")
 print("Rendered:", d.measure())

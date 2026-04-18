@@ -84,5 +84,5 @@ d = Diagram(
         gap="lg", align="start",
     ),
 )
-d.save_all(Path(__file__).resolve().parent / "_out" / "crossbar_pruning")
+d.save_all(Path(__file__).resolve().parents[1] / "_out" / "crossbar_pruning")
 print("Rendered:", d.measure())

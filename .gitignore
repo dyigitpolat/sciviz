@@ -13,6 +13,9 @@ __pycache__/
 .coverage
 htmlcov/
 
+# Generated gallery exports (repo root)
+/_out/
+
 # Packaging / builds
 build/
 dist/
@@ -25,3 +28,5 @@ MANIFEST
 .vscode/
 *.swp
 .DS_Store
+.cursor
+.claude

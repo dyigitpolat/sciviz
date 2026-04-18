@@ -669,7 +669,9 @@ class Flow:
         col = theme.color_of(self.color)
         sw = theme.connector
         dash = "5,3" if self.dashed else None
-        marker = canvas.define_marker(color=col, size=6, name_hint="flow") if self.arrow else None
+        marker = (canvas.define_arrow_marker(color=col, stroke_width=sw,
+                                             name_hint="flow")
+                  if self.arrow else None)
 
         # Orthogonal (right-angle) routing.  Path is computed from each
         # endpoint's "outward exit direction" (perpendicular to its side).
@@ -688,8 +690,81 @@ class Flow:
                         }.get(side, (0, 0))
             sdir = out_dir(src_side)
             ddir = out_dir(dst_side)
-            src_tap = (sx + sdir[0] * tap, sy + sdir[1] * tap)
-            dst_tap = (dx + ddir[0] * tap, dy + ddir[1] * tap)
+
+            # All obstacles -- i.e. every anchored bbox except this flow's
+            # own endpoints.  Used both for the vertical bridge placement
+            # (x axis) and for the short perpendicular "tap" segments at
+            # each endpoint (y axis).  Panel regions (``__region_*``) act
+            # as "soft" obstacles the descent should avoid, but they do
+            # NOT block end-point taps (the endpoint lives inside the
+            # region).
+            def _in(name):
+                return name != self.src and name != self.dst
+            regions = [(name, b) for name, b in registry.items()
+                       if name.startswith("__region_") and _in(name)]
+            anchor_obstacles = [b for name, b in registry.items()
+                                if not name.startswith("__region_")
+                                and _in(name)]
+            # Region is an obstacle only if neither src nor dst lies
+            # inside it (then the descent must clearly avoid the region).
+            def _inside(reg_bbox, pt_bbox):
+                rx, ry, rw, rh = reg_bbox
+                px, py, pw, ph = pt_bbox
+                return (rx <= px + pw / 2 <= rx + rw and
+                        ry <= py + ph / 2 <= ry + rh)
+            region_obstacles = [b for _name, b in regions
+                                if not (_inside(b, sb) or _inside(b, db))]
+            obstacles = anchor_obstacles + region_obstacles
+
+            def clamp_tap(anchor_bbox, direction, base_tap):
+                """Reduce the tap length so the tap segment does not cross
+                any obstacle stacked immediately outside ``anchor_bbox`` in
+                the given outward ``direction``.  ``direction`` is one of
+                the four unit vectors.  Returns a tap >= 1px.
+                """
+                ax, ay, aw, ah = anchor_bbox
+                if direction == (0, -1):
+                    edge = ay
+                    ahead = [oy + oh for ox, oy, ow, oh in obstacles
+                             if ox < ax + aw and ox + ow > ax
+                             and oy + oh <= edge + 0.5]
+                    nearest = max(ahead) if ahead else None
+                    limit = edge - nearest - 2 if nearest is not None else base_tap
+                    return max(1.0, min(base_tap, limit))
+                if direction == (0, +1):
+                    edge = ay + ah
+                    ahead = [oy for ox, oy, ow, oh in obstacles
+                             if ox < ax + aw and ox + ow > ax
+                             and oy >= edge - 0.5]
+                    nearest = min(ahead) if ahead else None
+                    limit = nearest - edge - 2 if nearest is not None else base_tap
+                    return max(1.0, min(base_tap, limit))
+                if direction == (-1, 0):
+                    edge = ax
+                    ahead = [ox + ow for ox, oy, ow, oh in obstacles
+                             if oy < ay + ah and oy + oh > ay
+                             and ox + ow <= edge + 0.5]
+                    nearest = max(ahead) if ahead else None
+                    limit = edge - nearest - 2 if nearest is not None else base_tap
+                    return max(1.0, min(base_tap, limit))
+                if direction == (+1, 0):
+                    edge = ax + aw
+                    ahead = [ox for ox, oy, ow, oh in obstacles
+                             if oy < ay + ah and oy + oh > ay
+                             and ox >= edge - 0.5]
+                    nearest = min(ahead) if ahead else None
+                    limit = nearest - edge - 2 if nearest is not None else base_tap
+                    return max(1.0, min(base_tap, limit))
+                return base_tap
+
+            # Clamp each tap to fit between the anchor edge and the nearest
+            # obstacle perpendicular to that edge -- otherwise the short
+            # exit segment is swallowed by a neighbouring box (common when
+            # an embedding row sits immediately below a RMSNorm row).
+            stap = clamp_tap(sb, sdir, tap)
+            dtap = clamp_tap(db, ddir, tap)
+            src_tap = (sx + sdir[0] * stap, sy + sdir[1] * stap)
+            dst_tap = (dx + ddir[0] * dtap, dy + ddir[1] * dtap)
 
             # Heuristic Manhattan path from src_tap to dst_tap.  If both
             # endpoints exit vertically, route via a bridge between columns
@@ -698,29 +773,67 @@ class Flow:
             # 90-degree turn at the corner.
             if sdir[0] == 0 and ddir[0] == 0:
                 # Vertical exits on both sides -- bridge between columns.
-                if dx > sx:
-                    gap_x = (sb_x + sb_w + db_x) / 2
-                else:
-                    gap_x = (db_x + db_w + sb_x) / 2
-                # Obstacle-avoid: shift gap_x if anything intersects the descent.
-                obstacles = [b for name, b in registry.items()
-                             if name != self.src and name != self.dst]
+                # Find the WIDEST unobstructed x-slice between src.right and
+                # dst.left (or dst.right and src.left for a leftward flow)
+                # whose y-range covers the full bridge descent.  Centre the
+                # bridge in that slice.
                 y_top = min(src_tap[1], dst_tap[1])
                 y_bot = max(src_tap[1], dst_tap[1])
-                for _ in range(8):
-                    conflicting = [
-                        (ox, oy, ow, oh) for ox, oy, ow, oh in obstacles
-                        if not (oy + oh < y_top or oy > y_bot)
-                        and ox <= gap_x <= ox + ow
-                    ]
-                    if not conflicting:
-                        break
-                    # Shift gap_x to the side that's further from dst
-                    # (toward src side, i.e. to the LEFT if dst is right of src).
+                if dx > sx:
+                    slab_left = sb_x + sb_w
+                    slab_right = db_x
+                else:
+                    slab_left = db_x + db_w
+                    slab_right = sb_x
+                # If src and dst live in different registered *regions*
+                # (panels), prefer the inter-region gap between them --
+                # this avoids descending along the LEFT/RIGHT edge of
+                # an unrelated column panel.
+                src_region = None
+                dst_region = None
+                for _n, rbb in regions:
+                    if _inside(rbb, sb) and src_region is None:
+                        src_region = rbb
+                    if _inside(rbb, db) and dst_region is None:
+                        dst_region = rbb
+                if (src_region is not None and dst_region is not None
+                        and src_region != dst_region):
                     if dx > sx:
-                        gap_x = min(ox for ox, _, _, _ in conflicting) - tap
+                        gap_left = src_region[0] + src_region[2]
+                        gap_right = dst_region[0]
                     else:
-                        gap_x = max(ox + ow for ox, _, _, _ in conflicting) + tap
+                        gap_left = dst_region[0] + dst_region[2]
+                        gap_right = src_region[0]
+                    if gap_right - gap_left > 2.0:
+                        slab_left = max(slab_left, gap_left)
+                        slab_right = min(slab_right, gap_right)
+                # Default to midpoint; this is the "no obstacles" answer.
+                gap_x = (slab_left + slab_right) / 2
+                # Obstacles whose y-range intersects the bridge y-span AND
+                # whose x-range overlaps the slab.
+                y_conf = [
+                    (max(ox, slab_left), min(ox + ow, slab_right))
+                    for ox, oy, ow, oh in obstacles
+                    if not (oy + oh < y_top or oy > y_bot)
+                    and ox + ow > slab_left and ox < slab_right
+                ]
+                # Compute the widest free sub-slice.
+                cuts = sorted([(a, b) for a, b in y_conf if b > a])
+                free_slices = []
+                cursor = slab_left
+                for a, b in cuts:
+                    if a > cursor:
+                        free_slices.append((cursor, a))
+                    cursor = max(cursor, b)
+                if cursor < slab_right:
+                    free_slices.append((cursor, slab_right))
+                if free_slices:
+                    # Pick the widest; tie-break toward the one closer to
+                    # the dst side (natural reading direction).
+                    widest = max(free_slices,
+                                 key=lambda s: (s[1] - s[0],
+                                                s[0] if dx > sx else -s[1]))
+                    gap_x = (widest[0] + widest[1]) / 2
                 path = [(sx, sy), src_tap,
                         (gap_x, src_tap[1]), (gap_x, dst_tap[1]),
                         dst_tap, (dx, dy)]
@@ -868,6 +981,63 @@ class Flow:
                        fill=col, anchor="middle", italic=True)
 
 
+class Labeled(Element):
+    """A ``source`` element followed by a short drawn arrow into a ``label``.
+
+    The clean replacement for the ``Row(Box(...), Text("->"), Math(...))``
+    pattern: the author just writes ``Labeled(box, math_label)`` and the
+    library draws a proportional horizontal arrow between them, routing
+    from the source's right edge to the label's left edge.  Useful for
+    the "block -> symbol" annotation pattern (e.g. ``Cross-Entropy Loss``
+    flanked by ``L_{MTP}^k``).
+
+    Parameters
+    ----------
+    source, label : Element
+        The block producing the output, and the label explaining it.
+    gap : str or float
+        Minimum horizontal space between source and label (arrow shaft).
+    color : ColorRef or str
+        Arrow and (default) label stroke colour.
+    align : str
+        Cross-axis alignment, passed through to the inner Row.
+    """
+
+    def __init__(self, source: Element, label: Element, *,
+                 gap: Union[str, float] = "md",
+                 color = "text",
+                 align: str = "center"):
+        self.source = source
+        self.label = label
+        self.gap = gap
+        self.color = color
+        self.align = align
+        self._compiled: Optional[Element] = None
+
+    def _build(self, theme: Theme) -> Element:
+        from .layout import Row
+        src_anchor = Anchor("__labeled_src", self.source)
+        lbl_anchor = Anchor("__labeled_lbl", self.label)
+        inner = Row(src_anchor, lbl_anchor, gap=self.gap, align=self.align)
+        return Flowed(inner, flows=[
+            Flow("__labeled_src", "__labeled_lbl",
+                 src_side="right", dst_side="left",
+                 curvature=0.0, color=self.color),
+        ])
+
+    def _get(self, theme: Theme) -> Element:
+        # Compile fresh every time: Flow carries internal state (like the
+        # Flowed._margins_applied flag) that we don't want to leak across
+        # measure/render cycles of the same Labeled instance.
+        return self._build(theme)
+
+    def measure(self, theme: Theme) -> BBox:
+        return self._get(theme).measure(theme)
+
+    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        self._get(theme).render(canvas, x, y, theme)
+
+
 class Flowed(Element):
     """Render ``child`` and overlay :class:`Flow` arrows between named anchors.
 
@@ -901,7 +1071,7 @@ class Flowed(Element):
         if isinstance(elem, Anchor):
             out.setdefault(elem.name, elem)
         # Recurse into common container attributes.  This covers Row, Column,
-        # Stack, Grid, BlockGroup, Region, Padded, Framed, FixedSize, etc.
+        # Stack, BlockGroup, Region, Padded, Framed, FixedSize, etc.
         for attr in ("children",):
             children = getattr(elem, attr, None)
             if children is not None:
@@ -912,6 +1082,17 @@ class Flowed(Element):
             child = getattr(elem, attr, None)
             if child is not None:
                 self._collect_anchors(child, out)
+        # Grid stores cells in a list of dicts keyed by row name -- recurse
+        # into every value (including tuple-keyed spanning cells).
+        cols = getattr(elem, "columns", None)
+        if isinstance(cols, list):
+            for col in cols:
+                if isinstance(col, dict):
+                    for key, val in col.items():
+                        if isinstance(key, str) and key.startswith("_"):
+                            continue
+                        if isinstance(val, Element):
+                            self._collect_anchors(val, out)
 
     def _apply_flow_margins(self):
         if self._margins_applied:
@@ -921,16 +1102,29 @@ class Flowed(Element):
         self._collect_anchors(self.child, anchors)
         m = self.min_flow_space
         for flow in self.flows:
-            if not isinstance(flow, Flow):
-                continue  # Bus and other non-Flow items skip margin inflation
-            src = anchors.get(flow.src)
-            dst = anchors.get(flow.dst)
-            # If the flow's side is "auto", skip margin inflation -- we
-            # don't know which boundary the flow will attach to yet.
-            if src is not None and flow.src_side != "auto":
-                src._bump_margin(flow.src_side, m)
-            if dst is not None and flow.dst_side != "auto":
-                dst._bump_margin(flow.dst_side, m)
+            if isinstance(flow, Flow):
+                src = anchors.get(flow.src)
+                dst = anchors.get(flow.dst)
+                # If the flow's side is "auto", skip margin inflation --
+                # we don't know which boundary the flow will attach to.
+                if src is not None and flow.src_side != "auto":
+                    src._bump_margin(flow.src_side, m)
+                if dst is not None and flow.dst_side != "auto":
+                    dst._bump_margin(flow.dst_side, m)
+            elif isinstance(flow, Bus) and flow.label:
+                # Labelled Bus (e.g. a fan-in ``concatenation`` junction)
+                # needs vertical breathing room for its side label inside
+                # the gap between source and sink rows.  Bump the sink's
+                # margin on the face closest to the sources, so the label
+                # sits cleanly in that inflated gap.
+                for name in flow.sources:
+                    a = anchors.get(name)
+                    if a is not None:
+                        a._bump_margin("top", m * 0.6)
+                for name in flow.sinks:
+                    a = anchors.get(name)
+                    if a is not None:
+                        a._bump_margin("bottom", m * 0.6)
 
     def measure(self, theme: Theme) -> BBox:
         self._apply_flow_margins()
@@ -1290,7 +1484,9 @@ class Bus:
         col = theme.color_of(self.color)
         dasharray = "4,3" if self.dashed else None
         sw = theme.connector
-        marker = canvas.define_marker(color=col, size=6.5, name_hint="bus") if self.arrow else None
+        marker = (canvas.define_arrow_marker(color=col, stroke_width=sw,
+                                             name_hint="bus")
+                  if self.arrow else None)
 
         all_boxes = src_boxes + dst_boxes
         centres_y = [b[1] + b[3] / 2 for b in all_boxes]
@@ -1335,54 +1531,92 @@ class Bus:
         horizontal = x_spread >= y_spread
 
         if horizontal:
-            # Spine is horizontal, spread is along x.  Source side is the set
-            # with less x-spread (clustered); sinks are the spread side.
-            src_cx = [b[0] + b[2] / 2 for b in src_boxes]
-            dst_cx = [b[0] + b[2] / 2 for b in dst_boxes]
-            src_spread = (max(src_cx) - min(src_cx)) if len(src_cx) > 1 else 0
-            dst_spread = (max(dst_cx) - min(dst_cx)) if len(dst_cx) > 1 else 0
-            # Decide which side is "below" (start) vs "above" (end) by mean y.
+            # Spine is horizontal, spread is along x.  Decide which cluster
+            # is "below" (source) vs "above" (sink) by mean y.
             src_mean_y = sum(b[1] + b[3] / 2 for b in src_boxes) / len(src_boxes)
             dst_mean_y = sum(b[1] + b[3] / 2 for b in dst_boxes) / len(dst_boxes)
-            source_below = src_mean_y > dst_mean_y  # sources have higher y
-            # Spine y: between the two clusters.
+            source_below = src_mean_y > dst_mean_y
             if source_below:
-                spine_y = (max(b[1] for b in src_boxes)
-                           + min(b[1] + b[3] for b in dst_boxes)) / 2
                 src_edge = lambda b: (b[0] + b[2] / 2, b[1])              # top
                 dst_edge = lambda b: (b[0] + b[2] / 2, b[1] + b[3])       # bottom
+                # Spine sits in the middle of the gap between the source
+                # tops and the sink bottom, so the side label has clear
+                # room above it without touching the sink.
+                src_top = max(b[1] for b in src_boxes)
+                dst_bot = min(b[1] + b[3] for b in dst_boxes)
+                spine_y = (src_top + dst_bot) / 2
             else:
-                spine_y = (min(b[1] for b in dst_boxes)
-                           + max(b[1] + b[3] for b in src_boxes)) / 2
                 src_edge = lambda b: (b[0] + b[2] / 2, b[1] + b[3])
                 dst_edge = lambda b: (b[0] + b[2] / 2, b[1])
-            # Draw taps from each source up/down to spine
-            taps_x = []
+                src_bot = min(b[1] + b[3] for b in src_boxes)
+                dst_top = max(b[1] for b in dst_boxes)
+                spine_y = (src_bot + dst_top) / 2
+
+            # Single-sink fan-in (``concatenation`` junction): taps from
+            # each source rise to a short horizontal bar, then ONE arrow
+            # from the centre of that bar goes all the way to the sink.
+            is_fan_in = len(dst_boxes) == 1 and len(src_boxes) > 1
+            src_taps_x = [src_edge(b)[0] for b in src_boxes]
+            dst_taps_x = [dst_edge(b)[0] for b in dst_boxes]
+
             for b in src_boxes:
                 px, py = src_edge(b)
                 canvas.line(px, py, px, spine_y,
                             stroke=col, stroke_width=sw, dasharray=dasharray)
-                taps_x.append(px)
-            # Draw taps from spine to each sink (with arrowhead)
-            for b in dst_boxes:
-                px, py = dst_edge(b)
+            if is_fan_in:
+                x0 = min(src_taps_x); x1 = max(src_taps_x)
+                canvas.line(x0, spine_y, x1, spine_y,
+                            stroke=col, stroke_width=sw, dasharray=dasharray)
+                bar_mid_x = (x0 + x1) / 2
+                dpx, dpy = dst_edge(dst_boxes[0])
                 attrs = {"stroke": col, "stroke_width": sw}
                 if dasharray:
                     attrs["dasharray"] = dasharray
                 if self.arrow:
                     attrs["marker_end"] = marker
-                canvas.line(px, spine_y, px, py, **attrs)
-                taps_x.append(px)
-            # Spine
-            x0 = min(taps_x); x1 = max(taps_x)
-            canvas.line(x0, spine_y, x1, spine_y,
-                        stroke=col, stroke_width=sw, dasharray=dasharray)
-            if self.label:
-                mx = (x0 + x1) / 2
-                sz = theme.size_px("tiny")
-                canvas.text(mx, spine_y - theme.unit * 0.35,
-                           self.label, size=sz, fill=col,
-                           italic=True, anchor="middle")
+                canvas.line(bar_mid_x, spine_y, dpx, dpy, **attrs)
+                if self.label:
+                    # Sit the label BESIDE the single sink-arrow with a
+                    # small horizontal pad, fully BELOW the spine bar
+                    # (source-below case) or above (sink-below case).
+                    # ``micro`` size keeps it from overflowing tight row
+                    # gaps.  A thin white background mask prevents the
+                    # faint stroke of the bar from reading through.
+                    sz = theme.size_px("micro")
+                    pad = theme.unit * 0.4
+                    lbl_x = bar_mid_x + pad
+                    # Baseline below spine by descent + half-leading; the
+                    # full text block sits cleanly beneath the bar so the
+                    # bar is never crossed by glyphs.
+                    if source_below:
+                        baseline_y = spine_y + sz * 0.95
+                    else:
+                        baseline_y = spine_y - sz * 0.25
+                    canvas.text(lbl_x, baseline_y,
+                                self.label, size=sz, fill=col,
+                                italic=True, anchor="start")
+            else:
+                # Fan-out (or symmetric): taps from spine to each sink,
+                # with an arrowhead on each.  Spine spans all tap xs.
+                taps_x = list(src_taps_x)
+                for b in dst_boxes:
+                    px, py = dst_edge(b)
+                    attrs = {"stroke": col, "stroke_width": sw}
+                    if dasharray:
+                        attrs["dasharray"] = dasharray
+                    if self.arrow:
+                        attrs["marker_end"] = marker
+                    canvas.line(px, spine_y, px, py, **attrs)
+                    taps_x.append(px)
+                x0 = min(taps_x); x1 = max(taps_x)
+                canvas.line(x0, spine_y, x1, spine_y,
+                            stroke=col, stroke_width=sw, dasharray=dasharray)
+                if self.label:
+                    mx = (x0 + x1) / 2
+                    sz = theme.size_px("tiny")
+                    canvas.text(mx, spine_y - theme.unit * 0.35,
+                               self.label, size=sz, fill=col,
+                               italic=True, anchor="middle")
         else:
             # Vertical spine (left-right cluster spread vertically).
             src_cy = [b[1] + b[3] / 2 for b in src_boxes]

@@ -42,5 +42,5 @@ d = Diagram(
         gap="lg", align="center",
     ),
 )
-d.save_all(Path(__file__).resolve().parent / "_out" / "amortized_analysis")
+d.save_all(Path(__file__).resolve().parents[1] / "_out" / "amortized_analysis")
 print("Rendered:", d.measure())
