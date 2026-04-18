@@ -442,8 +442,9 @@ class Arrow(Element):
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         size = self.measure(theme)
         color = theme.color_of(self.color)
-        marker = (canvas.define_arrow_marker(color=color,
-                                             stroke_width=theme.connector)
+        marker = (canvas.define_arrow_marker(
+                      color=color, stroke_width=theme.connector,
+                      arrow_size=getattr(theme, "arrow_size", None))
                   if self.head else None)
 
         if self.direction in ("right", "left"):

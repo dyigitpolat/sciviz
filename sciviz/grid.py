@@ -127,6 +127,59 @@ class Grid(Element):
         b = elem.measure(theme)
         return (0.0, 0.0, b.w, b.h)
 
+    def _find_shape_peers(self, elem):
+        """Collect every :class:`Box`-like descendant of ``elem`` that
+        carries a ``shape_key`` attribute.  Used to equalise sizes across
+        rows / columns so repeated structural pieces render identically
+        regardless of which column they happen to land in.
+        """
+        found = []
+        def _walk(e, depth=0):
+            if e is None or depth > 6:
+                return
+            if getattr(e, "shape_key", None):
+                found.append(e)
+            for attr in ("child", "source"):
+                c = getattr(e, attr, None)
+                if c is not None:
+                    _walk(c, depth + 1)
+            for c in getattr(e, "children", []) or []:
+                _walk(c, depth + 1)
+        _walk(elem)
+        return found
+
+    def _normalize_row_shape_peers(self, col_cells, theme):
+        """Equalise ``min_width`` / ``min_height`` of shape-key-matching
+        descendants that sit on the SAME row across different columns.
+
+        This gives the diagram a uniform visual rhythm -- a "Output Head"
+        or "Embedding Layer" box renders at the same size in every
+        column even though each author literal is a separate instance,
+        without the author having to set widths by hand.
+        """
+        n_rows = len(self.rows)
+        n_cols = len(self.columns)
+        for r in range(n_rows):
+            groups: Dict[str, List[Any]] = {}
+            for c in range(n_cols):
+                cell = col_cells[c][r]
+                if cell is None:
+                    continue
+                elem, _ = cell
+                for peer in self._find_shape_peers(elem):
+                    groups.setdefault(peer.shape_key, []).append(peer)
+            for key, peers in groups.items():
+                if len(peers) < 2:
+                    continue
+                sizes = [p.measure(theme) for p in peers]
+                target_w = max(s.w for s in sizes)
+                target_h = max(s.h for s in sizes)
+                for p in peers:
+                    if getattr(p, "min_width", None) is None or p.min_width < target_w:
+                        p.min_width = target_w
+                    if getattr(p, "min_height", None) is None or p.min_height < target_h:
+                        p.min_height = target_h
+
     def _layout(self, theme: Theme):
         n_rows = len(self.rows)
         n_cols = len(self.columns)
@@ -134,6 +187,7 @@ class Grid(Element):
         col_gap = self._gap(theme, self.col_gap)
 
         col_cells = [self._resolve_column(c) for c in self.columns]
+        self._normalize_row_shape_peers(col_cells, theme)
 
         # Per column, compute how much width the cells want to occupy
         # LEFT of the column axis vs RIGHT of it.  The "axis" is the
@@ -306,17 +360,22 @@ class Grid(Element):
                 rx=theme.panel_radius * 1.5,
                 dasharray="4,3",
             )
-            # Multi-line label inside top-left of border
+            # Multi-line label inside top-left of border.  The title
+            # (first line) is rendered in the theme's text colour for
+            # strong readability; continuation lines use ``muted_label``
+            # so the subtitle reads as secondary supporting text.
             lines = panel_label.split("\n")
             sz = theme.size_px("small")
             line_h = theme.text_height("small") + theme.unit * 0.25
             label_y = border_y + sz * 0.9
+            title_color = theme.color_of("text")
+            subtitle_color = theme.color_of("muted_label")
             for i, line in enumerate(lines):
                 is_first = (i == 0)
                 canvas.text(
                     col_x, label_y + i * line_h, line,
                     size=sz if is_first else theme.size_px("tiny"),
-                    fill=border_color,
+                    fill=title_color if is_first else subtitle_color,
                     weight="700" if is_first else "normal",
                     italic=(not is_first),
                     anchor="start",
@@ -347,7 +406,14 @@ class Grid(Element):
                 ax, _ay, aw, _ah = self._anchor_bbox(elem, theme)
                 axis_cx_in_elem = ax + aw / 2
                 ex = axis_x - axis_cx_in_elem
-                ey = cell_y + (cell_h - e_bbox.h) / 2
+                # Vertical centering uses the element's CONTENT bbox, not
+                # its outer measure -- so that an :class:`Anchor` with
+                # asymmetric flow-margin bumps (e.g. a Bus source vs.
+                # sink on the same row) still places its visible child
+                # on the row's content axis, instead of drifting by
+                # half a margin.
+                cx_b, cy_b, cw_b, ch_b = elem.content_bbox(theme)
+                ey = cell_y + (cell_h - ch_b) / 2 - cy_b
                 elem.render(canvas, ex, ey, theme)
 
         # --- trailer -----------------------------------------------------
@@ -360,14 +426,19 @@ class Grid(Element):
         # --- auto flow arrows between consecutive cells in each column --
         if self.column_flow:
             text_col = theme.color_of("text")
-            sw = theme.line
+            sw = theme.connector
             arrow_marker = canvas.define_arrow_marker(
-                color=text_col, stroke_width=sw, name_hint="colflow")
+                color=text_col, stroke_width=sw,
+                arrow_size=getattr(theme, "arrow_size", None),
+                name_hint="colflow")
             for c in range(len(self.columns)):
                 axis_x = col_xs[c] + col_axis_left[c]
-                # Collect rendered (top_y, bot_y, centre_x, row_index).
-                # ``centre_x`` is the column axis x, so auto-flow arrows
-                # line up on the SAME vertical axis as the cells' anchors.
+                # Per cell, record the PRIMARY ANCHOR faces that an
+                # inbound/outbound arrow should touch.  Each face is a
+                # ``(cx, top_y, bot_y)`` triple in diagram coords -- the
+                # horizontal centre and the vertical extent of a visible
+                # block face (e.g. a single Box, or each of two RMSNorms
+                # inside a :class:`Row`).
                 rendered = []
                 for r in range(len(self.rows)):
                     cell = col_cells[c][r]
@@ -378,32 +449,82 @@ class Grid(Element):
                     cell_h = (row_heights[r] if span == 1
                               else sum(row_heights[r:r + span])
                                    + row_gap * (span - 1))
-                    e_bbox = elem.measure(theme)
                     ax, _ay, aw, _ah = self._anchor_bbox(elem, theme)
                     axis_cx_in_elem = ax + aw / 2
                     ex = axis_x - axis_cx_in_elem
-                    ey = cell_y + (cell_h - e_bbox.h) / 2
-                    # For a span cell, the "row index" that represents this
-                    # cell is its first-row (for "up" flow, arrows to cells
-                    # above should attach at the top of the span).
-                    rendered.append((ey, ey + e_bbox.h, axis_x,
-                                     r, r + span - 1))
-                # Draw arrow between each adjacent pair (i, i+1)
+                    cx_b, cy_b, cw_b, ch_b = elem.content_bbox(theme)
+                    ey = cell_y + (cell_h - ch_b) / 2 - cy_b
+                    # Collect every visible face this cell exposes.  For
+                    # a plain Box this is one face (the Box itself); for
+                    # a :class:`Row` of anchors it's one face per anchor,
+                    # letting fan-out arrows touch each sibling.
+                    faces = []
+                    for fx, fy, fw, fh in elem.iter_primary_anchors(theme):
+                        cx_abs = ex + fx + fw / 2
+                        top_abs = ey + fy
+                        bot_abs = ey + fy + fh
+                        faces.append((cx_abs, top_abs, bot_abs))
+                    if not faces:
+                        faces = [(axis_x, ey + cy_b, ey + cy_b + ch_b)]
+                    rendered.append((faces, r, r + span - 1))
+                # Draw arrows between each adjacent pair (i, i+1).
                 for i in range(len(rendered) - 1):
-                    upper_top, upper_bot, upper_cx, upper_first, _ = rendered[i]
-                    lower_top, lower_bot, lower_cx, _, _ = rendered[i + 1]
-                    # Skip if the destination row (upper in "up" flow) is
-                    # in the skip list.
+                    upper_faces, upper_first, _ = rendered[i]
+                    lower_faces, _, _ = rendered[i + 1]
                     upper_row_name = self.rows[upper_first]
                     if upper_row_name in self.column_flow_skip_before:
                         continue
-                    if self.column_flow == "up":
-                        canvas.line(lower_cx, lower_top,
-                                    upper_cx, upper_bot,
-                                    stroke=text_col, stroke_width=sw,
-                                    marker_end=arrow_marker)
-                    elif self.column_flow == "down":
-                        canvas.line(upper_cx, upper_bot,
-                                    lower_cx, lower_top,
-                                    stroke=text_col, stroke_width=sw,
-                                    marker_end=arrow_marker)
+                    # ``column_flow`` is the "one cell -> one cell"
+                    # convenience.  When the destination cell exposes
+                    # MULTIPLE primary anchors (e.g. a :class:`Row` of
+                    # two :class:`Anchor` wrappers), the library cannot
+                    # pick one without guessing the author's intent, so
+                    # we skip the cell entirely.  The author is expected
+                    # to connect multi-anchor cells with explicit
+                    # :class:`Flow` / :class:`Bus` declarations.  Same
+                    # applies symmetrically to multi-anchor SOURCES.
+                    if len(upper_faces) != 1 or len(lower_faces) != 1:
+                        continue
+                    src_cx, src_top, src_bot = lower_faces[0]
+                    dst_cx, dst_top, dst_bot = upper_faces[0]
+                    self._draw_column_flow_arrow(
+                        canvas, self.column_flow,
+                        src_cx, src_top, src_bot,
+                        dst_cx, dst_top, dst_bot,
+                        stroke=text_col, stroke_width=sw,
+                        marker=arrow_marker)
+
+    @staticmethod
+    def _draw_column_flow_arrow(canvas, direction,
+                                src_cx, src_top, src_bot,
+                                dst_cx, dst_top, dst_bot,
+                                *, stroke, stroke_width, marker):
+        """Draw a column-flow arrow between two column faces.
+
+        If the source and destination share an x coordinate, a single
+        straight line is drawn.  Otherwise the arrow is routed with
+        right angles: it leaves the source perpendicular to its face,
+        crosses horizontally at the midpoint of the inter-face gap,
+        and re-enters the destination perpendicular to its face.  This
+        keeps the diagram reading orthogonally (bus-style) instead of
+        via diagonals when two cells aren't x-aligned.
+        """
+        if direction == "up":
+            sy = src_top
+            dy = dst_bot
+        else:
+            sy = src_bot
+            dy = dst_top
+        if abs(src_cx - dst_cx) < 0.5:
+            canvas.line(src_cx, sy, dst_cx, dy,
+                        stroke=stroke, stroke_width=stroke_width,
+                        marker_end=marker)
+            return
+        mid = (sy + dy) / 2
+        canvas.line(src_cx, sy, src_cx, mid,
+                    stroke=stroke, stroke_width=stroke_width)
+        canvas.line(src_cx, mid, dst_cx, mid,
+                    stroke=stroke, stroke_width=stroke_width)
+        canvas.line(dst_cx, mid, dst_cx, dy,
+                    stroke=stroke, stroke_width=stroke_width,
+                    marker_end=marker)

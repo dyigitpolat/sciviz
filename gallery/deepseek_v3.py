@@ -105,6 +105,14 @@ top_strip = Flowed(
              style="orthogonal", color="text"),
         Flow("mtp2_tf",  "mtp3_rn_l", src_side="top", dst_side="bottom",
              style="orthogonal", color="text"),
+        # Embedding-layer signal feeds the RIGHT RMSNorm in each MTP
+        # module (the LEFT one is already driven by the cascading
+        # inter-module flow above).  Column-flow can't pick between
+        # two siblings automatically, so we name the destination here.
+        *[Flow(f"mtp{k}_emb", f"mtp{k}_rn_r",
+               src_side="top", dst_side="bottom",
+               style="orthogonal", color="text")
+          for k in (1, 2, 3)],
     ],
 )
 

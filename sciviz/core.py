@@ -117,6 +117,12 @@ class Theme:
     thick: float = 1.3
     connector: float = 1.6   # arrows / connectors / flow lines
 
+    # Fixed arrowhead marker size.  A single value keeps every arrow in a
+    # diagram visually consistent regardless of which connector primitive
+    # draws it (Flow / Bus / Arrow / Grid column-flow / Labeled).  Set
+    # to ``None`` to fall back to stroke-proportional sizing.
+    arrow_size: float = 4.0
+
     # -- palettes (paper-appropriate: desaturated, print-safe) ------------
     sequential_blues: List[str] = field(default_factory=lambda: [
         "#f4f6fb", "#e1e8f3", "#c8d4e9", "#a7bad8",
@@ -164,6 +170,7 @@ class Theme:
             font_panel_title=14.0, font_panel_tag=13.0,
             font_label=11.0, font_small=10.0, font_tiny=9.0,
             line=1.0, thick=1.5,
+            arrow_size=5.0,
         )
 
     # ---------------- API -------------------------------------------------
@@ -471,8 +478,15 @@ class Canvas:
             return self._marker_ids[key]
         mid = f"{name_hint}-{len(self._marker_ids)}"
         self._marker_ids[key] = mid
+        # refX=5 puts the triangle's CENTRE on the line endpoint, so the
+        # tip extends PAST the nominal endpoint (into the target) while
+        # the tail sits just outside.  This avoids the "floating
+        # arrowhead with a gap" artifact -- with refX=9 (tip at
+        # reference) the whole triangle parks OUTSIDE the target and
+        # the tip pixel gets absorbed by the target's own border
+        # stroke in rasterised output.
         self._defs.append(
-            f'<marker id="{mid}" viewBox="0 0 10 10" refX="9" refY="5" '
+            f'<marker id="{mid}" viewBox="0 0 10 10" refX="5" refY="5" '
             f'markerWidth="{_fmt(size)}" markerHeight="{_fmt(size)}" '
             f'orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="{color}"/></marker>'
         )
@@ -485,16 +499,21 @@ class Canvas:
     ARROW_HEAD_SCALE: float = 4.5
 
     def define_arrow_marker(self, *, color: str, stroke_width: float,
+                            arrow_size: Optional[float] = None,
                             name_hint: str = "arrow") -> str:
-        """Register an arrowhead sized to the stroke width.
+        """Register an arrowhead marker for a line with ``stroke_width`` ink.
 
-        The marker width / height scale linearly with ``stroke_width``,
-        bounded to a sensible minimum so sub-pixel strokes still get a
-        visible (but still small) head.  Use this for every arrow drawn
-        via :meth:`Canvas.line` / :meth:`Canvas.path` so heads read as
-        line terminators, not filled triangles.
+        If ``arrow_size`` is given (the preferred path, normally fed from
+        :attr:`Theme.arrow_size`), the triangle is rendered at exactly
+        that size regardless of stroke width -- so every arrow in a
+        diagram reads at the same visual weight.  Otherwise the head
+        scales linearly with stroke width (legacy behaviour used by
+        ad-hoc callers that don't know the current theme).
         """
-        size = max(3.0, stroke_width * self.ARROW_HEAD_SCALE)
+        if arrow_size is not None and arrow_size > 0:
+            size = float(arrow_size)
+        else:
+            size = max(3.0, stroke_width * self.ARROW_HEAD_SCALE)
         return self.define_marker(color=color, size=size, name_hint=name_hint)
 
     def raw_def(self, svg: str) -> None:
@@ -723,3 +742,18 @@ class Element:
         overrides this method.  Default returns ``None``.
         """
         return None
+
+    def iter_primary_anchors(self, theme: Theme) -> "list[tuple[float, float, float, float]]":
+        """Yield every primary-anchor sub-region this element exposes.
+
+        The default element has a single primary anchor -- its
+        :meth:`primary_anchor_bbox` (falling back to the whole measure
+        bbox).  Containers like :class:`Row` override this to expose one
+        primary anchor per child, so a cell-to-cell arrow router can fan
+        an arrow into each sibling face instead of the silhouette centre.
+        """
+        pa = self.primary_anchor_bbox(theme)
+        if pa is not None:
+            return [pa]
+        b = self.measure(theme)
+        return [(0.0, 0.0, b.w, b.h)]

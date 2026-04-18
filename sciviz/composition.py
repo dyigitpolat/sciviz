@@ -566,12 +566,34 @@ class Anchor(Element):
         this to align siblings on their *content* box, not on the
         margin-inflated outer box -- so asymmetric flow-margin bumps
         don't shift the rendered child.
+
+        When the child itself exposes a narrower content (e.g.
+        ``StackedBoxes`` whose content_bbox is the FRONT face), inherit
+        that so that Anchor doesn't undo the child's own content-vs-outer
+        distinction.
         """
-        b = self.child.measure(theme)
-        return (self.margin_left, self.margin_top, b.w, b.h)
+        child_cb = self.child.content_bbox(theme)
+        cx, cy, cw, ch = child_cb
+        return (self.margin_left + cx, self.margin_top + cy, cw, ch)
 
     def primary_anchor_bbox(self, theme: Theme):
+        """Delegate to the child's primary anchor (if any), translated
+        into our local frame; otherwise fall back to the child's content
+        bbox.  This lets composites like ``Anchor(StackedBoxes(...))``
+        expose the stack's FRONT FACE as the primary anchor, so Grid
+        centres columns on the visible face rather than the silhouette.
+        """
+        pa = self.child.primary_anchor_bbox(theme)
+        if pa is not None:
+            px, py, pw, ph = pa
+            return (self.margin_left + px, self.margin_top + py, pw, ph)
         return self.content_bbox(theme)
+
+    def iter_primary_anchors(self, theme: Theme):
+        out = []
+        for px, py, pw, ph in self.child.iter_primary_anchors(theme):
+            out.append((self.margin_left + px, self.margin_top + py, pw, ph))
+        return out
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         b = self.child.measure(theme)
@@ -681,8 +703,10 @@ class Flow:
         col = theme.color_of(self.color)
         sw = theme.connector
         dash = "5,3" if self.dashed else None
-        marker = (canvas.define_arrow_marker(color=col, stroke_width=sw,
-                                             name_hint="flow")
+        marker = (canvas.define_arrow_marker(
+                      color=col, stroke_width=sw,
+                      arrow_size=getattr(theme, "arrow_size", None),
+                      name_hint="flow")
                   if self.arrow else None)
 
         # Orthogonal (right-angle) routing.  Path is computed from each
@@ -846,9 +870,56 @@ class Flow:
                                  key=lambda s: (s[1] - s[0],
                                                 s[0] if dx > sx else -s[1]))
                     gap_x = (widest[0] + widest[1]) / 2
-                path = [(sx, sy), src_tap,
-                        (gap_x, src_tap[1]), (gap_x, dst_tap[1]),
-                        dst_tap, (dx, dy)]
+
+                # Prefer the minimal 2-corner route "up - across - up"
+                # (three segments) when direction-consistent AND
+                # unobstructed.  That matches hand-drawn figure routing
+                # and avoids the staircase introduced by the tap/bridge/
+                # tap detour.  Falls back to the column-gap staircase
+                # otherwise.
+                #
+                # Direction-consistency: the bridge_y must lie on the
+                # sdir side of sy (so the src-exit leg moves in sdir)
+                # AND on the ddir side of dy (so the dst-entry leg
+                # arrives against ddir).  When sdir and ddir point
+                # OUTWARD away from each other (e.g. src exits up into
+                # row above, dst exits down into row below), a valid
+                # bridge_y exists only when dst sits on the src-exit
+                # side of the source -- exactly the "dst is one row
+                # above src" case where the direct route makes sense.
+                def _vblocked(vx, y0, y1):
+                    lo, hi = (y0, y1) if y0 < y1 else (y1, y0)
+                    for ox, oy, ow, oh in anchor_obstacles:
+                        if ox - 0.5 < vx < ox + ow + 0.5 and not (
+                                oy + oh < lo - 0.5 or oy > hi + 0.5):
+                            return True
+                    return False
+
+                def _hblocked(hy, x0, x1):
+                    lo, hi = (x0, x1) if x0 < x1 else (x1, x0)
+                    for ox, oy, ow, oh in anchor_obstacles:
+                        if oy - 0.5 < hy < oy + oh + 0.5 and not (
+                                ox + ow < lo - 0.5 or ox > hi + 0.5):
+                            return True
+                    return False
+
+                lo_y, hi_y = (dy, sy) if dy < sy else (sy, dy)
+                direct_y = (sy + dy) / 2
+                sy_dir_ok = (direct_y - sy) * sdir[1] > 0
+                dy_dir_ok = (direct_y - dy) * ddir[1] > 0
+                direct_consistent = sy_dir_ok and dy_dir_ok
+                if direct_consistent and (
+                        not _vblocked(sx, sy, direct_y)
+                        and not _hblocked(direct_y, sx, dx)
+                        and not _vblocked(dx, direct_y, dy)):
+                    path = [(sx, sy),
+                            (sx, direct_y),
+                            (dx, direct_y),
+                            (dx, dy)]
+                else:
+                    path = [(sx, sy), src_tap,
+                            (gap_x, src_tap[1]), (gap_x, dst_tap[1]),
+                            dst_tap, (dx, dy)]
             elif sdir[1] == 0 and ddir[1] == 0:
                 # Horizontal exits on both sides -- bridge between rows.
                 if dy > sy:
@@ -1588,8 +1659,10 @@ class Bus:
         col = theme.color_of(self.color)
         dasharray = "4,3" if self.dashed else None
         sw = theme.connector
-        marker = (canvas.define_arrow_marker(color=col, stroke_width=sw,
-                                             name_hint="bus")
+        marker = (canvas.define_arrow_marker(
+                      color=col, stroke_width=sw,
+                      arrow_size=getattr(theme, "arrow_size", None),
+                      name_hint="bus")
                   if self.arrow else None)
 
         # Filter out routing-region pseudo-entries from the obstacle

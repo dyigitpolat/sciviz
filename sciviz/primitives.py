@@ -615,6 +615,24 @@ class StackedBoxes(Element):
         total = (self.n - 1) * self.offset
         return BBox(self.width + total, self.height + total)
 
+    def _front_face(self) -> Tuple[float, float, float, float]:
+        """Position of the FRONT (labeled) box inside the outer silhouette.
+
+        The stack draws ``n`` offset copies; the front box sits at the
+        bottom-left of the silhouette at ``(0, total)`` with dimensions
+        ``(width, height)``.  This is the box a reader visually "latches
+        onto" as the stack's face, so layout primitives should align on
+        it rather than on the silhouette centre.
+        """
+        total = (self.n - 1) * self.offset
+        return (0.0, total, self.width, self.height)
+
+    def content_bbox(self, theme: Theme):
+        return self._front_face()
+
+    def primary_anchor_bbox(self, theme: Theme):
+        return self._front_face()
+
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         fill_hex = theme.color_of(self.fill)
         stroke_hex = theme.color_of(self.stroke)

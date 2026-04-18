@@ -206,6 +206,76 @@ class Row(Element):
                 child.render(canvas, cx, cy, theme)
                 cx += size.w + g
 
+    def _child_offsets(self, theme: Theme):
+        """Same x/y placement math as :meth:`render`, but returns the
+        per-child offsets ``(ox, oy)`` in the Row's local frame.
+
+        Used by :meth:`primary_anchor_bbox` and :meth:`iter_primary_anchors`
+        so they stay consistent with where ``render`` actually paints each
+        child.
+        """
+        if not self.children:
+            return []
+        self._normalize_shape_peers(theme)
+        sizes = [c.measure(theme) for c in self.children]
+        g = theme.gap_px(self.gap)
+        content = [c.content_bbox(theme) for c in self.children]
+        content_h = max(cb[3] for cb in content)
+        H = self.measure(theme).h
+        slot = max(s.w for s in sizes) if self.equal_widths else None
+        offs = []
+        cx = 0.0
+        for size, cb in zip(sizes, content):
+            cb_y = cb[1]
+            cb_h = cb[3]
+            if self.align == "start":
+                oy = 0.0 - cb_y
+            elif self.align == "end":
+                oy = H - (cb_y + cb_h)
+            else:
+                oy = (H - content_h) / 2 - cb_y
+            if self.equal_widths:
+                slot_cx = cx + slot / 2
+                ox = slot_cx - (cb[0] + cb[2] / 2)
+                offs.append((ox, oy, size))
+                cx += slot + g
+            else:
+                offs.append((cx, oy, size))
+                cx += size.w + g
+        return offs
+
+    def primary_anchor_bbox(self, theme: Theme):
+        """The Row's primary anchor is the union of its children's primary
+        anchors -- the smallest rectangle containing every visible face.
+
+        Grid uses this to compute the column axis (centre of this bbox),
+        which stays stable even when :meth:`iter_primary_anchors` is used
+        to fan an arrow out to each child individually.
+        """
+        if not self.children:
+            return None
+        offs = self._child_offsets(theme)
+        xs_lo, ys_lo, xs_hi, ys_hi = [], [], [], []
+        for (ox, oy, _size), child in zip(offs, self.children):
+            for ax, ay, aw, ah in child.iter_primary_anchors(theme):
+                xs_lo.append(ox + ax)
+                ys_lo.append(oy + ay)
+                xs_hi.append(ox + ax + aw)
+                ys_hi.append(oy + ay + ah)
+        if not xs_lo:
+            return None
+        x0, y0 = min(xs_lo), min(ys_lo)
+        x1, y1 = max(xs_hi), max(ys_hi)
+        return (x0, y0, x1 - x0, y1 - y0)
+
+    def iter_primary_anchors(self, theme: Theme):
+        out = []
+        offs = self._child_offsets(theme)
+        for (ox, oy, _size), child in zip(offs, self.children):
+            for ax, ay, aw, ah in child.iter_primary_anchors(theme):
+                out.append((ox + ax, oy + ay, aw, ah))
+        return out
+
 
 class Column(Element):
     """Vertical container.  See :class:`Row` for the analogous documentation."""
