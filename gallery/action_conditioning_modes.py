@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sciviz import (Diagram, Row, Column, Box, Heatmap, Text, Caption,
-                    Badge, Brace, Group, Anchor, Flow, Flowed, MatchSize,
+                    Badge, LoopIcon, Brace, Group, Anchor, Flow, Flowed, MatchSize,
                     BlockGroup, MeshArray, Palette, Spacer, Table, TextBlock)
 
 
@@ -70,8 +70,8 @@ def diffusion_transformer(*, accent: int, plus_anchor=None):
 
 def loop_marker():
     return Row(
-        Badge("\u21bb", color=Palette.info, size=20, text_size="small"),
-        Spacer(2, 0),
+        LoopIcon(size=20, color=Palette.info),
+        Spacer(4, 0),
         Text("\u00d7 N", size="small", color="muted", weight="700"),
         gap="none", align="center",
     )
@@ -146,9 +146,13 @@ panel_residual = Flowed(
         color=Palette.warn.dark(), fill=Palette.warn.soft(),
         dashed=False, padding="md",
     ),
+    # Orthogonal routing so the line travels around the transformer
+    # blocks instead of crossing through them.  Exits bottom of the
+    # Action Encoder, runs along the panel floor, then rises into the
+    # + badge from below.
     flows=[Flow("ae3", "dt3_plus",
                 src_side="bottom", dst_side="bottom",
-                color=Palette.warn.dark(), curvature=0.4, detour=14)],
+                color=Palette.warn.dark(), style="orthogonal")],
 )
 
 # ---------------------------------------------------------------------------
@@ -180,9 +184,12 @@ panel_internal = Flowed(
         color=Palette.warn.dark(), fill=Palette.warn.soft(),
         dashed=False, padding="md",
     ),
+    # Orthogonal routing so the line does not sweep THROUGH the
+    # Self-Attention / FFN blocks on its way into Cross-Attention's
+    # bottom edge.
     flows=[Flow("ae4", "dt4_target",
                 src_side="bottom", dst_side="bottom",
-                color=Palette.warn.dark(), curvature=0.4, detour=14)],
+                color=Palette.warn.dark(), style="orthogonal")],
 )
 
 # ---------------------------------------------------------------------------

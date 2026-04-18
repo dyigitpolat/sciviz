@@ -404,6 +404,103 @@ class Badge(Element):
 
 
 # ---------------------------------------------------------------------------
+# LoopIcon -- drawn circular arrow (replaces unicode \u21bb glyphs that fail
+# to rasterise when the font stack lacks symbol-glyph coverage).
+# ---------------------------------------------------------------------------
+
+class LoopIcon(Element):
+    """A small circular arrow drawn as vector paths.
+
+    Used as a visual "repeat N times" marker without relying on a
+    symbol-capable font.  The equivalent unicode glyph (``\u21bb``) is
+    only rendered correctly if the host system ships a font that
+    covers the Miscellaneous Symbols and Arrows block; drawing the
+    shape as SVG paths sidesteps that portability question.
+
+    Parameters
+    ----------
+    size : float
+        Overall bounding-box diameter in pixels.
+    color : ColorRef or str
+        Stroke and arrowhead colour (default ``"info"``).
+    fill : ColorRef or str, optional
+        Background disc colour.  ``None`` (default) draws just the
+        arrow on a transparent background.
+    stroke_width : float, optional
+        Arrow stroke width.  Defaults to ``max(1.2, size * 0.08)``.
+    """
+
+    def __init__(self, *, size: float = 20.0,
+                 color = "info",
+                 fill = None,
+                 stroke_width: Optional[float] = None):
+        self.size = size
+        self.color = color
+        self.fill = fill
+        self.stroke_width = stroke_width
+
+    def measure(self, theme: Theme) -> BBox:
+        return BBox(self.size, self.size)
+
+    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        import math as _math
+        s = self.size
+        cx = x + s / 2
+        cy = y + s / 2
+        stroke_col = theme.color_of(self.color)
+        if self.fill is not None:
+            canvas.circle(cx, cy, s / 2,
+                          fill=theme.color_of(self.fill),
+                          stroke="none")
+        sw = self.stroke_width if self.stroke_width is not None \
+            else max(1.2, s * 0.1)
+        r = s * 0.34
+
+        # Near-full-circle "repeat / refresh" glyph.  Arc sweeps
+        # clockwise (visually) through the bottom and both sides,
+        # leaving a gap at the TOP where the arrowhead caps the
+        # head.  The arrowhead tail-tips point tangentially away
+        # from the arc head (along the direction of motion).
+        #
+        # Endpoints live on the upper half of the circle, symmetric
+        # about the vertical axis: tail angle = -90 - half_gap,
+        # head angle = -90 + half_gap (SVG y-down).  large_arc=1
+        # picks the LONG path; sweep=0 picks the mathematically CCW
+        # direction, which in SVG screen space renders as the
+        # visually CLOCKWISE direction -- so the arc passes under
+        # the centre first, then up the right and through the gap.
+        half_gap_deg = 45.0
+        tail_deg = -90.0 - half_gap_deg
+        head_deg = -90.0 + half_gap_deg
+        tr = _math.radians(tail_deg)
+        hr = _math.radians(head_deg)
+        tx, ty = cx + r * _math.cos(tr), cy + r * _math.sin(tr)
+        hx, hy = cx + r * _math.cos(hr), cy + r * _math.sin(hr)
+        d = (f"M {tx:.2f},{ty:.2f} "
+             f"A {r:.2f},{r:.2f} 0 1 0 {hx:.2f},{hy:.2f}")
+        canvas.path(d, stroke=stroke_col, fill="none", stroke_width=sw)
+
+        # Arrowhead at the head end.  The arc arrives at `head_deg`
+        # travelling in the mathematically CCW direction, whose
+        # screen-space tangent is (+sin(head), -cos(head)).  That is
+        # UP-AND-RIGHT at head_deg = -45 deg, which matches the
+        # conventional "refresh arrow" tail-pointing-right-and-up.
+        tang = (_math.sin(hr), -_math.cos(hr))
+        head_len = s * 0.26
+        head_w = s * 0.22
+        tip_x = hx + tang[0] * head_len
+        tip_y = hy + tang[1] * head_len
+        # Arrowhead base straddles the arc endpoint, perpendicular
+        # to the tangent.
+        perp = (-tang[1], tang[0])
+        bx, by = hx, hy
+        p1 = (bx + perp[0] * head_w / 2, by + perp[1] * head_w / 2)
+        p2 = (bx - perp[0] * head_w / 2, by - perp[1] * head_w / 2)
+        canvas.polygon([(tip_x, tip_y), p1, p2],
+                       fill=stroke_col, stroke="none")
+
+
+# ---------------------------------------------------------------------------
 # Brace -- horizontal curly brace with optional label, used for grouping
 # ---------------------------------------------------------------------------
 
@@ -772,15 +869,19 @@ class Flow:
             sb_x, sb_y, sb_w, sb_h = sb
             db_x, db_y, db_w, db_h = db
 
-            # Raw anchor and region boxes.
+            # Raw anchor and region boxes.  Private ``__*`` keys
+            # (e.g. drawn-segment lists) are skipped.
             all_anchors = []
             all_regions = []
             for name, b in registry.items():
-                bx, by, bw, bh = b
                 if name.startswith("__region_"):
+                    bx, by, bw, bh = b
                     all_regions.append(_rt.Box(x=bx, y=by, w=bw, h=bh,
                                                name=name, kind="region"))
+                elif name.startswith("__"):
+                    continue
                 else:
+                    bx, by, bw, bh = b
                     all_anchors.append(_rt.Box(x=bx, y=by, w=bw, h=bh,
                                                name=name, kind="anchor"))
             src_box = _rt.Box(x=sb_x, y=sb_y, w=sb_w, h=sb_h,
@@ -789,6 +890,7 @@ class Flow:
                               name=self.dst, kind="anchor")
             src_frac = getattr(self, "_share_src_frac", 0.5)
             dst_frac = getattr(self, "_share_dst_frac", 0.5)
+            drawn_so_far = registry.get("__drawn_segments__", ())
             plan = _rt.plan_path(
                 _rt.Endpoint(src_box, src_side, tap=tap,
                              tap_fraction=src_frac),
@@ -796,6 +898,7 @@ class Flow:
                              tap_fraction=dst_frac),
                 anchors=all_anchors,
                 regions=all_regions,
+                existing_segments=list(drawn_so_far),
             )
 
             # Retain `anchor_obstacles` for label-placement collision
@@ -804,9 +907,12 @@ class Flow:
                 return name != self.src and name != self.dst
             anchor_obstacles = [b for name, b in registry.items()
                                 if not name.startswith("__region_")
+                                and not name.startswith("__")
                                 and _in(name)]
-            # Draw the planned polyline and (optionally) place a label
-            # above the longest horizontal segment.
+            # Pick up already-drawn segments from earlier flows in the
+            # same Flowed scope so crossings become semicircular jump
+            # arcs instead of plain intersections.
+            drawn = registry.setdefault("__drawn_segments__", [])
             path = plan.waypoints
             seg_rects = _rt.render_orthogonal(
                 canvas, plan,
@@ -814,7 +920,16 @@ class Flow:
                 dasharray=dash,
                 marker_end=marker if self.arrow else None,
                 src_dot=True,
+                existing_segments=list(drawn),
+                hop_radius=max(2.5, sw * 2.5),
             )
+            # Record the segments we just drew so subsequent flows can
+            # detect crossings against them.
+            for i in range(len(path) - 1):
+                p1 = path[i]; p2 = path[i + 1]
+                if abs(p1[0] - p2[0]) < 0.5 and abs(p1[1] - p2[1]) < 0.5:
+                    continue
+                drawn.append((p1[0], p1[1], p2[0], p2[1]))
             if self.label and len(path) >= 2:
                 best_seg = None
                 best_len = -1.0
@@ -1075,20 +1190,59 @@ class Flowed(Element):
                     src._bump_margin(flow.src_side, m)
                 if dst is not None and flow.dst_side != "auto":
                     dst._bump_margin(flow.dst_side, m)
-            elif isinstance(flow, Bus) and flow.label:
-                # Labelled Bus (e.g. a fan-in ``concatenation`` junction)
-                # needs vertical breathing room for its side label inside
-                # the gap between source and sink rows.  Bump the sink's
-                # margin on the face closest to the sources, so the label
-                # sits cleanly in that inflated gap.
-                for name in flow.sources:
-                    a = anchors.get(name)
-                    if a is not None:
-                        a._bump_margin("top", m * 0.6)
-                for name in flow.sinks:
-                    a = anchors.get(name)
-                    if a is not None:
-                        a._bump_margin("bottom", m * 0.6)
+            elif isinstance(flow, Bus):
+                # A Bus chooses its orientation (horizontal or vertical
+                # spine) at render time based on measured positions; at
+                # margin-application time we inflate based on the hint.
+                # Labelled buses need a bit more space for the side label
+                # but over-inflation balloons the whole diagram, so we
+                # add only ``min_flow_space`` per side (same budget as a
+                # pairwise Flow), scaled up slightly when the bus carries
+                # a label.
+                label_mul = 1.6 if flow.label else 1.0
+                bump = m * label_mul
+                if flow.orientation == "auto":
+                    # Unlabelled buses need only a thin gap for the spine,
+                    # and we can't predict orientation yet -- bump every
+                    # face by a very small amount so the spine always has
+                    # some room, but don't spread the whole diagram.
+                    light = m * (0.6 if flow.label else 0.3)
+                    sides = ("top", "bottom", "left", "right")
+                    for name in list(flow.sources) + list(flow.sinks):
+                        a = anchors.get(name)
+                        if a is None:
+                            continue
+                        for side in sides:
+                            a._bump_margin(side, light)
+                elif flow.orientation == "horizontal":
+                    # Spine is vertical, between a source cluster on one
+                    # side and a sink cluster on the other; source's
+                    # left/right and sinks' opposite edges carry the gap.
+                    for name in flow.sources:
+                        a = anchors.get(name)
+                        if a is None:
+                            continue
+                        a._bump_margin("left", bump)
+                        a._bump_margin("right", bump)
+                    for name in flow.sinks:
+                        a = anchors.get(name)
+                        if a is None:
+                            continue
+                        a._bump_margin("left", bump)
+                        a._bump_margin("right", bump)
+                else:  # vertical -- spine is horizontal
+                    for name in flow.sources:
+                        a = anchors.get(name)
+                        if a is None:
+                            continue
+                        a._bump_margin("top", bump)
+                        a._bump_margin("bottom", bump)
+                    for name in flow.sinks:
+                        a = anchors.get(name)
+                        if a is None:
+                            continue
+                        a._bump_margin("top", bump)
+                        a._bump_margin("bottom", bump)
 
     def measure(self, theme: Theme) -> BBox:
         self._apply_flow_margins()
@@ -1429,14 +1583,19 @@ class Region(Element):
             dasharray="4,3" if self.dashed else None,
         )
 
-        # Publish the border rectangle to every active anchor registry
+        # Publish the region's full footprint -- border rectangle PLUS
+        # the label strip above it -- to every active anchor registry
         # under a `__region_<id>` key.  Connector routers consult these
-        # keys to compute required / forbidden boundary crossings.
+        # keys to compute required / forbidden boundary crossings, and
+        # including the label strip here prevents connectors from
+        # crossing THROUGH the label text on their way in or out.
         stack = _anchor_stack.get()
         if stack is not None:
             key = f"__region_{id(self):x}"
+            region_top = y + self.margin_y  # includes the label strip
+            region_h = (border_top + border_h) - region_top
             for reg in stack:
-                reg[key] = (border_x, border_top, border_w, border_h)
+                reg[key] = (border_x, region_top, border_w, region_h)
 
         # Label in the lh space above the border (and below top margin_y).
         if self.label:
@@ -1503,13 +1662,25 @@ class Bus:
                  label: Optional[str] = None,
                  dashed: bool = False,
                  color = "muted_label",
-                 arrow: bool = True):
+                 arrow: bool = True,
+                 orientation: str = "auto"):
         self.sources = [sources] if isinstance(sources, str) else list(sources)
         self.sinks   = [sinks]   if isinstance(sinks,   str) else list(sinks)
         self.label = label
         self.dashed = dashed
         self.color = color
         self.arrow = arrow
+        # ``orientation`` is a hint used by Flowed._apply_flow_margins to
+        # decide which anchor faces to inflate for the spine.  "horizontal"
+        # inflates the source's right/left edges and the sinks' opposite
+        # edges; "vertical" inflates top/bottom.  "auto" (default) inflates
+        # every face with a smaller bump, since the actual orientation is
+        # only determined at render time from measured positions.
+        if orientation not in ("auto", "horizontal", "vertical"):
+            raise ValueError(
+                f"Bus orientation must be 'auto', 'horizontal', or "
+                f"'vertical'; got {orientation!r}")
+        self.orientation = orientation
 
     def _draw_placed_label(self, canvas: Canvas, theme: Theme,
                            segment, obstacles, *, color: str,
@@ -1561,11 +1732,43 @@ class Bus:
                       name_hint="bus")
                   if self.arrow else None)
 
-        # Filter out routing-region pseudo-entries from the obstacle
-        # list: those are bbox regions registered by Grid panels, not
-        # real drawn boxes, and must not block label placement.
-        box_obstacles = [(b[0], b[1], b[0] + b[2], b[1] + b[3])
-                         for b in (src_boxes + dst_boxes)]
+        drawn = registry.setdefault("__drawn_segments__", [])
+
+        def _record_segment(x1, y1, x2, y2):
+            if abs(x1 - x2) > 0.5 or abs(y1 - y2) > 0.5:
+                drawn.append((x1, y1, x2, y2))
+
+        # Collect every rectangle the planner knows about -- src/dst
+        # boxes, sibling anchors, auto-registered Box obstacles, AND
+        # region labels (``__region_*`` entries) -- so the label
+        # placer keeps the bus label outside any neighbouring panel
+        # or block that the spine happens to run alongside.  Regions
+        # whose interior strictly CONTAINS every endpoint of the
+        # spine are skipped: the spine is "inside" that container so
+        # its label has to live inside too, and using the container
+        # as an obstacle would make every candidate overlap.
+        src_pts = [(b[0] + b[2] / 2, b[1] + b[3] / 2) for b in src_boxes]
+        dst_pts = [(b[0] + b[2] / 2, b[1] + b[3] / 2) for b in dst_boxes]
+        spine_pts = src_pts + dst_pts
+
+        def _strictly_contains(rect, pts):
+            x0, y0, x1, y1 = rect
+            for px, py in pts:
+                if not (x0 < px < x1 and y0 < py < y1):
+                    return False
+            return True
+
+        box_obstacles = []
+        for name, b in registry.items():
+            if name.startswith("__drawn_segments__"):
+                continue
+            if not isinstance(b, tuple) or len(b) != 4:
+                continue
+            bx, by, bw, bh = b
+            rect = (bx, by, bx + bw, by + bh)
+            if _strictly_contains(rect, spine_pts):
+                continue
+            box_obstacles.append(rect)
 
         all_boxes = src_boxes + dst_boxes
         centres_y = [b[1] + b[3] / 2 for b in all_boxes]
@@ -1582,6 +1785,7 @@ class Bus:
                 canvas.line(x_from, mid_y, x_to, mid_y,
                             stroke=col, stroke_width=sw,
                             dasharray=dasharray)
+                _record_segment(x_from, mid_y, x_to, mid_y)
             if self.label:
                 for b_left, b_right in zip(sorted_boxes, sorted_boxes[1:]):
                     x_from = b_left[0] + b_left[2]
@@ -1641,6 +1845,7 @@ class Bus:
                 px, py = src_edge(b)
                 canvas.line(px, py, px, spine_y,
                             stroke=col, stroke_width=sw, dasharray=dasharray)
+                _record_segment(px, py, px, spine_y)
                 # tap obstacle: thin vertical stripe, sw wide
                 y_lo, y_hi = min(py, spine_y), max(py, spine_y)
                 line_obstacles.append((px - sw, y_lo, px + sw, y_hi))
@@ -1648,6 +1853,7 @@ class Bus:
                 x0 = min(src_taps_x); x1 = max(src_taps_x)
                 canvas.line(x0, spine_y, x1, spine_y,
                             stroke=col, stroke_width=sw, dasharray=dasharray)
+                _record_segment(x0, spine_y, x1, spine_y)
                 # T-bar obstacle -- pad it by half a text-line's height so
                 # the placer never places a label flush against it.
                 bar_pad = theme.unit * 0.5
@@ -1661,6 +1867,7 @@ class Bus:
                 if self.arrow:
                     attrs["marker_end"] = marker
                 canvas.line(bar_mid_x, spine_y, dpx, dpy, **attrs)
+                _record_segment(bar_mid_x, spine_y, dpx, dpy)
                 # sink arrow obstacle
                 y_lo, y_hi = min(spine_y, dpy), max(spine_y, dpy)
                 line_obstacles.append((bar_mid_x - sw, y_lo,
@@ -1692,12 +1899,14 @@ class Bus:
                     if self.arrow:
                         attrs["marker_end"] = marker
                     canvas.line(px, spine_y, px, py, **attrs)
+                    _record_segment(px, spine_y, px, py)
                     taps_x.append(px)
                     y_lo, y_hi = min(spine_y, py), max(spine_y, py)
                     line_obstacles.append((px - sw, y_lo, px + sw, y_hi))
                 x0 = min(taps_x); x1 = max(taps_x)
                 canvas.line(x0, spine_y, x1, spine_y,
                             stroke=col, stroke_width=sw, dasharray=dasharray)
+                _record_segment(x0, spine_y, x1, spine_y)
                 if self.label:
                     prefer = "above" if source_below else "below"
                     self._draw_placed_label(
@@ -1730,6 +1939,7 @@ class Bus:
                 px, py = src_edge(b)
                 canvas.line(px, py, spine_x, py,
                             stroke=col, stroke_width=sw, dasharray=dasharray)
+                _record_segment(px, py, spine_x, py)
                 taps_y.append(py)
                 x_lo, x_hi = min(px, spine_x), max(px, spine_x)
                 line_obstacles.append((x_lo, py - sw, x_hi, py + sw))
@@ -1741,14 +1951,20 @@ class Bus:
                 if self.arrow:
                     attrs["marker_end"] = marker
                 canvas.line(spine_x, py, px, py, **attrs)
+                _record_segment(spine_x, py, px, py)
                 taps_y.append(py)
                 x_lo, x_hi = min(spine_x, px), max(spine_x, px)
                 line_obstacles.append((x_lo, py - sw, x_hi, py + sw))
             y0 = min(taps_y); y1 = max(taps_y)
             canvas.line(spine_x, y0, spine_x, y1,
                         stroke=col, stroke_width=sw, dasharray=dasharray)
+            _record_segment(spine_x, y0, spine_x, y1)
             if self.label:
-                prefer = "right" if source_left else "left"
+                # Prefer the SOURCE side of the spine for the label -- the
+                # sink side is typically a cluster of targets (often with
+                # their own labels/regions), so placing the bus label on
+                # the sink side tends to collide with other content.
+                prefer = "left" if source_left else "right"
                 self._draw_placed_label(
                     canvas, theme,
                     segment=((spine_x, y0), (spine_x, y1)),

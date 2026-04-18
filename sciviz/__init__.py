@@ -104,6 +104,7 @@ from .composition import (
     KeyValue,
     Bullets,
     Badge,
+    LoopIcon,
     Brace,
     Annotated,
     Anchor,

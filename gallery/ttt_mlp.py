@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sciviz import (Diagram, Row, Column, Box, Text, TextBlock, Badge, Arrow,
                     Connector, BlockGroup, Anchor, Flow, Flowed, Region,
-                    VectorTiles, Palette, Math)
+                    VectorTiles, Palette, Math, Bus)
 
 # -- paper-faithful identity colours -----------------------------------------
 
@@ -87,7 +87,6 @@ mlp_block = Flowed(
     BlockGroup(Row(
         Anchor("mlp_entry", Box("Gated Linear\nLayer", vertical_text=True, fill=GLL)),
         Anchor("mlp_in", VectorTiles(15, color=ACT)),
-        TextBlock("Split into\nchunks", color="muted", align="center"),
         chunks_rows,
         update_stack,
         Anchor("mlp_plus", add()),
@@ -95,9 +94,14 @@ mlp_block = Flowed(
     flows=[
         # residual skip over the top: GLL output -> final +
         Flow("mlp_entry", "mlp_plus", src_side="top", dst_side="top"),
-        # mlp_in (activation vector) feeds the middle chunk; the dashed
-        # vertical control line threads through all three.
-        Flow("mlp_in", "chunk_i", src_side="right", dst_side="left"),
+        # mlp_in (activation vector) fans out to every chunk on a single
+        # labelled bus -- the shared spine reads as "split into chunks"
+        # once instead of repeating the label on each tap.
+        Bus(sources="mlp_in",
+            sinks=["chunk_im1", "chunk_i", "chunk_ip1"],
+            label="Split into chunks",
+            color="ink",
+            orientation="horizontal"),
         # Each chunk -> its W_down
         Flow("chunk_im1", "wdown_im1"),
         Flow("chunk_i",   "wdown_i"),

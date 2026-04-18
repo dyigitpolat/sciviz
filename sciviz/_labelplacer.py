@@ -56,6 +56,27 @@ def _overlap_area(a: Rect, b: Rect) -> float:
     return ox * oy
 
 
+def _min_clearance(rect: Rect, obstacles: Sequence[Rect]) -> float:
+    """Smallest L_inf distance from ``rect`` to any obstacle.
+
+    0.0 when some obstacle touches or overlaps.  Larger values mean the
+    label sits in more open space.  Used as a tie-breaker so the placer
+    prefers candidates that breathe instead of the first one it happens
+    to visit.
+    """
+    ax0, ay0, ax1, ay1 = rect
+    best = float("inf")
+    for bx0, by0, bx1, by1 in obstacles:
+        dx = max(bx0 - ax1, ax0 - bx1, 0.0)
+        dy = max(by0 - ay1, ay0 - by1, 0.0)
+        d = max(dx, dy)
+        if d < best:
+            best = d
+    if best == float("inf"):
+        return 1e9
+    return best
+
+
 def _lerp_point(p1: Point, p2: Point, t: float) -> Point:
     return (p1[0] + (p2[0] - p1[0]) * t,
             p1[1] + (p2[1] - p1[1]) * t)
@@ -77,24 +98,32 @@ def _rect_at(cx: float, cy: float, w: float, h: float) -> Rect:
 
 def _candidate_centers(
     segment: Segment, w: float, h: float, gap: float,
-) -> List[Tuple[Point, str]]:
-    """Generate (center, side) candidates at several fractions along the
-    segment, offset perpendicularly on each side.
+) -> List[Tuple[Point, str, bool]]:
+    """Generate (center, side, is_extrapolated) candidates along the
+    segment offset perpendicularly on each side.
+
+    Besides the seven in-range fractions we also emit two extrapolated
+    candidates just beyond each endpoint so that very short segments
+    (or segments flanked on both sides by tall neighbours) still have
+    a chance of finding an obstacle-free slot along the spine axis.
+    Extrapolated candidates are marked so the placer prefers in-range
+    candidates when multiple options share the same overlap/preference
+    score.
     """
     p1, p2 = segment
     is_horizontal = abs(p1[1] - p2[1]) <= abs(p1[0] - p2[0])
-    fracs = [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8]
-    out: List[Tuple[Point, str]] = []
-    # Axis-aligned offsets for horizontal and vertical segments.
-    # "above"/"below" use vertical offsets, "left"/"right" use horizontal.
-    for t in fracs:
+    in_range = [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8]
+    out_range = [-0.15, 1.15]
+    out: List[Tuple[Point, str, bool]] = []
+    for t in in_range + out_range:
         mid = _lerp_point(p1, p2, t)
+        extrap = t < 0.0 or t > 1.0
         if is_horizontal:
-            out.append(((mid[0], mid[1] - gap - h / 2), "above"))
-            out.append(((mid[0], mid[1] + gap + h / 2), "below"))
+            out.append(((mid[0], mid[1] - gap - h / 2), "above", extrap))
+            out.append(((mid[0], mid[1] + gap + h / 2), "below", extrap))
         else:
-            out.append(((mid[0] - gap - w / 2, mid[1]), "left"))
-            out.append(((mid[0] + gap + w / 2, mid[1]), "right"))
+            out.append(((mid[0] - gap - w / 2, mid[1]), "left", extrap))
+            out.append(((mid[0] + gap + w / 2, mid[1]), "right", extrap))
     return out
 
 
@@ -116,17 +145,24 @@ def place_label(
     """
     candidates = _candidate_centers(segment, label_w, label_h, gap)
 
-    best: Optional[Tuple[float, float, Rect, str]] = None
-    # Score tuple: (overlap_area, preference_penalty, distance_to_midpoint_sq)
+    # Score tuple:
+    #   (overlap_area,              # lower is better
+    #    extrapolated_penalty,      # lower is better (prefer in-range first)
+    #    preference_penalty,        # lower is better (0 if side == prefer)
+    #    -min_clearance,            # lower is better (more breathing room wins)
+    #    distance_to_midpoint_sq)   # lower is better (closer to spine centre)
+    best: Optional[Tuple[float, float, float, float, float, Rect, str]] = None
     p1, p2 = segment
     mid = _lerp_point(p1, p2, 0.5)
-    for (cx, cy), side in candidates:
+    for (cx, cy), side, extrap in candidates:
         rect = _rect_at(cx, cy, label_w, label_h)
         overlap = sum(_overlap_area(rect, ob) for ob in obstacles)
+        extrap_pen = 1 if extrap else 0
         pref_pen = 0 if side == prefer else 1
+        clearance = _min_clearance(rect, obstacles)
         d2 = (cx - mid[0]) ** 2 + (cy - mid[1]) ** 2
-        score = (overlap, pref_pen, d2)
-        if best is None or score < best[:3]:
-            best = (overlap, pref_pen, d2, rect, side)
+        score = (overlap, extrap_pen, pref_pen, -clearance, d2)
+        if best is None or score < best[:5]:
+            best = (overlap, extrap_pen, pref_pen, -clearance, d2, rect, side)
     assert best is not None
-    return best[3], "middle"
+    return best[5], "middle"

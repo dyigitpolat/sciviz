@@ -87,7 +87,15 @@ class Theme:
 
     # -- typography --------------------------------------------------------
     # A neutral sans family for labels, with serif math via the Math element.
-    font_family: str = "'Helvetica Neue', Helvetica, Arial, sans-serif"
+    # The stack includes several symbol-rich fallbacks ('DejaVu Sans',
+    # 'Lucida Sans Unicode', 'Apple Symbols') so that arrows / dingbats
+    # / mathematical symbols (e.g. '↻', '↯', '⇒') render even when the
+    # primary sans face on the host system does not cover the needed
+    # Unicode range.  PNG export uses resvg which performs glyph-level
+    # fallback through this stack automatically.
+    font_family: str = ("'Helvetica Neue', Helvetica, Arial, "
+                        "'DejaVu Sans', 'Lucida Sans Unicode', "
+                        "'Apple Symbols', sans-serif")
     font_mono: str = "'Inconsolata', 'Menlo', 'Consolas', monospace"
     font_serif: str = "'Computer Modern Serif', 'Latin Modern Roman', 'Times New Roman', serif"
 
@@ -202,7 +210,7 @@ class Theme:
 
     # semantic color name -> hex
     _COLOR_MAP = {
-        "text": "text", "dark": "text",
+        "text": "text", "dark": "text", "ink": "text",
         "muted": "text_muted", "light": "text_light", "faint": "text_faint",
         "inverse": "text_inverse", "white": "text_inverse",
         "primary": "primary", "primary_fill": "primary_fill",
@@ -434,6 +442,17 @@ def _xml_escape(s: str) -> str:
              .replace(">", "&gt;"))
 
 
+def _build_text_runs(content: str) -> str:
+    """XML-escape ``content`` for placement inside a ``<text>``.
+
+    PNG export uses ``resvg`` which performs glyph-level font
+    fallback across the author's ``font-family`` stack, so we can
+    simply emit the content verbatim and let the renderer pick a
+    face that covers each codepoint.
+    """
+    return _xml_escape(content)
+
+
 def _fmt(v: float) -> str:
     """Compact float formatting for SVG attributes."""
     if isinstance(v, int):
@@ -478,15 +497,13 @@ class Canvas:
             return self._marker_ids[key]
         mid = f"{name_hint}-{len(self._marker_ids)}"
         self._marker_ids[key] = mid
-        # refX=5 puts the triangle's CENTRE on the line endpoint, so the
-        # tip extends PAST the nominal endpoint (into the target) while
-        # the tail sits just outside.  This avoids the "floating
-        # arrowhead with a gap" artifact -- with refX=9 (tip at
-        # reference) the whole triangle parks OUTSIDE the target and
-        # the tip pixel gets absorbed by the target's own border
-        # stroke in rasterised output.
+        # refX=9 places the triangle tip on the line endpoint, so the
+        # whole head sits just OUTSIDE the target along the flow
+        # direction -- the head touches the target boundary without
+        # crossing into it.  This matches the convention of paper
+        # figures (arrowheads stop at the box edge, not inside it).
         self._defs.append(
-            f'<marker id="{mid}" viewBox="0 0 10 10" refX="5" refY="5" '
+            f'<marker id="{mid}" viewBox="0 0 10 10" refX="9" refY="5" '
             f'markerWidth="{_fmt(size)}" markerHeight="{_fmt(size)}" '
             f'orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="{color}"/></marker>'
         )
@@ -629,7 +646,8 @@ class Canvas:
             parts.append('dominant-baseline="hanging"')
         if opacity < 1.0:
             parts.append(f'opacity="{_fmt(opacity)}"')
-        self._body.append(f"<text {' '.join(parts)}>{_xml_escape(content)}</text>")
+        inner = _build_text_runs(content)
+        self._body.append(f"<text {' '.join(parts)}>{inner}</text>")
 
     def text_with_sub(self, x: float, y: float, base: str, sub: str, *,
                       size: float = 11.0, fill: str = "#0f172a",
@@ -642,9 +660,9 @@ class Canvas:
         if anchor != "start":
             parts.append(f'text-anchor="{anchor}"')
         self._body.append(
-            f"<text {' '.join(parts)}>{_xml_escape(base)}"
+            f"<text {' '.join(parts)}>{_build_text_runs(base)}"
             f'<tspan font-size="{_fmt(size*0.72)}" baseline-shift="sub">'
-            f'{_xml_escape(sub)}</tspan></text>'
+            f'{_build_text_runs(sub)}</tspan></text>'
         )
 
     def group_open(self, *, transform: Optional[str] = None,

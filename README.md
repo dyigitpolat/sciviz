@@ -114,7 +114,7 @@ should match, and you'll get the same hue.
 
 ## Gallery
 
-Fourteen showcase figures ship in `gallery/`, each under 60 lines.
+Twelve showcase figures ship in `gallery/`, each under 60 lines.
 
 | Diagram | Domain | Topic | Primary primitive |
 |---|---|---|---|
@@ -122,16 +122,14 @@ Fourteen showcase figures ship in `gallery/`, each under 60 lines.
 | `roofline.py` | perf-engineering | A100 FP16 roofline | `Scatter` (log-log + lines) |
 | `pipeline_parallelism.py` | ML systems | GPipe schedule | `Timeline` + `Palette.next` |
 | `paxos.py` | distributed | Two-phase consensus | `Sequence` (UML lifelines) |
-| `lsm_tree.py` | databases | Level compaction | `Strip(mode="equal")` |
 | `speculative_decoding.py` | ML inference | Draft + target protocol | `Tokens` (auto-aligned) |
-| `moe_routing.py` | ML systems | Top-k expert routing | `BipartiteGraph` |
 | `bplus_tree.py` | data structures | Linked leaves | `NodeTree` (15 lines!) |
 | `diffusion.py` | ML theory | Forward/reverse Markov chain | `Heatmap` |
 | `amortized_analysis.py` | algorithms | Doubling array push() | `Histogram` |
 | `crossbar_pruning.py` | ML hardware | Row/col pruning | `MeshArray` (grid + peripherals) |
-| `transformer_attention.py` | ML | Attention head + block | `AttentionHead` (example) |
-| `lora_adaptation.py` | ML | LoRA decomposition | `LoRA` (example) |
-| `quantization.py` | ML | PTQ rounding & footprint | `QuantBins` (example) |
+| `deepseek_v3.py` | ML systems | DeepSeek-V3 architecture | composed primitives |
+| `action_conditioning_modes.py` | ML | Action conditioning injection modes | composed primitives |
+| `ttt_mlp.py` | ML | In-place test-time training MLP | `Bus` + composed primitives |
 
 ## Math
 
@@ -182,5 +180,4 @@ theme = Theme().with_overrides(unit=8.0)  # partial customisation
 0.3.0 — paper-ready theme, `Palette` colour system, `Strip`/`Section`/
 `BlockGroup`/`LayeredGraph` structural primitives, `Heatmap`/`Histogram`/
 `MeshArray` general primitives, specialization moved to `examples/`,
-14 showcase figures spanning hardware, systems, databases, algorithms,
-theory, and ML.
+12 showcase figures spanning hardware, systems, algorithms, theory, and ML.

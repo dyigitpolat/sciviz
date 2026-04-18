@@ -159,8 +159,9 @@ class Diagram:
         The file type is inferred from the extension.  Supported:
 
         * ``.svg`` -- native SVG (always available)
-        * ``.pdf`` -- requires ``cairosvg``
-        * ``.png`` -- requires ``cairosvg``
+        * ``.png`` -- requires ``resvg-py`` (modern Rust renderer with
+          glyph-level font fallback).
+        * ``.pdf`` -- requires ``cairosvg``.
 
         Parameters
         ----------
@@ -179,27 +180,35 @@ class Diagram:
         if ext == ".svg":
             out.write_text(svg_source, encoding="utf-8")
             return out
-        if ext in (".pdf", ".png"):
+        if ext == ".png":
+            try:
+                import resvg_py  # type: ignore
+            except ImportError as e:
+                raise RuntimeError(
+                    "Exporting to .png requires resvg-py. "
+                    "Install with: pip install resvg-py"
+                ) from e
+            size = self.measure()
+            if scale is None:
+                scale = dpi / 96.0
+            data = resvg_py.svg_to_bytes(
+                svg_string=svg_source,
+                width=int(size.w * scale),
+                height=int(size.h * scale),
+            )
+            with open(out, "wb") as fh:
+                fh.write(bytes(data))
+            return out
+        if ext == ".pdf":
             try:
                 import cairosvg  # type: ignore
             except ImportError as e:
                 raise RuntimeError(
-                    f"Exporting to {ext} requires cairosvg. "
-                    f"Install with: pip install cairosvg"
+                    "Exporting to .pdf requires cairosvg. "
+                    "Install with: pip install cairosvg"
                 ) from e
             svg_bytes = svg_source.encode("utf-8")
-            if ext == ".pdf":
-                cairosvg.svg2pdf(bytestring=svg_bytes, write_to=str(out))
-            else:
-                size = self.measure()
-                if scale is None:
-                    scale = dpi / 96.0
-                cairosvg.svg2png(
-                    bytestring=svg_bytes,
-                    write_to=str(out),
-                    output_width=int(size.w * scale),
-                    output_height=int(size.h * scale),
-                )
+            cairosvg.svg2pdf(bytestring=svg_bytes, write_to=str(out))
             return out
         raise ValueError(
             f"Unsupported output extension {ext!r}. Use .svg, .pdf, or .png."

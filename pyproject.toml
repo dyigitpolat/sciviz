@@ -13,7 +13,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# PDF and PNG export (SVG works without this)
+# PNG export (fast, glyph-level font fallback via resvg)
+png = ["resvg-py>=0.3"]
+# PDF export (still uses cairosvg)
 pdf = ["cairosvg>=2.5"]
 
 [tool.setuptools.packages.find]

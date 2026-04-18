@@ -98,11 +98,19 @@ class Plan:
 
 @dataclass(frozen=True)
 class CrossPolicy:
-    """Tie-breakers for candidate selection."""
+    """Tie-breakers for candidate selection.
+
+    ``min_clearance`` is the preferred perpendicular distance between a
+    connector leg and any unrelated obstacle.  The planner first tries
+    to find a path that respects it (obstacles are inflated by this
+    much during validation); if none exists, it retries without the
+    inflation so a feasible route is always returned.
+    """
     min_tap: float = 1.0
     prefer_fewer_corners: bool = True
     corner_radius: float = 0.0
     tolerance: float = 0.5
+    min_clearance: float = 8.0
 
 
 DEFAULT_POLICY = CrossPolicy()
@@ -115,6 +123,7 @@ DEFAULT_POLICY = CrossPolicy()
 def plan_path(src: Endpoint, dst: Endpoint, *,
               anchors: Sequence[Box] = (),
               regions: Sequence[Box] = (),
+              existing_segments: Sequence[Tuple[float, float, float, float]] = (),
               policy: CrossPolicy = DEFAULT_POLICY) -> Plan:
     """Compute an orthogonal path from ``src`` to ``dst``.
 
@@ -129,16 +138,55 @@ def plan_path(src: Endpoint, dst: Endpoint, *,
     block the path on their own, but any boundary the path crosses must
     appear in the required-crossings set (= symmetric difference of the
     two endpoints' region ancestors).
+
+    ``existing_segments`` is an optional list of ``(x1, y1, x2, y2)``
+    polyline segments from earlier flows in the same Flowed scope.
+    The planner does not forbid crossing them, but uses the crossing
+    count as a secondary tiebreaker so it prefers paths that avoid
+    going over already-drawn connectors when the obstacle topology
+    allows it.
+
+    Routes connectors with ``policy.min_clearance`` of breathing room
+    between the path and every unrelated obstacle.  If no such path
+    exists, the function retries without the clearance so the caller
+    always gets a valid (possibly edge-grazing) route.
     """
+    clearance = max(0.0, policy.min_clearance)
+    if clearance > 0.0:
+        plan = _plan_path_impl(src, dst, anchors=anchors, regions=regions,
+                               existing_segments=existing_segments,
+                               policy=policy, obstacle_pad=clearance)
+        if plan is not None:
+            return plan
+    plan = _plan_path_impl(src, dst, anchors=anchors, regions=regions,
+                           existing_segments=existing_segments,
+                           policy=policy, obstacle_pad=0.0)
+    assert plan is not None, "planner failed to return a path"
+    return plan
+
+
+def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
+                    anchors: Sequence[Box],
+                    regions: Sequence[Box],
+                    existing_segments: Sequence[Tuple[float, float, float, float]],
+                    policy: CrossPolicy,
+                    obstacle_pad: float) -> Optional[Plan]:
     tol = policy.tolerance
 
     src_anchor = src.anchor
     dst_anchor = dst.anchor
 
-    obstacles: List[Box] = [a for a in anchors
-                            if a is not src_anchor and a is not dst_anchor
-                            and not _same_box(a, src_anchor)
-                            and not _same_box(a, dst_anchor)]
+    raw_obstacles: List[Box] = [a for a in anchors
+                                if a is not src_anchor and a is not dst_anchor
+                                and not _same_box(a, src_anchor)
+                                and not _same_box(a, dst_anchor)]
+    if obstacle_pad > 0.0:
+        obstacles = [Box(x=o.x - obstacle_pad, y=o.y - obstacle_pad,
+                         w=o.w + 2 * obstacle_pad, h=o.h + 2 * obstacle_pad,
+                         name=o.name, kind=o.kind)
+                     for o in raw_obstacles]
+    else:
+        obstacles = raw_obstacles
 
     src_side = _resolve_side(src_anchor, dst_anchor, src.side)
     dst_side = _resolve_side(dst_anchor, src_anchor, dst.side)
@@ -237,16 +285,49 @@ def plan_path(src: Endpoint, dst: Endpoint, *,
     # 3. Staircase fallback: exit tap, cross bridge, enter tap.  We
     #    enumerate multiple bridge candidates (free intervals) and pick
     #    whichever valid candidate has the shortest total length after
-    #    simplification.  This lets the router prefer an "up and over"
-    #    detour when a "down and under" detour would be equivalent in
-    #    corner count but runs closer to other anchors.
+    #    simplification.  A tiebreaker term counts how many existing
+    #    segments the candidate crosses -- paths that avoid going over
+    #    already-drawn connectors are preferred when length is similar.
+    def _count_crossings(cand: Sequence[Tuple[float, float]]) -> int:
+        if not existing_segments:
+            return 0
+        n = 0
+        for i in range(len(cand) - 1):
+            ax, ay = cand[i]; bx, by = cand[i + 1]
+            horiz = abs(ay - by) < tol
+            vert = abs(ax - bx) < tol
+            if horiz == vert:
+                continue
+            for (ex1, ey1, ex2, ey2) in existing_segments:
+                eh = abs(ey1 - ey2) < tol
+                ev = abs(ex1 - ex2) < tol
+                if eh == ev:
+                    continue
+                if horiz and ev:
+                    x_lo, x_hi = sorted((ax, bx))
+                    y_lo, y_hi = sorted((ey1, ey2))
+                    if x_lo < ex1 < x_hi and y_lo < ay < y_hi:
+                        n += 1
+                elif vert and eh:
+                    y_lo, y_hi = sorted((ay, by))
+                    x_lo, x_hi = sorted((ex1, ex2))
+                    if y_lo < ey1 < y_hi and x_lo < ax < x_hi:
+                        n += 1
+        return n
+
     def _score(cand: Sequence[Tuple[float, float]]) -> float:
-        total = 0.0
+        length = 0.0
         for i in range(len(cand) - 1):
             ax, ay = cand[i]
             bx, by = cand[i + 1]
-            total += abs(bx - ax) + abs(by - ay)
-        return total
+            length += abs(bx - ax) + abs(by - ay)
+        # Crossings are lexicographically more expensive than length
+        # by a wide margin: 10000 per crossing ensures that any path
+        # with 0 crossings beats any path with >= 1 crossing unless
+        # the zero-crossing path exceeds 10000 pixels, which never
+        # happens on a real diagram.  Among equally-crossed paths,
+        # shorter is still preferred.
+        return length + 10_000.0 * _count_crossings(cand)
 
     best_cand = None
     best_score = float("inf")
@@ -306,6 +387,11 @@ def plan_path(src: Endpoint, dst: Endpoint, *,
 
     if best_cand is not None:
         return Plan(best_cand, crossings, "staircase", src_side, dst_side)
+
+    # No clearance-respecting path exists: the caller will retry with
+    # obstacle_pad=0 so the user still gets a concrete route.
+    if obstacle_pad > 0.0:
+        return None
 
     # 4. Last-resort corridor: always emit *something* -- the caller
     #    prefers an ugly route over a missing arrow.
@@ -763,14 +849,15 @@ def _best_bridge_x_for_vertical_all(src_tap, dst_tap, obstacles,
 
 def _pick_closest_in_intervals(free: List[Tuple[float, float]],
                                 target: float, *,
-                                clearance: float = 6.0) -> float:
+                                clearance: float = 9.0) -> float:
     """Return the point inside ``free`` nearest to ``target``.
 
     For each interval, the closest interior point is the clamp of
     ``target`` to ``[a+clearance, b-clearance]``.  Clearance defaults to
-    6 px so bridge rows/columns sit a readable distance from obstacle
+    9 px so bridge rows/columns sit a readable distance from obstacle
     edges, not a single pixel off (which causes rendered strokes to
-    graze adjacent boxes).
+    graze adjacent boxes).  Raising this value pushes connectors
+    visibly further from surrounding content.
     """
     def candidate(iv):
         a, b = iv
@@ -897,11 +984,22 @@ def render_orthogonal(canvas, plan: Plan, *,
                        stroke: str, width: float,
                        dasharray: Optional[str] = None,
                        marker_end=None,
-                       src_dot: bool = True) -> List[Tuple[float, float, float, float]]:
+                       src_dot: bool = True,
+                       existing_segments: Optional[
+                           List[Tuple[float, float, float, float]]] = None,
+                       hop_radius: float = 3.0
+                       ) -> List[Tuple[float, float, float, float]]:
     """Draw ``plan`` as axis-aligned ``<line>`` segments.
 
-    Returns the list of segment rectangles ``(x0, y0, x1, y1)`` so a
-    caller can place a label without re-computing them.
+    ``existing_segments`` is an optional list of already-drawn
+    orthogonal segments ``(x1, y1, x2, y2)`` sharing the same canvas.
+    When a new segment crosses one of them perpendicularly, a small
+    semicircular "jump" arc (radius ``hop_radius``) is drawn around
+    the crossing point, matching the electronics-schematic convention
+    for wire-crossings.
+
+    Returns the list of segment bounding rectangles so callers can
+    place labels without re-computing them.
     """
     pts = plan.waypoints
     if len(pts) < 2:
@@ -911,18 +1009,144 @@ def render_orthogonal(canvas, plan: Plan, *,
     for i in range(last + 1):
         x1, y1 = pts[i]
         x2, y2 = pts[i + 1]
-        attrs = {"stroke": stroke, "stroke_width": width}
-        if dasharray:
-            attrs["dasharray"] = dasharray
-        if marker_end is not None and i == last:
-            attrs["marker_end"] = marker_end
-        canvas.line(x1, y1, x2, y2, **attrs)
+        _draw_orthogonal_segment_with_hops(
+            canvas, x1, y1, x2, y2,
+            stroke=stroke, width=width,
+            dasharray=dasharray,
+            marker_end=marker_end if i == last else None,
+            existing_segments=existing_segments or [],
+            hop_radius=hop_radius,
+        )
         rects.append((min(x1, x2) - width, min(y1, y2) - width,
                        max(x1, x2) + width, max(y1, y2) + width))
     if src_dot:
         sx, sy = pts[0]
         canvas.circle(sx, sy, r=width * 1.4, fill=stroke, stroke="none")
     return rects
+
+
+def _draw_orthogonal_segment_with_hops(
+        canvas, x1: float, y1: float, x2: float, y2: float, *,
+        stroke: str, width: float,
+        dasharray: Optional[str],
+        marker_end,
+        existing_segments: Sequence[Tuple[float, float, float, float]],
+        hop_radius: float) -> None:
+    """Draw a single orthogonal segment, jumping over perpendicular
+    crossings with existing segments via small semicircular arcs.
+
+    When the segment is purely horizontal or vertical we look for
+    perpendicular existing segments that cross it in the interior,
+    emit straight sub-segments between the crossings, and replace
+    each crossing with a half-circle arc that visually hops above
+    the existing wire.  For diagonal or degenerate segments we fall
+    back to a plain straight line.
+    """
+    horizontal = abs(y1 - y2) < 0.5
+    vertical = abs(x1 - x2) < 0.5
+    if not (horizontal or vertical) or horizontal == vertical:
+        _emit_line(canvas, x1, y1, x2, y2,
+                   stroke=stroke, width=width,
+                   dasharray=dasharray, marker_end=marker_end)
+        return
+
+    crossings: List[float] = []
+    # min inner margin so a crossing near an endpoint doesn't swallow the
+    # arrowhead or create a half-arc stranded at the corner.
+    inset = max(2.0, hop_radius * 1.5)
+    if horizontal:
+        y = y1
+        lo, hi = (min(x1, x2), max(x1, x2))
+        for (ex1, ey1, ex2, ey2) in existing_segments:
+            ev = abs(ex1 - ex2) < 0.5
+            eh = abs(ey1 - ey2) < 0.5
+            if ev and not eh:
+                ey_lo, ey_hi = sorted((ey1, ey2))
+                ex = ex1
+                if ey_lo < y - 0.5 < ey_hi - 0.5 or ey_lo + 0.5 < y < ey_hi:
+                    if lo + inset <= ex <= hi - inset:
+                        crossings.append(ex)
+        crossings.sort(reverse=(x1 > x2))
+    else:
+        x = x1
+        lo, hi = (min(y1, y2), max(y1, y2))
+        for (ex1, ey1, ex2, ey2) in existing_segments:
+            eh = abs(ey1 - ey2) < 0.5
+            ev = abs(ex1 - ex2) < 0.5
+            if eh and not ev:
+                ex_lo, ex_hi = sorted((ex1, ex2))
+                ey = ey1
+                if ex_lo < x - 0.5 < ex_hi - 0.5 or ex_lo + 0.5 < x < ex_hi:
+                    if lo + inset <= ey <= hi - inset:
+                        crossings.append(ey)
+        crossings.sort(reverse=(y1 > y2))
+
+    if not crossings:
+        _emit_line(canvas, x1, y1, x2, y2,
+                   stroke=stroke, width=width,
+                   dasharray=dasharray, marker_end=marker_end)
+        return
+
+    # Build the sub-path: M start, L to crossing_a-r, A arc over,
+    # L to crossing_b-r, A arc over, ..., L to end.  All arcs sweep
+    # to the "forward" side of the line so the hop visibly arches
+    # over the existing wire.
+    sign_x = 1.0 if x2 >= x1 else -1.0
+    sign_y = 1.0 if y2 >= y1 else -1.0
+    pieces = [f"M {x1:.2f},{y1:.2f}"]
+    if horizontal:
+        y = y1
+        # Bow the arc upward if the line is roughly in the top half of
+        # the canvas; below otherwise.  We pick a consistent side
+        # (upwards) so all hops read as "jump over" in one direction.
+        arc_sweep = 0  # 0 means counter-clockwise for upward bow with
+                         # positive x direction (SVG y is down)
+        cx_prev = x1
+        for cx in crossings:
+            line_end = cx - sign_x * hop_radius
+            pieces.append(f"L {line_end:.2f},{y:.2f}")
+            arc_end = cx + sign_x * hop_radius
+            # Large-arc=0, sweep flag chosen so arc bows upward
+            # (smaller-y).  With positive sign_x, sweep=0 draws
+            # counterclockwise = upward.
+            sweep = 0 if sign_x > 0 else 1
+            pieces.append(
+                f"A {hop_radius:.2f},{hop_radius:.2f} 0 0 {sweep} "
+                f"{arc_end:.2f},{y:.2f}")
+            cx_prev = arc_end
+        pieces.append(f"L {x2:.2f},{y2:.2f}")
+    else:
+        x = x1
+        for cy in crossings:
+            line_end = cy - sign_y * hop_radius
+            pieces.append(f"L {x:.2f},{line_end:.2f}")
+            arc_end = cy + sign_y * hop_radius
+            # Bow the arc to the "right" side (increasing x) when
+            # travelling down; to the left when travelling up.
+            sweep = 1 if sign_y > 0 else 0
+            pieces.append(
+                f"A {hop_radius:.2f},{hop_radius:.2f} 0 0 {sweep} "
+                f"{x:.2f},{arc_end:.2f}")
+        pieces.append(f"L {x2:.2f},{y2:.2f}")
+
+    d = " ".join(pieces)
+    attrs = {"stroke": stroke, "fill": "none", "stroke_width": width}
+    if dasharray:
+        attrs["dasharray"] = dasharray
+    if marker_end is not None:
+        attrs["marker_end"] = marker_end
+    canvas.path(d, **attrs)
+
+
+def _emit_line(canvas, x1: float, y1: float, x2: float, y2: float, *,
+               stroke: str, width: float,
+               dasharray: Optional[str], marker_end) -> None:
+    attrs = {"stroke": stroke, "stroke_width": width}
+    if dasharray:
+        attrs["dasharray"] = dasharray
+    if marker_end is not None:
+        attrs["marker_end"] = marker_end
+    canvas.line(x1, y1, x2, y2, **attrs)
 
 
 def render_curved(canvas, plan: Plan, *,
