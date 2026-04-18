@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sciviz"
+description = "Opinionated, compositional diagrams for scientific ML papers"
+readme = "README.md"
+requires-python = ">=3.10"
+dynamic = ["version"]
+dependencies = [
+    "matplotlib>=3.5",
+]
+
+[project.optional-dependencies]
+# PDF and PNG export (SVG works without this)
+pdf = ["cairosvg>=2.5"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sciviz*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "sciviz.__version__" }

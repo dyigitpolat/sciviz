@@ -148,12 +148,25 @@ Not supported: `\underbrace`, tikz, environments beyond inline math.
 
 ## Installation
 
+From a clone of this repository (recommended for development):
+
 ```bash
-pip install matplotlib   # for Math
-pip install cairosvg     # for PDF/PNG export (SVG works without it)
+./scripts/bootstrap.sh   # creates .venv, installs sciviz editable + PDF/PNG deps
+source .venv/bin/activate
 ```
 
-No other runtime dependencies.
+Or install manually:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -U pip
+pip install -e ".[pdf]"      # omit [pdf] if you only need SVG; add for PDF/PNG
+```
+
+After you build and publish a wheel or sdist, consumers can run `pip install sciviz` (or `pip install 'sciviz[pdf]'`) the same way.
+
+Runtime: **matplotlib** (required for `Math` and layouts). **cairosvg** is only needed for PDF/PNG export; SVG does not use it.
 
 ## Theme
 
