@@ -77,7 +77,10 @@ class Grid(Element):
         self.trailer = trailer
         self.row_gap = row_gap
         self.col_gap = col_gap
-        self.panel_color = panel_color if panel_color is not None else Palette.literal("#9aa7b5")
+        # The ``panel_soft`` theme token resolves to a soft blue-gray that
+        # reads as a paper "module outline".  Using a theme-driven default
+        # means a new theme can recolor every panel by swapping one token.
+        self.panel_color = panel_color if panel_color is not None else "panel_soft"
         self.column_flow = column_flow
         # Auto-flow arrows are skipped when the DESTINATION row (the upper
         # row, in "up" flow) is in this list.  Use this when a downstream
@@ -113,6 +116,17 @@ class Grid(Element):
     def _panel_of(self, col: Dict[GridKey, Any]) -> Optional[str]:
         return col.get("_panel")
 
+    def _anchor_bbox(self, elem: Element, theme: Theme):
+        """Return ``(anchor_x, anchor_y, anchor_w, anchor_h)`` in the element's
+        local frame.  Prefers :meth:`primary_anchor_bbox`; falls back to
+        the full measure bbox so plain elements keep their old centering.
+        """
+        pa = elem.primary_anchor_bbox(theme)
+        if pa is not None:
+            return pa
+        b = elem.measure(theme)
+        return (0.0, 0.0, b.w, b.h)
+
     def _layout(self, theme: Theme):
         n_rows = len(self.rows)
         n_cols = len(self.columns)
@@ -121,13 +135,25 @@ class Grid(Element):
 
         col_cells = [self._resolve_column(c) for c in self.columns]
 
-        col_widths = [0.0] * n_cols
+        # Per column, compute how much width the cells want to occupy
+        # LEFT of the column axis vs RIGHT of it.  The "axis" is the
+        # horizontal center of each cell's primary anchor (or the whole
+        # element for cells without a primary anchor).
+        col_axis_left = [0.0] * n_cols
+        col_axis_right = [0.0] * n_cols
         for c in range(n_cols):
             for r in range(n_rows):
                 cell = col_cells[c][r]
-                if cell is not None:
-                    elem, _ = cell
-                    col_widths[c] = max(col_widths[c], elem.measure(theme).w)
+                if cell is None:
+                    continue
+                elem, _ = cell
+                e_w = elem.measure(theme).w
+                ax, _ay, aw, _ah = self._anchor_bbox(elem, theme)
+                axis_cx = ax + aw / 2
+                col_axis_left[c] = max(col_axis_left[c], axis_cx)
+                col_axis_right[c] = max(col_axis_right[c], e_w - axis_cx)
+
+        col_widths = [col_axis_left[c] + col_axis_right[c] for c in range(n_cols)]
 
         row_heights = [0.0] * n_rows
         for r in range(n_rows):
@@ -154,7 +180,7 @@ class Grid(Element):
                             for i in range(r, r + span):
                                 row_heights[i] += per
 
-        return col_widths, row_heights, col_cells
+        return col_widths, row_heights, col_cells, col_axis_left
 
     # ---- measure / render ------------------------------------------------
 
@@ -186,7 +212,7 @@ class Grid(Element):
         return label_h + theme.unit * 0.7, theme.unit * 0.7
 
     def measure(self, theme: Theme) -> BBox:
-        col_widths, row_heights, _ = self._layout(theme)
+        col_widths, row_heights, _, _ = self._layout(theme)
         row_gap = self._gap(theme, self.row_gap)
         col_gap = self._gap(theme, self.col_gap)
         top_pad, bot_pad = self._panel_overhead(theme)
@@ -205,7 +231,7 @@ class Grid(Element):
         return BBox(w, h)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
-        col_widths, row_heights, col_cells = self._layout(theme)
+        col_widths, row_heights, col_cells, col_axis_left = self._layout(theme)
         row_gap = self._gap(theme, self.row_gap)
         col_gap = self._gap(theme, self.col_gap)
         top_pad, bot_pad = self._panel_overhead(theme)
@@ -297,13 +323,19 @@ class Grid(Element):
                 )
 
         # --- cells -------------------------------------------------------
+        # Every column has an *axis* x (``col_xs[c] + col_axis_left[c]``).
+        # Cell elements are positioned so that the center of their primary
+        # anchor (or full bbox, for plain cells) sits on that axis.  This
+        # lets composites like ``Labeled(box, side_label)`` spill the side
+        # label into the inter-column gap while keeping the box on-axis
+        # with plain boxes in the same column.
         for c in range(len(self.columns)):
+            axis_x = col_xs[c] + col_axis_left[c]
             for r in range(len(self.rows)):
                 cell = col_cells[c][r]
                 if cell is None:
                     continue
                 elem, span = cell
-                cell_x = col_xs[c]
                 cell_y = row_ys[r]
                 cell_w = col_widths[c]
                 if span == 1:
@@ -312,7 +344,9 @@ class Grid(Element):
                     cell_h = (sum(row_heights[r:r + span])
                               + row_gap * (span - 1))
                 e_bbox = elem.measure(theme)
-                ex = cell_x + (cell_w - e_bbox.w) / 2
+                ax, _ay, aw, _ah = self._anchor_bbox(elem, theme)
+                axis_cx_in_elem = ax + aw / 2
+                ex = axis_x - axis_cx_in_elem
                 ey = cell_y + (cell_h - e_bbox.h) / 2
                 elem.render(canvas, ex, ey, theme)
 
@@ -330,27 +364,29 @@ class Grid(Element):
             arrow_marker = canvas.define_arrow_marker(
                 color=text_col, stroke_width=sw, name_hint="colflow")
             for c in range(len(self.columns)):
-                # Collect rendered (top_y, bot_y, centre_x, row_index)
+                axis_x = col_xs[c] + col_axis_left[c]
+                # Collect rendered (top_y, bot_y, centre_x, row_index).
+                # ``centre_x`` is the column axis x, so auto-flow arrows
+                # line up on the SAME vertical axis as the cells' anchors.
                 rendered = []
                 for r in range(len(self.rows)):
                     cell = col_cells[c][r]
                     if cell is None:
                         continue
                     elem, span = cell
-                    cell_x = col_xs[c]
                     cell_y = row_ys[r]
-                    cell_w = col_widths[c]
                     cell_h = (row_heights[r] if span == 1
                               else sum(row_heights[r:r + span])
                                    + row_gap * (span - 1))
                     e_bbox = elem.measure(theme)
-                    ex = cell_x + (cell_w - e_bbox.w) / 2
+                    ax, _ay, aw, _ah = self._anchor_bbox(elem, theme)
+                    axis_cx_in_elem = ax + aw / 2
+                    ex = axis_x - axis_cx_in_elem
                     ey = cell_y + (cell_h - e_bbox.h) / 2
                     # For a span cell, the "row index" that represents this
                     # cell is its first-row (for "up" flow, arrows to cells
                     # above should attach at the top of the span).
-                    rendered.append((ey, ey + e_bbox.h,
-                                     cell_x + cell_w / 2,
+                    rendered.append((ey, ey + e_bbox.h, axis_x,
                                      r, r + span - 1))
                 # Draw arrow between each adjacent pair (i, i+1)
                 for i in range(len(rendered) - 1):

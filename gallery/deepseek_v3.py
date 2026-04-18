@@ -10,27 +10,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sciviz import (Diagram, Row, Box, Text, Anchor, Flow, Flowed, Bus,
-                    Grid, Framed, Labeled, Palette, StackedBoxes)
+                    Grid, Labeled, StackedBoxes, TokenRow)
 from sciviz.math import Math
 
-# -- paper-faithful identity colours ----------------------------------------
-PROC   = Palette.literal("#fbe5a8")
-SHARED = Palette.literal("#c1e1c1")
-TOKEN_BG = Palette.literal("#ececec")
-
-# -- atoms -------------------------------------------------------------------
-def toks(*ts):
-    """Token row with light-gray rounded container."""
-    return Framed(
-        Row(*[Text(t, size="tiny", italic=True) for t in ts]),
-        bg=TOKEN_BG, border=TOKEN_BG, padding="xs",
-    )
 
 def proc(label, sub=None):
-    return Box(label, fill=PROC, text_size="small", sub_label=sub, sub_color="muted")
+    return Box(label, fill="accent_proc", text_size="small",
+               sub_label=sub, sub_color="muted_label")
 
 def shared(label, sub=None):
-    return Box(label, fill=SHARED, text_size="small", sub_label=sub, sub_color="muted")
+    return Box(label, fill="accent_shared", text_size="small",
+               sub_label=sub, sub_color="muted_label")
 
 def loss_math(name, sup=None):
     """LaTeX loss symbol: L_Main or L_MTP^k (no author-side arrow glyph)."""
@@ -38,34 +28,31 @@ def loss_math(name, sup=None):
         latex = rf"\mathcal{{L}}_{{\text{{{name}}}}}"
     else:
         latex = rf"\mathcal{{L}}_{{\text{{{name}}}}}^{{{sup}}}"
-    return Math(latex, size="label")
+    return Math(latex)
 
-# ---------------------------------------------------------------------------
-# TOP STRIP: Main Model + 3 MTP Modules as aligned parallel columns
-# ---------------------------------------------------------------------------
 
 ROW_ORDER = ["target", "ce", "out", "tf", "proj", "rms", "emb", "input"]
 
 def main_column():
     return {
         "_panel": "Main Model\n(Next Token Prediction)",
-        "target": toks("t\u2082", "t\u2083", "t\u2084", "t\u2085"),
+        "target": TokenRow(2, 3, 4, 5),
         "ce":     Labeled(Anchor("main_ce", proc("Cross-Entropy Loss", sub="FP32")),
                           loss_math("Main")),
         "out":    Anchor("main_out", shared("Output Head", sub="BF16")),
         ("tf", "proj", "rms"):
                   Anchor("main_tf",  StackedBoxes(4, "Transformer Block \u00d7 L",
-                                                   fill=PROC)),
+                                                   fill="accent_proc")),
         "emb":    Anchor("main_emb", shared("Embedding Layer", sub="BF16")),
-        "input":  toks("t\u2081", "t\u2082", "t\u2083", "t\u2084"),
+        "input":  TokenRow(1, 2, 3, 4),
     }
 
-def mtp_column(k, input_toks, target_toks):
+def mtp_column(k, input_indices, target_indices):
     panel_label = f"MTP Module {k}\n(Next\u207f Token Prediction)".replace(
         "\u207f", {1: "\u00b2", 2: "\u00b3", 3: "\u2074"}[k])
     return {
         "_panel": panel_label,
-        "target": toks(*target_toks),
+        "target": TokenRow(*target_indices),
         "ce":     Labeled(Anchor(f"mtp{k}_ce", proc("Cross-Entropy Loss", sub="FP32")),
                           loss_math("MTP", sup=str(k))),
         "out":    Anchor(f"mtp{k}_out",  shared("Output Head", sub="BF16")),
@@ -78,7 +65,7 @@ def mtp_column(k, input_toks, target_toks):
         "rms":    Row(Anchor(f"mtp{k}_rn_l", proc("RMSNorm", sub="FP32")),
                       Anchor(f"mtp{k}_rn_r", proc("RMSNorm", sub="FP32"))),
         "emb":    Anchor(f"mtp{k}_emb",  shared("Embedding Layer", sub="BF16")),
-        "input":  toks(*input_toks),
+        "input":  TokenRow(*input_indices),
     }
 
 top_strip = Flowed(
@@ -87,12 +74,9 @@ top_strip = Flowed(
         row_labels={"target": "Target Tokens", "input": "Input Tokens"},
         columns=[
             main_column(),
-            mtp_column(1, ("t\u2082","t\u2083","t\u2084","t\u2085"),
-                          ("t\u2083","t\u2084","t\u2085","t\u2086")),
-            mtp_column(2, ("t\u2083","t\u2084","t\u2085","t\u2086"),
-                          ("t\u2084","t\u2085","t\u2086","t\u2087")),
-            mtp_column(3, ("t\u2084","t\u2085","t\u2086","t\u2087"),
-                          ("t\u2085","t\u2086","t\u2087","t\u2088")),
+            mtp_column(1, (2, 3, 4, 5), (3, 4, 5, 6)),
+            mtp_column(2, (3, 4, 5, 6), (4, 5, 6, 7)),
+            mtp_column(3, (4, 5, 6, 7), (5, 6, 7, 8)),
         ],
         trailer=Text("\u2026", size="2xl", color="muted", weight="700"),
         column_flow="up",
@@ -124,9 +108,6 @@ top_strip = Flowed(
     ],
 )
 
-# ---------------------------------------------------------------------------
-# Compose
-# ---------------------------------------------------------------------------
 
 d = Diagram(
     title="DeepSeek-V3 architecture  (top strip)",

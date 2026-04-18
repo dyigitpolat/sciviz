@@ -135,7 +135,7 @@ class Math(Element):
     """
 
     def __init__(self, latex: str, *,
-                 size: Union[str, float] = "label",
+                 size: Union[str, float] = "math",
                  color: str = "text",
                  bold: bool = False,
                  scale: float = 1.0):

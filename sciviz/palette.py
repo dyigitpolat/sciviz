@@ -117,6 +117,18 @@ class _PaletteMeta(type):
     @property
     def gray(cls):    return ColorRef(named="gray")
 
+    # Paper-faithful architecture accents (saturated pastels).  Each one
+    # resolves via the theme so a future theme swap can recolor every
+    # architecture diagram by changing a single value.
+    @property
+    def accent_proc(cls):   return ColorRef(named="accent_proc")
+    @property
+    def accent_shared(cls): return ColorRef(named="accent_shared")
+    @property
+    def panel_soft(cls):    return ColorRef(named="panel_soft")
+    @property
+    def muted_label(cls):   return ColorRef(named="muted_label")
+
 
 class Palette(metaclass=_PaletteMeta):
     """Semantic colour API.
@@ -208,6 +220,13 @@ _PAPER_NAMED = {
     "purple": "#7c3aed",
     "pink":   "#be185d",
     "gray":   "#4b5563",
+    # Paper-faithful architecture accents.  Values are duplicated in
+    # :class:`Theme` so both ``Theme.color_of("accent_proc")`` and
+    # ``Palette.accent_proc`` resolve to the same hex.
+    "accent_proc":   "#fbe5a8",
+    "accent_shared": "#c1e1c1",
+    "panel_soft":    "#c0cbd7",
+    "muted_label":   "#475569",
 }
 
 # Named hues, slides version (more vivid)
@@ -225,6 +244,11 @@ _SLIDES_NAMED = {
     "purple": "#a855f7",
     "pink":   "#ec4899",
     "gray":   "#64748b",
+    # slides overrides: richer saturation
+    "accent_proc":   "#fcd34d",
+    "accent_shared": "#86efac",
+    "panel_soft":    "#94a3b8",
+    "muted_label":   "#334155",
 }
 
 # Categorical palette (used by Palette.next()) for paper

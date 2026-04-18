@@ -561,6 +561,18 @@ class Anchor(Element):
         return BBox(b.w + self.margin_left + self.margin_right,
                     b.h + self.margin_top + self.margin_bottom)
 
+    def content_bbox(self, theme: Theme):
+        """The inner child bbox, excluding margins.  Layout containers use
+        this to align siblings on their *content* box, not on the
+        margin-inflated outer box -- so asymmetric flow-margin bumps
+        don't shift the rendered child.
+        """
+        b = self.child.measure(theme)
+        return (self.margin_left, self.margin_top, b.w, b.h)
+
+    def primary_anchor_bbox(self, theme: Theme):
+        return self.content_bbox(theme)
+
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         b = self.child.measure(theme)
         child_x = x + self.margin_left
@@ -886,6 +898,7 @@ class Flow:
                     simplified.append(p)
             path = simplified
 
+            seg_rects = []  # collect each drawn segment as an obstacle rect
             for i in range(len(path) - 1):
                 x1, y1 = path[i]
                 x2, y2 = path[i + 1]
@@ -896,8 +909,54 @@ class Flow:
                 if self.arrow and is_last:
                     attrs["marker_end"] = marker
                 canvas.line(x1, y1, x2, y2, **attrs)
+                seg_rects.append((min(x1, x2) - sw, min(y1, y2) - sw,
+                                  max(x1, x2) + sw, max(y1, y2) + sw))
             canvas.circle(sx, sy, r=theme.connector * 1.4,
                           fill=col, stroke="none")
+            if self.label:
+                # Pick the LONGEST horizontal segment (the bridge) as the
+                # label spine.  If no horizontal segment exists, use the
+                # first segment.  Label avoids every other drawn segment
+                # plus any sibling-anchor bbox we've already collected.
+                best_seg = None
+                best_len = -1.0
+                for i in range(len(path) - 1):
+                    x1, y1 = path[i]
+                    x2, y2 = path[i + 1]
+                    if abs(y2 - y1) < 0.5:  # horizontal
+                        L = abs(x2 - x1)
+                        if L > best_len:
+                            best_len = L
+                            best_seg = ((x1, y1), (x2, y2))
+                if best_seg is None:
+                    best_seg = (path[0], path[1])
+                from ._labelplacer import place_label
+                sz_tok = "small"
+                sz = theme.size_px(sz_tok)
+                lbl_w = theme.text_width(self.label, sz_tok, bold=False)
+                lbl_h = theme.text_height(sz_tok)
+                # Obstacles: sibling anchor bboxes + drawn segments
+                # (except the spine we're labeling).
+                all_anchor_obstacles = [
+                    (ox, oy, ox + ow, oy + oh)
+                    for ox, oy, ow, oh in anchor_obstacles
+                ]
+                # segments as thin rects but skip the spine itself
+                spine_mid_y = (best_seg[0][1] + best_seg[1][1]) / 2
+                seg_obs = [r for r in seg_rects
+                           if not (r[1] <= spine_mid_y <= r[3]
+                                   and abs(r[3] - r[1]) < 2 * sw + 1)]
+                rect, anchor = place_label(
+                    segment=best_seg, label_w=lbl_w, label_h=lbl_h,
+                    obstacles=all_anchor_obstacles + seg_obs,
+                    prefer="above",
+                    gap=theme.unit * 0.4,
+                )
+                x0, y0, x1r, y1r = rect
+                mx = (x0 + x1r) / 2
+                baseline_y = (y0 + y1r) / 2 + sz * 0.33
+                canvas.text(mx, baseline_y, self.label,
+                            size=sz, fill=col, italic=True, anchor=anchor)
             return
 
         # Explicit straight line: render as M/L so the tangent is the line
@@ -1036,6 +1095,16 @@ class Labeled(Element):
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         self._get(theme).render(canvas, x, y, theme)
+
+    def primary_anchor_bbox(self, theme: Theme):
+        """Expose the *source* box as the primary anchor so Grid centers
+        on the box, not on the whole ``box + arrow + label`` composite.
+        """
+        src_b = self.source.measure(theme)
+        return (0.0, 0.0, src_b.w, src_b.h)
+
+    def content_bbox(self, theme: Theme):
+        return self.primary_anchor_bbox(theme)
 
 
 class Flowed(Element):
@@ -1466,7 +1535,7 @@ class Bus:
     def __init__(self, sources, sinks, *,
                  label: Optional[str] = None,
                  dashed: bool = False,
-                 color = "muted",
+                 color = "muted_label",
                  arrow: bool = True):
         self.sources = [sources] if isinstance(sources, str) else list(sources)
         self.sinks   = [sinks]   if isinstance(sinks,   str) else list(sinks)
@@ -1474,6 +1543,41 @@ class Bus:
         self.dashed = dashed
         self.color = color
         self.arrow = arrow
+
+    def _draw_placed_label(self, canvas: Canvas, theme: Theme,
+                           segment, obstacles, *, color: str,
+                           size_token: str = "tiny",
+                           prefer: str = "above",
+                           mask_bg: bool = False) -> None:
+        """Place ``self.label`` on ``segment`` avoiding ``obstacles``.
+
+        Uses the geometric label placer so the label dodges structural
+        lines (T-bars, taps, other boxes).  When ``mask_bg`` is True, a
+        white rectangle is drawn behind the label so a dashed line
+        reads as passing cleanly behind the text.
+        """
+        if not self.label:
+            return
+        from ._labelplacer import place_label
+        sz = theme.size_px(size_token)
+        lbl_w = theme.text_width(self.label, size_token, bold=False)
+        lbl_h = theme.text_height(size_token)
+        rect, anchor = place_label(
+            segment=segment, label_w=lbl_w, label_h=lbl_h,
+            obstacles=list(obstacles), prefer=prefer,
+            gap=theme.unit * 0.35,
+        )
+        x0, y0, x1, y1 = rect
+        if mask_bg:
+            bg_pad = theme.unit * 0.25
+            canvas.rect(x0 - bg_pad, y0 - bg_pad,
+                        (x1 - x0) + 2 * bg_pad,
+                        (y1 - y0) + 2 * bg_pad,
+                        fill=theme.color_of("bg"), stroke="none")
+        mx = (x0 + x1) / 2
+        baseline_y = (y0 + y1) / 2 + sz * 0.33
+        canvas.text(mx, baseline_y, self.label, size=sz, fill=color,
+                    italic=True, anchor=anchor)
 
     def _render(self, canvas: Canvas, theme: Theme, registry: dict) -> None:
         src_boxes = [registry[n] for n in self.sources if n in registry]
@@ -1487,6 +1591,12 @@ class Bus:
         marker = (canvas.define_arrow_marker(color=col, stroke_width=sw,
                                              name_hint="bus")
                   if self.arrow else None)
+
+        # Filter out routing-region pseudo-entries from the obstacle
+        # list: those are bbox regions registered by Grid panels, not
+        # real drawn boxes, and must not block label placement.
+        box_obstacles = [(b[0], b[1], b[0] + b[2], b[1] + b[3])
+                         for b in (src_boxes + dst_boxes)]
 
         all_boxes = src_boxes + dst_boxes
         centres_y = [b[1] + b[3] / 2 for b in all_boxes]
@@ -1504,22 +1614,21 @@ class Bus:
                             stroke=col, stroke_width=sw,
                             dasharray=dasharray)
             if self.label:
-                sz = theme.size_px("tiny")
-                lbl_w_full = theme.text_width(self.label, "tiny")
-                bg_pad = theme.unit * 0.3
                 for b_left, b_right in zip(sorted_boxes, sorted_boxes[1:]):
-                    mx = (b_left[0] + b_left[2] + b_right[0]) / 2
-                    # White mask behind label so the dashed line reads as
-                    # passing cleanly behind the text.
-                    canvas.rect(mx - lbl_w_full / 2 - bg_pad,
-                               mid_y - sz * 0.55,
-                               lbl_w_full + 2 * bg_pad,
-                               sz * 0.9,
-                               fill=theme.color_of("bg"),
-                               stroke="none")
-                    canvas.text(mx, mid_y + sz * 0.35,
-                               self.label, size=sz, fill=col,
-                               italic=True, anchor="middle")
+                    x_from = b_left[0] + b_left[2]
+                    x_to   = b_right[0]
+                    # Place on the centred line gap; mask the dashed line
+                    # behind the label.  The placer chooses above/below
+                    # automatically based on which side has more room.
+                    self._draw_placed_label(
+                        canvas, theme,
+                        segment=((x_from, mid_y), (x_to, mid_y)),
+                        obstacles=box_obstacles,
+                        color=col,
+                        size_token="tiny",
+                        prefer="above",
+                        mask_bg=True,
+                    )
             return
 
         # Otherwise fan-out/fan-in: one-side (sources or sinks) is clustered,
@@ -1557,16 +1666,24 @@ class Bus:
             # from the centre of that bar goes all the way to the sink.
             is_fan_in = len(dst_boxes) == 1 and len(src_boxes) > 1
             src_taps_x = [src_edge(b)[0] for b in src_boxes]
-            dst_taps_x = [dst_edge(b)[0] for b in dst_boxes]
 
+            line_obstacles = []  # drawn line rects we'll want to avoid
             for b in src_boxes:
                 px, py = src_edge(b)
                 canvas.line(px, py, px, spine_y,
                             stroke=col, stroke_width=sw, dasharray=dasharray)
+                # tap obstacle: thin vertical stripe, sw wide
+                y_lo, y_hi = min(py, spine_y), max(py, spine_y)
+                line_obstacles.append((px - sw, y_lo, px + sw, y_hi))
             if is_fan_in:
                 x0 = min(src_taps_x); x1 = max(src_taps_x)
                 canvas.line(x0, spine_y, x1, spine_y,
                             stroke=col, stroke_width=sw, dasharray=dasharray)
+                # T-bar obstacle -- pad it by half a text-line's height so
+                # the placer never places a label flush against it.
+                bar_pad = theme.unit * 0.5
+                line_obstacles.append((x0, spine_y - bar_pad,
+                                       x1, spine_y + bar_pad))
                 bar_mid_x = (x0 + x1) / 2
                 dpx, dpy = dst_edge(dst_boxes[0])
                 attrs = {"stroke": col, "stroke_width": sw}
@@ -1575,26 +1692,25 @@ class Bus:
                 if self.arrow:
                     attrs["marker_end"] = marker
                 canvas.line(bar_mid_x, spine_y, dpx, dpy, **attrs)
+                # sink arrow obstacle
+                y_lo, y_hi = min(spine_y, dpy), max(spine_y, dpy)
+                line_obstacles.append((bar_mid_x - sw, y_lo,
+                                       bar_mid_x + sw, y_hi))
                 if self.label:
-                    # Sit the label BESIDE the single sink-arrow with a
-                    # small horizontal pad, fully BELOW the spine bar
-                    # (source-below case) or above (sink-below case).
-                    # ``micro`` size keeps it from overflowing tight row
-                    # gaps.  A thin white background mask prevents the
-                    # faint stroke of the bar from reading through.
-                    sz = theme.size_px("micro")
-                    pad = theme.unit * 0.4
-                    lbl_x = bar_mid_x + pad
-                    # Baseline below spine by descent + half-leading; the
-                    # full text block sits cleanly beneath the bar so the
-                    # bar is never crossed by glyphs.
-                    if source_below:
-                        baseline_y = spine_y + sz * 0.95
-                    else:
-                        baseline_y = spine_y - sz * 0.25
-                    canvas.text(lbl_x, baseline_y,
-                                self.label, size=sz, fill=col,
-                                italic=True, anchor="start")
+                    # For a fan-in, prefer the empty space BETWEEN the
+                    # source boxes and the T-bar (i.e. on the source side
+                    # of the bar).  That's "below" the bar when sources
+                    # are below, or "above" when sources are above.
+                    prefer = "below" if source_below else "above"
+                    self._draw_placed_label(
+                        canvas, theme,
+                        segment=((x0, spine_y), (x1, spine_y)),
+                        obstacles=box_obstacles + line_obstacles,
+                        color=col,
+                        size_token="micro",
+                        prefer=prefer,
+                        mask_bg=False,
+                    )
             else:
                 # Fan-out (or symmetric): taps from spine to each sink,
                 # with an arrowhead on each.  Spine spans all tap xs.
@@ -1608,19 +1724,24 @@ class Bus:
                         attrs["marker_end"] = marker
                     canvas.line(px, spine_y, px, py, **attrs)
                     taps_x.append(px)
+                    y_lo, y_hi = min(spine_y, py), max(spine_y, py)
+                    line_obstacles.append((px - sw, y_lo, px + sw, y_hi))
                 x0 = min(taps_x); x1 = max(taps_x)
                 canvas.line(x0, spine_y, x1, spine_y,
                             stroke=col, stroke_width=sw, dasharray=dasharray)
                 if self.label:
-                    mx = (x0 + x1) / 2
-                    sz = theme.size_px("tiny")
-                    canvas.text(mx, spine_y - theme.unit * 0.35,
-                               self.label, size=sz, fill=col,
-                               italic=True, anchor="middle")
+                    prefer = "above" if source_below else "below"
+                    self._draw_placed_label(
+                        canvas, theme,
+                        segment=((x0, spine_y), (x1, spine_y)),
+                        obstacles=box_obstacles + line_obstacles,
+                        color=col,
+                        size_token="tiny",
+                        prefer=prefer,
+                        mask_bg=False,
+                    )
         else:
             # Vertical spine (left-right cluster spread vertically).
-            src_cy = [b[1] + b[3] / 2 for b in src_boxes]
-            dst_cy = [b[1] + b[3] / 2 for b in dst_boxes]
             src_mean_x = sum(b[0] + b[2] / 2 for b in src_boxes) / len(src_boxes)
             dst_mean_x = sum(b[0] + b[2] / 2 for b in dst_boxes) / len(dst_boxes)
             source_left = src_mean_x < dst_mean_x
@@ -1635,11 +1756,14 @@ class Bus:
                 src_edge = lambda b: (b[0], b[1] + b[3] / 2)
                 dst_edge = lambda b: (b[0] + b[2], b[1] + b[3] / 2)
             taps_y = []
+            line_obstacles = []
             for b in src_boxes:
                 px, py = src_edge(b)
                 canvas.line(px, py, spine_x, py,
                             stroke=col, stroke_width=sw, dasharray=dasharray)
                 taps_y.append(py)
+                x_lo, x_hi = min(px, spine_x), max(px, spine_x)
+                line_obstacles.append((x_lo, py - sw, x_hi, py + sw))
             for b in dst_boxes:
                 px, py = dst_edge(b)
                 attrs = {"stroke": col, "stroke_width": sw}
@@ -1649,12 +1773,19 @@ class Bus:
                     attrs["marker_end"] = marker
                 canvas.line(spine_x, py, px, py, **attrs)
                 taps_y.append(py)
+                x_lo, x_hi = min(spine_x, px), max(spine_x, px)
+                line_obstacles.append((x_lo, py - sw, x_hi, py + sw))
             y0 = min(taps_y); y1 = max(taps_y)
             canvas.line(spine_x, y0, spine_x, y1,
                         stroke=col, stroke_width=sw, dasharray=dasharray)
             if self.label:
-                my = (y0 + y1) / 2
-                sz = theme.size_px("tiny")
-                canvas.text(spine_x + theme.unit * 0.35, my,
-                           self.label, size=sz, fill=col,
-                           italic=True, anchor="start")
+                prefer = "right" if source_left else "left"
+                self._draw_placed_label(
+                    canvas, theme,
+                    segment=((spine_x, y0), (spine_x, y1)),
+                    obstacles=box_obstacles + line_obstacles,
+                    color=col,
+                    size_token="tiny",
+                    prefer=prefer,
+                    mask_bg=False,
+                )

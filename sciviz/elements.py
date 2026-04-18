@@ -193,6 +193,8 @@ class Box(Element):
     def __init__(self, label: Optional[str] = None, *,
                  width: Optional[float] = None,
                  height: Optional[float] = None,
+                 min_width: Optional[float] = None,
+                 min_height: Optional[float] = None,
                  fill: str = "none",
                  stroke: str = "text",
                  stroke_width: Optional[float] = None,
@@ -204,10 +206,13 @@ class Box(Element):
                  sub_color: str = "muted",
                  dashed: bool = False,
                  opacity: float = 1.0,
-                 vertical_text: bool = False):
+                 vertical_text: bool = False,
+                 shape_key: Optional[str] = None):
         self.label = label
         self.width = width
         self.height = height
+        self.min_width = min_width
+        self.min_height = min_height
         self.fill = fill
         self.stroke = stroke
         self.stroke_width = stroke_width
@@ -230,6 +235,16 @@ class Box(Element):
         self.dashed = dashed
         self.opacity = opacity
         self.vertical_text = vertical_text
+        # ``shape_key`` groups semantically-equivalent boxes (e.g. several
+        # RMSNorms in one Row) so a sibling-aware layout container can
+        # equalise their heights without the author specifying widths.
+        # Default: a tuple of visually-distinguishing fields stringified.
+        # Pass ``shape_key=""`` to opt out, or a custom string to force
+        # a grouping.
+        if shape_key is None:
+            self.shape_key = f"box::{repr(self.fill)}::{self.text_size}::{int(self.dashed)}"
+        else:
+            self.shape_key = shape_key
 
     def _label_lines(self):
         if not self.label:
@@ -273,7 +288,7 @@ class Box(Element):
             sub_gap = theme.unit * 0.6 if self.sub_label else 0.0
             right_pad = theme.unit * 0.8
             left_pad = theme.unit * 0.8
-            reserved_bottom = sub_h + theme.unit * 0.2 if self.sub_label else 0.0
+            reserved_bottom = (sub_h + theme.unit * 0.25) if self.sub_label else 0.0
             w = label_w + sub_gap + sub_w + left_pad + right_pad
             h = label_h + reserved_bottom + theme.unit * 0.9
         return max(w, theme.unit * 6), max(h, theme.unit * 3.2)
@@ -284,6 +299,10 @@ class Box(Element):
             w = self.width
         if self.height is not None:
             h = self.height
+        if self.min_width is not None and w < self.min_width:
+            w = self.min_width
+        if self.min_height is not None and h < self.min_height:
+            h = self.min_height
         return BBox(w, h)
 
     def _resolved_text_color(self, theme: Theme) -> str:
@@ -332,11 +351,7 @@ class Box(Element):
                 )
         else:
             sub_w, sub_h = self._sub_metrics(theme)
-            sub_pad = theme.unit * 0.35
-            # Vertical region available to the main label = everything
-            # ABOVE the strip reserved for the sub_label.  This keeps the
-            # main label fully clear of the sub even when the main label
-            # happens to extend to the right of the box centre.
+            sub_pad = theme.unit * 0.25
             bottom_reserve = (sub_h + sub_pad) if self.sub_label else 0.0
             line_h = sz * 1.15
             block_h = line_h * len(lines)
@@ -352,8 +367,10 @@ class Box(Element):
             if self.sub_label:
                 # Precision/metadata labels sit in the BOTTOM-RIGHT corner,
                 # micro italic, acting like a subscript tag on the block.
+                # The baseline is placed so the descender stays inside the
+                # box: size.h - sub_pad - descender_estimate.
                 sub_sz = theme.size_px(self._SUB_LABEL_SIZE)
-                sub_baseline = y + size.h - sub_pad
+                sub_baseline = y + size.h - sub_pad - sub_sz * 0.35
                 canvas.text(
                     x + size.w - sub_pad, sub_baseline, self.sub_label,
                     size=sub_sz, fill=theme.color_of(self.sub_color),
@@ -947,3 +964,86 @@ class MiniGrid(Element):
                     c - 1.5, c - 1.5,
                     fill=color, rx=1.5,
                 )
+
+
+# ---------------------------------------------------------------------------
+# TokenRow (horizontal pill with math-typeset $t_i$ indices)
+# ---------------------------------------------------------------------------
+
+class TokenRow(Element):
+    """A single rounded pill containing math-typeset indexed tokens.
+
+    ``TokenRow(3, 4, 5, 6)`` renders as one continuous light-gray pill with
+    ``$t_3$  $t_4$  $t_5$  $t_6$`` inside, equally spaced.  This mirrors the
+    "input tokens"/"target tokens" ribbons in the DeepSeek-V3 paper: a single
+    ribbon, not a table of cells.
+
+    The caller supplies indices (ints or strings) and optionally overrides the
+    base letter (``letter="x"`` -> ``x_3, x_4, ...``) or supplies raw LaTeX
+    fragments via ``raw=[...]``.
+
+    No layout/padding knobs are required: the pill auto-sizes to the content
+    and honours the theme's :attr:`panel_soft` fill and :attr:`unit` spacing.
+    """
+
+    def __init__(self, *indices,
+                 letter: str = "t",
+                 raw: Optional[Sequence[str]] = None,
+                 fill: str = "panel_soft",
+                 fill_opacity: float = 0.35,
+                 stroke: str = "panel_soft",
+                 stroke_width: Optional[float] = None,
+                 size: Union[str, float] = "math",
+                 gap: Union[str, float] = "md",
+                 padding: Union[str, float] = "sm"):
+        if raw is not None:
+            self._pieces = [str(r) for r in raw]
+        else:
+            if not indices:
+                raise ValueError("TokenRow requires at least one index")
+            self._pieces = [f"${letter}_{{{idx}}}$" for idx in indices]
+        self.fill = fill
+        self.fill_opacity = fill_opacity
+        self.stroke = stroke
+        self.stroke_width = stroke_width
+        self.size = size
+        self.gap = gap
+        self.padding = padding
+        self._math_cache: Optional[list] = None
+
+    def _tokens(self) -> list:
+        if self._math_cache is not None:
+            return self._math_cache
+        from .math import Math
+        self._math_cache = [Math(p, size=self.size) for p in self._pieces]
+        return self._math_cache
+
+    def measure(self, theme: Theme) -> BBox:
+        tokens = self._tokens()
+        g = theme.gap_px(self.gap)
+        pad = theme.gap_px(self.padding)
+        sizes = [t.measure(theme) for t in tokens]
+        w = sum(s.w for s in sizes) + g * (len(sizes) - 1) + 2 * pad
+        h = max(s.h for s in sizes) + 2 * pad
+        return BBox(w, h)
+
+    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        tokens = self._tokens()
+        g = theme.gap_px(self.gap)
+        pad = theme.gap_px(self.padding)
+        bbox = self.measure(theme)
+        fill = theme.color_of(self.fill)
+        stroke = theme.color_of(self.stroke)
+        sw = self.stroke_width if self.stroke_width is not None else theme.hairline
+        rx = bbox.h / 2
+        canvas.rect(
+            x, y, bbox.w, bbox.h,
+            fill=fill, stroke=stroke, stroke_width=sw,
+            opacity=self.fill_opacity, rx=rx,
+        )
+        sizes = [t.measure(theme) for t in tokens]
+        cursor = x + pad
+        for tok, sz in zip(tokens, sizes):
+            ty = y + (bbox.h - sz.h) / 2
+            tok.render(canvas, cursor, ty, theme)
+            cursor += sz.w + g

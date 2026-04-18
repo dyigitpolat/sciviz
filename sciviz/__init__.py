@@ -67,6 +67,7 @@ from .elements import (
     Note,
     Caption,
     MiniGrid,
+    TokenRow,
 )
 
 # ----- math ----------------------------------------------------------------
@@ -137,7 +138,7 @@ __all__ = [
     "Padded", "Panel", "Framed",
     # elements
     "Text", "TextBlock", "Box", "Arrow", "Connector",
-    "Matrix", "Legend", "Note", "Caption", "MiniGrid",
+    "Matrix", "Legend", "Note", "Caption", "MiniGrid", "TokenRow",
     # math
     "Math", "auto_text",
     # charts

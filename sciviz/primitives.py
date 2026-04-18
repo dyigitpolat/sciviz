@@ -581,6 +581,7 @@ class StackedBoxes(Element):
     def __init__(self, n: int, label: str, *,
                  fill,
                  stroke = None,
+                 stroke_width: Optional[float] = None,
                  width: float = 150.0,
                  height: float = 30.0,
                  offset: float = 4.0,
@@ -592,13 +593,15 @@ class StackedBoxes(Element):
         self.n = max(1, int(n))
         self.label = label
         self.fill = fill
-        # Default stroke: a darker shade of the fill for subtle border definition.
+        # Default stroke matches plain :class:`Box` -- the theme's text
+        # color -- so a stack in a row with regular boxes reads as a
+        # single, consistent visual family (not a differently-bordered
+        # sibling).  Authors can still override with an explicit stroke.
         if stroke is not None:
             self.stroke = stroke
-        elif hasattr(fill, "dark"):
-            self.stroke = fill.dark()
         else:
-            self.stroke = fill
+            self.stroke = "text"
+        self.stroke_width = stroke_width
         self.width = width
         self.height = height
         self.offset = offset
@@ -615,6 +618,7 @@ class StackedBoxes(Element):
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         fill_hex = theme.color_of(self.fill)
         stroke_hex = theme.color_of(self.stroke)
+        sw = self.stroke_width if self.stroke_width is not None else theme.line
         total = (self.n - 1) * self.offset
         # Each box has a visible border -- the stack reads as N distinct layers
         # (not one blended silhouette).  Back-to-front so the front box sits
@@ -624,7 +628,7 @@ class StackedBoxes(Element):
             dy = i * self.offset
             canvas.rect(x + dx, y + dy, self.width, self.height,
                        fill=fill_hex, stroke=stroke_hex,
-                       stroke_width=theme.hairline,
+                       stroke_width=sw,
                        rx=self.radius)
         # Label on front box
         sz = theme.size_px(self.text_size)

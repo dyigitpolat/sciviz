@@ -100,10 +100,58 @@ class Row(Element):
         self.gap = gap
         self.align = align
         self.equal_widths = equal_widths
+        self._shape_normalized = False
+
+    def _find_shape_peer(self, elem):
+        """Unwrap one level of ``Anchor`` etc. to find a shape-key-bearing
+        child (e.g. ``Box``) so sibling-normalisation reaches into
+        ``Anchor(Box(...))`` without the author wrapping things differently.
+        """
+        seen = 0
+        cur = elem
+        while cur is not None and seen < 4:
+            if getattr(cur, "shape_key", None):
+                return cur
+            cur = getattr(cur, "child", None)
+            seen += 1
+        return None
+
+    def _normalize_shape_peers(self, theme: Theme) -> None:
+        """Siblings in this row sharing the same ``shape_key`` get equalised
+        min_width / min_height so they render at the same box size --
+        regardless of label length or sub_label length.
+        """
+        if self._shape_normalized:
+            return
+        self._shape_normalized = True
+        groups: dict = {}
+        for c in self.children:
+            peer = self._find_shape_peer(c)
+            if peer is None:
+                continue
+            key = peer.shape_key
+            if not key:
+                continue
+            groups.setdefault(key, []).append(peer)
+        for key, peers in groups.items():
+            if len(peers) < 2:
+                continue
+            # Measure each peer at its current intrinsic size (before
+            # min_* bumping) and take the max -- this is the shared
+            # target the whole group grows to.
+            sizes = [p.measure(theme) for p in peers]
+            target_w = max(s.w for s in sizes)
+            target_h = max(s.h for s in sizes)
+            for p in peers:
+                if getattr(p, "min_width", None) is None or p.min_width < target_w:
+                    p.min_width = target_w
+                if getattr(p, "min_height", None) is None or p.min_height < target_h:
+                    p.min_height = target_h
 
     def measure(self, theme: Theme) -> BBox:
         if not self.children:
             return BBox(0, 0)
+        self._normalize_shape_peers(theme)
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
         if self.equal_widths:
@@ -111,27 +159,48 @@ class Row(Element):
             w = slot * len(sizes) + g * (len(sizes) - 1)
         else:
             w = sum(s.w for s in sizes) + g * (len(sizes) - 1)
-        h = max(s.h for s in sizes)
+        # Row height must accommodate the TALLEST content bbox plus the
+        # asymmetric out-of-band margins of any individual child, so that
+        # content-axis centering still fits every child inside the row.
+        content = [c.content_bbox(theme) for c in self.children]
+        content_h = max(cb[3] for cb in content)
+        max_top = max(cb[1] for cb in content)
+        max_bot = max(s.h - cb[1] - cb[3] for s, cb in zip(sizes, content))
+        h = max(content_h + max_top + max_bot, max(s.h for s in sizes))
         return BBox(w, h)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         if not self.children:
             return
+        self._normalize_shape_peers(theme)
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
-        H = max(s.h for s in sizes)
+        # Content-bbox alignment: we want siblings' CONTENT rectangles
+        # (excluding out-of-band margins like those added by Anchor for
+        # Flow routing) to share a horizontal axis.  The row content y
+        # band is the max content height centered within the row height.
+        content = [c.content_bbox(theme) for c in self.children]
+        content_h = max(cb[3] for cb in content)
+        # Use the measured row H (derived the same way in ``measure``).
+        H = self.measure(theme).h
         slot = max(s.w for s in sizes) if self.equal_widths else None
         cx = x
-        for child, size in zip(self.children, sizes):
+        for child, size, cb in zip(self.children, sizes, content):
+            cb_y = cb[1]
+            cb_h = cb[3]
             if self.align == "start":
-                cy = y
+                cy = y - cb_y
             elif self.align == "end":
-                cy = y + (H - size.h)
-            else:  # center
-                cy = y + (H - size.h) / 2
+                cy = y + H - (cb_y + cb_h)
+            else:  # center content on the row content axis
+                row_content_top = y + (H - content_h) / 2
+                cy = row_content_top - cb_y
             if self.equal_widths:
-                # center child within its equal-width slot
-                child.render(canvas, cx + (slot - size.w) / 2, cy, theme)
+                cb_x = cb[0]
+                cb_w = cb[2]
+                # Align content (not outer) centres inside the slot
+                slot_cx = cx + slot / 2
+                child.render(canvas, slot_cx - (cb_x + cb_w / 2), cy, theme)
                 cx += slot + g
             else:
                 child.render(canvas, cx, cy, theme)

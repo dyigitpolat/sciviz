@@ -61,6 +61,18 @@ class Theme:
     warning: str = "#92400e"
     warning_fill: str = "#b45309"
 
+    # -- named paper accents (for architecture diagrams: paper-faithful) --
+    # These are the saturated-but-paper-safe pastels that architecture
+    # figures like DeepSeek-V3 use for "processing" (yellow/gold) and
+    # "shared" (green) families.  Using semantic tokens lets a future
+    # theme recolor an entire figure by swapping these values.
+    accent_proc: str = "#fbe5a8"       # saturated butter yellow
+    accent_shared: str = "#c1e1c1"     # saturated soft green
+    # Soft dusty blue-gray for dashed module bounding boxes.
+    panel_soft: str = "#c0cbd7"
+    # Dark-enough gray for "Shared"-style connector labels.
+    muted_label: str = "#475569"
+
     # -- text --------------------------------------------------------------
     text: str = "#0b1220"             # near-black, high contrast
     text_muted: str = "#374151"       # darker muted for print readability
@@ -88,6 +100,10 @@ class Theme:
     font_small: float = 9.0
     font_tiny: float = 8.0
     font_micro: float = 6.5           # precision/metadata subscripts
+    font_math: float = 11.0           # math labels beside boxes -- slightly
+                                      # larger than a plain "label" so LaTeX
+                                      # glyphs read proportionally with the
+                                      # box label they flank
 
     # -- spacing -----------------------------------------------------------
     unit: float = 6.0                 # base spacing unit (tighter for paper)
@@ -167,6 +183,7 @@ class Theme:
         "small": "font_small",
         "tiny": "font_tiny",
         "micro": "font_micro",
+        "math": "font_math",
     }
 
     def size_px(self, size: Union[str, float]) -> float:
@@ -654,7 +671,30 @@ class Element:
     guarantee that ``render(canvas, x, y)`` only paints inside the rectangle
     ``(x, y, x + w, y + h)`` where ``(w, h) == measure()``.  This single
     invariant is what makes composition safe.
+
+    Two optional hooks let containers do smarter alignment:
+
+    * :meth:`content_bbox` returns the *inner* content rectangle (inset
+      from the outer measure bbox) expressed in the element's local frame
+      as ``(x0, y0, w, h)``.  Containers like :class:`Row` use this to
+      align children on their content centre, not on their outer bbox.
+      The default implementation reports the full measure bbox, i.e. no
+      inset.  Elements that add out-of-band spacing (e.g. :class:`Anchor`
+      margins) override this to exclude that spacing.
+
+    * :attr:`primary_anchor` is an optional ``(offset_x, width)`` pair in
+      the element's local frame identifying the sub-region that should
+      be treated as the "anchor" when centering.  Composites like
+      :class:`Labeled` expose the source element here so a :class:`Grid`
+      cell centers the source on the column axis and lets the trailing
+      label flow freely into the inter-cell gap.  ``None`` means the
+      element has no special anchor and should be centered as a whole.
     """
+
+    # Elements whose layout should be driven by an inner sub-region rather
+    # than their full bbox override this to return ``(offset_x, width)``
+    # (or a 4-tuple ``(x, y, w, h)``).  The default is None.
+    primary_anchor = None
 
     def measure(self, theme: Theme) -> BBox:  # pragma: no cover - abstract
         raise NotImplementedError(
@@ -664,3 +704,22 @@ class Element:
                theme: Theme) -> None:  # pragma: no cover - abstract
         raise NotImplementedError(
             f"{type(self).__name__} must implement render(canvas, x, y, theme)")
+
+    def content_bbox(self, theme: Theme) -> "tuple[float, float, float, float]":
+        """Return the element's inner content rectangle in its local frame.
+
+        The tuple is ``(x, y, w, h)`` where ``(0, 0)`` is the top-left of
+        the rectangle reported by :meth:`measure`.  Default is the whole
+        measure bbox.
+        """
+        b = self.measure(theme)
+        return (0.0, 0.0, b.w, b.h)
+
+    def primary_anchor_bbox(self, theme: Theme) -> "Optional[tuple[float, float, float, float]]":
+        """Return the primary anchor region ``(x, y, w, h)`` in local coords.
+
+        When an element has an internal sub-region that should drive cell
+        centering (e.g. the source box inside a :class:`Labeled`), it
+        overrides this method.  Default returns ``None``.
+        """
+        return None
