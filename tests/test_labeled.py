@@ -23,8 +23,8 @@ def test_labeled_emits_arrow_path():
         Math(r"\mathcal{L}_{\text{MTP}}^{2}", size="label"),
     )
     svg, _, _ = _render(pair)
-    # a drawn arrow exists (a path with marker-end)
-    assert re.search(r'<path[^>]+marker-end="url\(#[^)]+\)"', svg), svg
+    # a drawn arrow exists (line or path element with a marker-end)
+    assert re.search(r'<(path|line)[^>]+marker-end="url\(#[^)]+\)"', svg), svg
 
 
 def test_labeled_has_horizontal_shape():

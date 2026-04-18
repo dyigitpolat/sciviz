@@ -192,9 +192,9 @@ class Row(Element):
                 cy = y - cb_y
             elif self.align == "end":
                 cy = y + H - (cb_y + cb_h)
-            else:  # center content on the row content axis
-                row_content_top = y + (H - content_h) / 2
-                cy = row_content_top - cb_y
+            else:  # center each child's content centre on the row centre
+                row_content_center_y = y + H / 2
+                cy = row_content_center_y - (cb_y + cb_h / 2)
             if self.equal_widths:
                 cb_x = cb[0]
                 cb_w = cb[2]
@@ -233,7 +233,7 @@ class Row(Element):
             elif self.align == "end":
                 oy = H - (cb_y + cb_h)
             else:
-                oy = (H - content_h) / 2 - cb_y
+                oy = H / 2 - (cb_y + cb_h / 2)
             if self.equal_widths:
                 slot_cx = cx + slot / 2
                 ox = slot_cx - (cb[0] + cb[2] / 2)
@@ -276,6 +276,27 @@ class Row(Element):
                 out.append((ox + ax, oy + ay, aw, ah))
         return out
 
+    def content_bbox(self, theme: Theme):
+        """Union of children's content rectangles, translated into the
+        Row's local frame.  Used by Column alignment to stack rows on
+        their visible content axis, excluding out-of-band margins (such
+        as those added by :class:`Anchor` for flow-shaft reservation).
+        """
+        if not self.children:
+            b = self.measure(theme)
+            return (0.0, 0.0, b.w, b.h)
+        offs = self._child_offsets(theme)
+        xs_lo, ys_lo, xs_hi, ys_hi = [], [], [], []
+        for (ox, oy, _size), child in zip(offs, self.children):
+            cx, cy, cw, ch = child.content_bbox(theme)
+            xs_lo.append(ox + cx)
+            ys_lo.append(oy + cy)
+            xs_hi.append(ox + cx + cw)
+            ys_hi.append(oy + cy + ch)
+        x0, y0 = min(xs_lo), min(ys_lo)
+        x1, y1 = max(xs_hi), max(ys_hi)
+        return (x0, y0, x1 - x0, y1 - y0)
+
 
 class Column(Element):
     """Vertical container.  See :class:`Row` for the analogous documentation."""
@@ -291,7 +312,14 @@ class Column(Element):
             return BBox(0, 0)
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
-        w = max(s.w for s in sizes)
+        # Width must accommodate the widest CONTENT bbox plus the
+        # out-of-band left/right margins of any individual child, so that
+        # content-axis alignment still fits every child inside the column.
+        content = [c.content_bbox(theme) for c in self.children]
+        content_w = max(cb[2] for cb in content)
+        max_left = max(cb[0] for cb in content)
+        max_right = max(s.w - cb[0] - cb[2] for s, cb in zip(sizes, content))
+        w = max(content_w + max_left + max_right, max(s.w for s in sizes))
         h = sum(s.h for s in sizes) + g * (len(sizes) - 1)
         return BBox(w, h)
 
@@ -300,15 +328,24 @@ class Column(Element):
             return
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
-        W = max(s.w for s in sizes)
+        # Content-bbox alignment: we want siblings' CONTENT rectangles
+        # (excluding out-of-band margins like those added by Anchor for
+        # Flow routing) to share a vertical axis.  The column content x
+        # band is the max content width centered within the column width.
+        content = [c.content_bbox(theme) for c in self.children]
+        content_w = max(cb[2] for cb in content)
+        W = self.measure(theme).w
         cy = y
-        for child, size in zip(self.children, sizes):
+        for child, size, cb in zip(self.children, sizes, content):
+            cb_x = cb[0]
+            cb_w = cb[2]
             if self.align == "start":
-                cx = x
+                cx = x - cb_x
             elif self.align == "end":
-                cx = x + (W - size.w)
-            else:  # center
-                cx = x + (W - size.w) / 2
+                cx = x + W - (cb_x + cb_w)
+            else:  # center each child's content centre on the column centre
+                col_content_center_x = x + W / 2
+                cx = col_content_center_x - (cb_x + cb_w / 2)
             child.render(canvas, cx, cy, theme)
             cy += size.h + g
 

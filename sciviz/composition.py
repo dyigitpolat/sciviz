@@ -346,8 +346,14 @@ class Badge(Element):
         If True, draw a thin stroke around the badge.
     """
 
+    # Sentinel: "auto" means "pick a fill based on bordered-ness".
+    # Bordered=True is the paper-style operator glyph (+, c, ×) -- drawn
+    # as a ring with a dark glyph; so the interior should be the page
+    # colour ("none" = transparent) rather than the info blue.
+    _AUTO_COLOR = "__auto__"
+
     def __init__(self, label: str = "", *,
-                 color = "info",
+                 color = _AUTO_COLOR,
                  size: float = 18.0,
                  text_size: str = "small",
                  text_weight: str = "700",
@@ -364,8 +370,15 @@ class Badge(Element):
     def measure(self, theme: Theme) -> BBox:
         return BBox(self.size, self.size)
 
+    def _resolved_fill(self, theme: Theme) -> str:
+        if self.color is Badge._AUTO_COLOR:
+            # No explicit colour: bordered => transparent paper interior,
+            # un-bordered => classic info-blue fill.
+            return "none" if self.bordered else theme.color_of("info")
+        return theme.color_of(self.color)
+
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
-        fill = theme.color_of(self.color)
+        fill = self._resolved_fill(theme)
         cx = x + self.size / 2
         cy = y + self.size / 2
         stroke = "none"
@@ -376,7 +389,13 @@ class Badge(Element):
         canvas.circle(cx, cy, self.size / 2,
                      fill=fill, stroke=stroke, stroke_width=sw)
         if self.label:
-            text_color = theme.text_on(fill)
+            # For a transparent paper-style operator badge, the glyph
+            # sits on the page background -- use the dark text colour
+            # rather than "text_on(transparent)" which is undefined.
+            if fill == "none":
+                text_color = theme.color_of("text")
+            else:
+                text_color = theme.text_on(fill)
             canvas.text(cx, cy, self.label,
                        size=theme.size_px(self.text_size),
                        fill=text_color,
@@ -638,6 +657,35 @@ def _side_point(bbox, side: str):
     }[side]
 
 
+def _side_point_frac(bbox, side: str, frac: float):
+    """Point on ``side`` at relative position ``frac`` (0..1) along the
+    edge.  For ``top``/``bottom`` edges, frac=0 is the left corner and
+    frac=1 is the right corner.  For ``left``/``right`` edges, frac=0
+    is the top corner.  A small inset keeps the tap off the exact
+    corner.
+    """
+    x, y, w, h = bbox
+    inset_px = min(4.0, w * 0.2, h * 0.2)
+    frac = max(0.0, min(1.0, frac))
+    if side in ("top", "bottom"):
+        lo = x + inset_px
+        hi = x + w - inset_px
+        if hi <= lo:
+            lo, hi = x, x + w
+        px = lo + (hi - lo) * frac
+        py = y if side == "top" else y + h
+        return (px, py)
+    if side in ("left", "right"):
+        lo = y + inset_px
+        hi = y + h - inset_px
+        if hi <= lo:
+            lo, hi = y, y + h
+        py = lo + (hi - lo) * frac
+        px = x if side == "left" else x + w
+        return (px, py)
+    return _side_point(bbox, side)
+
+
 class Flow:
     """A curved arrow specification between two named anchors.
 
@@ -648,13 +696,13 @@ class Flow:
     def __init__(self, src: str, dst: str, *,
                  src_side: str = "auto",
                  dst_side: str = "auto",
-                 color = "warn",
+                 color = "text",
                  label: Optional[str] = None,
                  dashed: bool = False,
                  curvature: float = 0.5,
                  detour: float = 24.0,
                  arrow: bool = True,
-                 style: str = "bezier"):
+                 style: str = "orthogonal"):
         """
         ``src_side`` / ``dst_side`` -- which side of each bbox the flow
             attaches to.  Default ``"auto"`` picks the boundary side facing
@@ -697,8 +745,10 @@ class Flow:
             return
         src_side = self._auto_side(sb, db) if self.src_side == "auto" else self.src_side
         dst_side = self._auto_side(db, sb) if self.dst_side == "auto" else self.dst_side
-        sx, sy = _side_point(sb, src_side)
-        dx, dy = _side_point(db, dst_side)
+        src_frac = getattr(self, "_share_src_frac", 0.5)
+        dst_frac = getattr(self, "_share_dst_frac", 0.5)
+        sx, sy = _side_point_frac(sb, src_side, src_frac)
+        dx, dy = _side_point_frac(db, dst_side, dst_frac)
 
         col = theme.color_of(self.color)
         sw = theme.connector
@@ -709,292 +759,69 @@ class Flow:
                       name_hint="flow")
                   if self.arrow else None)
 
-        # Orthogonal (right-angle) routing.  Path is computed from each
-        # endpoint's "outward exit direction" (perpendicular to its side).
-        # The path exits each endpoint a short distance perpendicular to
-        # its side, then connects with Manhattan (right-angle) segments.
+        # Orthogonal routing is delegated to the shared topological
+        # planner (`sciviz.routing`).  The planner decides which region
+        # boundaries *must* be crossed (the symmetric difference of the
+        # two endpoints' region ancestors) and forbids the path from
+        # entering any other region.  This replaces the ad-hoc vertical
+        # / horizontal / mixed branches that used to live here.
         if self.style == "orthogonal":
+            from . import routing as _rt
+
             tap = theme.unit * 2
             sb_x, sb_y, sb_w, sb_h = sb
             db_x, db_y, db_w, db_h = db
 
-            def out_dir(side):
-                return {"top":   (0, -1), "bottom": (0, +1),
-                        "left":  (-1, 0), "right":  (+1, 0),
-                        "topleft": (0, -1), "topright": (0, -1),
-                        "bottomleft": (0, +1), "bottomright": (0, +1),
-                        }.get(side, (0, 0))
-            sdir = out_dir(src_side)
-            ddir = out_dir(dst_side)
+            # Raw anchor and region boxes.
+            all_anchors = []
+            all_regions = []
+            for name, b in registry.items():
+                bx, by, bw, bh = b
+                if name.startswith("__region_"):
+                    all_regions.append(_rt.Box(x=bx, y=by, w=bw, h=bh,
+                                               name=name, kind="region"))
+                else:
+                    all_anchors.append(_rt.Box(x=bx, y=by, w=bw, h=bh,
+                                               name=name, kind="anchor"))
+            src_box = _rt.Box(x=sb_x, y=sb_y, w=sb_w, h=sb_h,
+                              name=self.src, kind="anchor")
+            dst_box = _rt.Box(x=db_x, y=db_y, w=db_w, h=db_h,
+                              name=self.dst, kind="anchor")
+            src_frac = getattr(self, "_share_src_frac", 0.5)
+            dst_frac = getattr(self, "_share_dst_frac", 0.5)
+            plan = _rt.plan_path(
+                _rt.Endpoint(src_box, src_side, tap=tap,
+                             tap_fraction=src_frac),
+                _rt.Endpoint(dst_box, dst_side, tap=tap,
+                             tap_fraction=dst_frac),
+                anchors=all_anchors,
+                regions=all_regions,
+            )
 
-            # All obstacles -- i.e. every anchored bbox except this flow's
-            # own endpoints.  Used both for the vertical bridge placement
-            # (x axis) and for the short perpendicular "tap" segments at
-            # each endpoint (y axis).  Panel regions (``__region_*``) act
-            # as "soft" obstacles the descent should avoid, but they do
-            # NOT block end-point taps (the endpoint lives inside the
-            # region).
+            # Retain `anchor_obstacles` for label-placement collision
+            # avoidance below.
             def _in(name):
                 return name != self.src and name != self.dst
-            regions = [(name, b) for name, b in registry.items()
-                       if name.startswith("__region_") and _in(name)]
             anchor_obstacles = [b for name, b in registry.items()
                                 if not name.startswith("__region_")
                                 and _in(name)]
-            # Region is an obstacle only if neither src nor dst lies
-            # inside it (then the descent must clearly avoid the region).
-            def _inside(reg_bbox, pt_bbox):
-                rx, ry, rw, rh = reg_bbox
-                px, py, pw, ph = pt_bbox
-                return (rx <= px + pw / 2 <= rx + rw and
-                        ry <= py + ph / 2 <= ry + rh)
-            region_obstacles = [b for _name, b in regions
-                                if not (_inside(b, sb) or _inside(b, db))]
-            obstacles = anchor_obstacles + region_obstacles
-
-            def clamp_tap(anchor_bbox, direction, base_tap):
-                """Reduce the tap length so the tap segment does not cross
-                any obstacle stacked immediately outside ``anchor_bbox`` in
-                the given outward ``direction``.  ``direction`` is one of
-                the four unit vectors.  Returns a tap >= 1px.
-                """
-                ax, ay, aw, ah = anchor_bbox
-                if direction == (0, -1):
-                    edge = ay
-                    ahead = [oy + oh for ox, oy, ow, oh in obstacles
-                             if ox < ax + aw and ox + ow > ax
-                             and oy + oh <= edge + 0.5]
-                    nearest = max(ahead) if ahead else None
-                    limit = edge - nearest - 2 if nearest is not None else base_tap
-                    return max(1.0, min(base_tap, limit))
-                if direction == (0, +1):
-                    edge = ay + ah
-                    ahead = [oy for ox, oy, ow, oh in obstacles
-                             if ox < ax + aw and ox + ow > ax
-                             and oy >= edge - 0.5]
-                    nearest = min(ahead) if ahead else None
-                    limit = nearest - edge - 2 if nearest is not None else base_tap
-                    return max(1.0, min(base_tap, limit))
-                if direction == (-1, 0):
-                    edge = ax
-                    ahead = [ox + ow for ox, oy, ow, oh in obstacles
-                             if oy < ay + ah and oy + oh > ay
-                             and ox + ow <= edge + 0.5]
-                    nearest = max(ahead) if ahead else None
-                    limit = edge - nearest - 2 if nearest is not None else base_tap
-                    return max(1.0, min(base_tap, limit))
-                if direction == (+1, 0):
-                    edge = ax + aw
-                    ahead = [ox for ox, oy, ow, oh in obstacles
-                             if oy < ay + ah and oy + oh > ay
-                             and ox >= edge - 0.5]
-                    nearest = min(ahead) if ahead else None
-                    limit = nearest - edge - 2 if nearest is not None else base_tap
-                    return max(1.0, min(base_tap, limit))
-                return base_tap
-
-            # Clamp each tap to fit between the anchor edge and the nearest
-            # obstacle perpendicular to that edge -- otherwise the short
-            # exit segment is swallowed by a neighbouring box (common when
-            # an embedding row sits immediately below a RMSNorm row).
-            stap = clamp_tap(sb, sdir, tap)
-            dtap = clamp_tap(db, ddir, tap)
-            src_tap = (sx + sdir[0] * stap, sy + sdir[1] * stap)
-            dst_tap = (dx + ddir[0] * dtap, dy + ddir[1] * dtap)
-
-            # Heuristic Manhattan path from src_tap to dst_tap.  If both
-            # endpoints exit vertically, route via a bridge between columns
-            # (go through the x gap between src and dst bboxes).  If both
-            # exit horizontally, bridge between rows.  If mixed, a single
-            # 90-degree turn at the corner.
-            if sdir[0] == 0 and ddir[0] == 0:
-                # Vertical exits on both sides -- bridge between columns.
-                # Find the WIDEST unobstructed x-slice between src.right and
-                # dst.left (or dst.right and src.left for a leftward flow)
-                # whose y-range covers the full bridge descent.  Centre the
-                # bridge in that slice.
-                y_top = min(src_tap[1], dst_tap[1])
-                y_bot = max(src_tap[1], dst_tap[1])
-                if dx > sx:
-                    slab_left = sb_x + sb_w
-                    slab_right = db_x
-                else:
-                    slab_left = db_x + db_w
-                    slab_right = sb_x
-                # If src and dst live in different registered *regions*
-                # (panels), prefer the inter-region gap between them --
-                # this avoids descending along the LEFT/RIGHT edge of
-                # an unrelated column panel.
-                src_region = None
-                dst_region = None
-                for _n, rbb in regions:
-                    if _inside(rbb, sb) and src_region is None:
-                        src_region = rbb
-                    if _inside(rbb, db) and dst_region is None:
-                        dst_region = rbb
-                if (src_region is not None and dst_region is not None
-                        and src_region != dst_region):
-                    if dx > sx:
-                        gap_left = src_region[0] + src_region[2]
-                        gap_right = dst_region[0]
-                    else:
-                        gap_left = dst_region[0] + dst_region[2]
-                        gap_right = src_region[0]
-                    if gap_right - gap_left > 2.0:
-                        slab_left = max(slab_left, gap_left)
-                        slab_right = min(slab_right, gap_right)
-                # Default to midpoint; this is the "no obstacles" answer.
-                gap_x = (slab_left + slab_right) / 2
-                # Obstacles whose y-range intersects the bridge y-span AND
-                # whose x-range overlaps the slab.
-                y_conf = [
-                    (max(ox, slab_left), min(ox + ow, slab_right))
-                    for ox, oy, ow, oh in obstacles
-                    if not (oy + oh < y_top or oy > y_bot)
-                    and ox + ow > slab_left and ox < slab_right
-                ]
-                # Compute the widest free sub-slice.
-                cuts = sorted([(a, b) for a, b in y_conf if b > a])
-                free_slices = []
-                cursor = slab_left
-                for a, b in cuts:
-                    if a > cursor:
-                        free_slices.append((cursor, a))
-                    cursor = max(cursor, b)
-                if cursor < slab_right:
-                    free_slices.append((cursor, slab_right))
-                if free_slices:
-                    # Pick the widest; tie-break toward the one closer to
-                    # the dst side (natural reading direction).
-                    widest = max(free_slices,
-                                 key=lambda s: (s[1] - s[0],
-                                                s[0] if dx > sx else -s[1]))
-                    gap_x = (widest[0] + widest[1]) / 2
-
-                # Prefer the minimal 2-corner route "up - across - up"
-                # (three segments) when direction-consistent AND
-                # unobstructed.  That matches hand-drawn figure routing
-                # and avoids the staircase introduced by the tap/bridge/
-                # tap detour.  Falls back to the column-gap staircase
-                # otherwise.
-                #
-                # Direction-consistency: the bridge_y must lie on the
-                # sdir side of sy (so the src-exit leg moves in sdir)
-                # AND on the ddir side of dy (so the dst-entry leg
-                # arrives against ddir).  When sdir and ddir point
-                # OUTWARD away from each other (e.g. src exits up into
-                # row above, dst exits down into row below), a valid
-                # bridge_y exists only when dst sits on the src-exit
-                # side of the source -- exactly the "dst is one row
-                # above src" case where the direct route makes sense.
-                def _vblocked(vx, y0, y1):
-                    lo, hi = (y0, y1) if y0 < y1 else (y1, y0)
-                    for ox, oy, ow, oh in anchor_obstacles:
-                        if ox - 0.5 < vx < ox + ow + 0.5 and not (
-                                oy + oh < lo - 0.5 or oy > hi + 0.5):
-                            return True
-                    return False
-
-                def _hblocked(hy, x0, x1):
-                    lo, hi = (x0, x1) if x0 < x1 else (x1, x0)
-                    for ox, oy, ow, oh in anchor_obstacles:
-                        if oy - 0.5 < hy < oy + oh + 0.5 and not (
-                                ox + ow < lo - 0.5 or ox > hi + 0.5):
-                            return True
-                    return False
-
-                lo_y, hi_y = (dy, sy) if dy < sy else (sy, dy)
-                direct_y = (sy + dy) / 2
-                sy_dir_ok = (direct_y - sy) * sdir[1] > 0
-                dy_dir_ok = (direct_y - dy) * ddir[1] > 0
-                direct_consistent = sy_dir_ok and dy_dir_ok
-                if direct_consistent and (
-                        not _vblocked(sx, sy, direct_y)
-                        and not _hblocked(direct_y, sx, dx)
-                        and not _vblocked(dx, direct_y, dy)):
-                    path = [(sx, sy),
-                            (sx, direct_y),
-                            (dx, direct_y),
-                            (dx, dy)]
-                else:
-                    path = [(sx, sy), src_tap,
-                            (gap_x, src_tap[1]), (gap_x, dst_tap[1]),
-                            dst_tap, (dx, dy)]
-            elif sdir[1] == 0 and ddir[1] == 0:
-                # Horizontal exits on both sides -- bridge between rows.
-                if dy > sy:
-                    gap_y = (sb_y + sb_h + db_y) / 2
-                else:
-                    gap_y = (db_y + db_h + sb_y) / 2
-                path = [(sx, sy), src_tap,
-                        (src_tap[0], gap_y), (dst_tap[0], gap_y),
-                        dst_tap, (dx, dy)]
-            else:
-                # Mixed (one vertical exit, one horizontal exit).  Compute
-                # the obvious corner, then obstacle-avoid by shifting the
-                # descent x to the LEFT of any other anchor's bbox that
-                # would be crossed.
-                if sdir[0] == 0:
-                    corner = (dst_tap[0], src_tap[1])
-                else:
-                    corner = (src_tap[0], dst_tap[1])
-
-                # Obstacle avoidance for the descent segment (vertical part).
-                # Applies when src exits vertically (corner at dst's x):
-                if sdir[0] == 0:
-                    descent_x = corner[0]
-                    y_top = min(src_tap[1], dst_tap[1])
-                    y_bot = max(src_tap[1], dst_tap[1])
-                    obstacles = [b for name, b in registry.items()
-                                 if name != self.src and name != self.dst]
-                    for _ in range(8):
-                        conflicting = [
-                            (ox, oy, ow, oh) for ox, oy, ow, oh in obstacles
-                            if not (oy + oh < y_top or oy > y_bot)
-                            and ox <= descent_x <= ox + ow
-                        ]
-                        if not conflicting:
-                            break
-                        descent_x = min(ox for ox, _, _, _ in conflicting) - tap
-                    corner = (descent_x, corner[1])
-                    dst_tap = (descent_x, dst_tap[1])
-
-                path = [(sx, sy), src_tap, corner, dst_tap, (dx, dy)]
-
-            # Simplify: drop consecutive duplicate points.
-            simplified = [path[0]]
-            for p in path[1:]:
-                if (abs(p[0] - simplified[-1][0]) > 0.5 or
-                    abs(p[1] - simplified[-1][1]) > 0.5):
-                    simplified.append(p)
-            path = simplified
-
-            seg_rects = []  # collect each drawn segment as an obstacle rect
-            for i in range(len(path) - 1):
-                x1, y1 = path[i]
-                x2, y2 = path[i + 1]
-                is_last = (i == len(path) - 2)
-                attrs = {"stroke": col, "stroke_width": sw}
-                if dash:
-                    attrs["dasharray"] = dash
-                if self.arrow and is_last:
-                    attrs["marker_end"] = marker
-                canvas.line(x1, y1, x2, y2, **attrs)
-                seg_rects.append((min(x1, x2) - sw, min(y1, y2) - sw,
-                                  max(x1, x2) + sw, max(y1, y2) + sw))
-            canvas.circle(sx, sy, r=theme.connector * 1.4,
-                          fill=col, stroke="none")
-            if self.label:
-                # Pick the LONGEST horizontal segment (the bridge) as the
-                # label spine.  If no horizontal segment exists, use the
-                # first segment.  Label avoids every other drawn segment
-                # plus any sibling-anchor bbox we've already collected.
+            # Draw the planned polyline and (optionally) place a label
+            # above the longest horizontal segment.
+            path = plan.waypoints
+            seg_rects = _rt.render_orthogonal(
+                canvas, plan,
+                stroke=col, width=sw,
+                dasharray=dash,
+                marker_end=marker if self.arrow else None,
+                src_dot=True,
+            )
+            if self.label and len(path) >= 2:
                 best_seg = None
                 best_len = -1.0
                 for i in range(len(path) - 1):
                     x1, y1 = path[i]
                     x2, y2 = path[i + 1]
-                    if abs(y2 - y1) < 0.5:  # horizontal
+                    if abs(y2 - y1) < 0.5:
                         L = abs(x2 - x1)
                         if L > best_len:
                             best_len = L
@@ -1006,13 +833,10 @@ class Flow:
                 sz = theme.size_px(sz_tok)
                 lbl_w = theme.text_width(self.label, sz_tok, bold=False)
                 lbl_h = theme.text_height(sz_tok)
-                # Obstacles: sibling anchor bboxes + drawn segments
-                # (except the spine we're labeling).
                 all_anchor_obstacles = [
                     (ox, oy, ox + ow, oy + oh)
                     for ox, oy, ow, oh in anchor_obstacles
                 ]
-                # segments as thin rects but skip the spine itself
                 spine_mid_y = (best_seg[0][1] + best_seg[1][1]) / 2
                 seg_obs = [r for r in seg_rects
                            if not (r[1] <= spine_mid_y <= r[3]
@@ -1280,8 +1104,71 @@ class Flowed(Element):
             self.child.render(canvas, x, y, theme)
         finally:
             _anchor_stack.reset(token)
+        self._assign_edge_shares(my_registry)
         for flow in self.flows:
             flow._render(canvas, theme, my_registry)
+
+    def _assign_edge_shares(self, registry: dict) -> None:
+        """Distribute multiple flows that attach to the same anchor edge
+        along that edge, instead of piling them onto the midpoint.
+
+        Groups flows by ``(anchor_name, resolved_side)`` and assigns
+        fractional taps evenly: ``(i+1)/(n+1)`` for a group of ``n``.
+        Within a group, flows are ordered by the *other* endpoint's
+        perpendicular coordinate so neighbouring attachments correspond
+        to neighbouring counterparts -- e.g. two flows entering a box's
+        top from the left and right get their taps on the left and
+        right of that top edge respectively.
+        """
+        flow_endpoints = []
+        for flow in self.flows:
+            if not isinstance(flow, Flow):
+                continue
+            sb = registry.get(flow.src)
+            db = registry.get(flow.dst)
+            if sb is None or db is None:
+                continue
+            src_side = (flow._auto_side(sb, db)
+                        if flow.src_side == "auto" else flow.src_side)
+            dst_side = (flow._auto_side(db, sb)
+                        if flow.dst_side == "auto" else flow.dst_side)
+            flow_endpoints.append((flow, sb, db, src_side, dst_side))
+
+        buckets: dict = {}
+        for entry in flow_endpoints:
+            flow, sb, db, src_side, dst_side = entry
+            buckets.setdefault((flow.src, src_side), []).append(
+                ("src", entry))
+            buckets.setdefault((flow.dst, dst_side), []).append(
+                ("dst", entry))
+
+        for (anchor_name, side), members in buckets.items():
+            if len(members) <= 1:
+                # Single flow on this edge -- keep the midpoint default.
+                for role, entry in members:
+                    flow, sb, db, ssd, dsd = entry
+                    if role == "src":
+                        flow._share_src_frac = 0.5
+                    else:
+                        flow._share_dst_frac = 0.5
+                continue
+
+            def sort_key(m):
+                role, entry = m
+                flow, sb, db, ssd, dsd = entry
+                other = db if role == "src" else sb
+                ox, oy, ow, oh = other
+                return (ox + ow / 2) if side in ("top", "bottom") else (oy + oh / 2)
+
+            members.sort(key=sort_key)
+            n = len(members)
+            for i, (role, entry) in enumerate(members):
+                flow, sb, db, ssd, dsd = entry
+                frac = (i + 1) / (n + 1)
+                if role == "src":
+                    flow._share_src_frac = frac
+                else:
+                    flow._share_dst_frac = frac
 
 
 # ---------------------------------------------------------------------------
@@ -1541,6 +1428,15 @@ class Region(Element):
             rx=theme.panel_radius * 1.5,
             dasharray="4,3" if self.dashed else None,
         )
+
+        # Publish the border rectangle to every active anchor registry
+        # under a `__region_<id>` key.  Connector routers consult these
+        # keys to compute required / forbidden boundary crossings.
+        stack = _anchor_stack.get()
+        if stack is not None:
+            key = f"__region_{id(self):x}"
+            for reg in stack:
+                reg[key] = (border_x, border_top, border_w, border_h)
 
         # Label in the lh space above the border (and below top margin_y).
         if self.label:

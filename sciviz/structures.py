@@ -336,13 +336,28 @@ class BlockGroup(Element):
         lbl_h = self._label_h(theme)
         col = theme.color_of(self.color)
         fill_col = theme.color_of(self.fill) if self.fill is not None else "none"
+        border_x = x
+        border_y = y + lbl_h
+        border_w = size.w
+        border_h = size.h - lbl_h
         canvas.rect(
-            x, y + lbl_h, size.w, size.h - lbl_h,
+            border_x, border_y, border_w, border_h,
             fill=fill_col, stroke=col,
             stroke_width=theme.hairline,
             rx=theme.panel_radius * 1.5,
             dasharray="4,3" if self.dashed else None,
         )
+
+        # Publish the border rectangle to every active anchor registry
+        # under a `__region_<id>` key so connector routers can detect
+        # required / forbidden boundary crossings.
+        from .composition import _anchor_stack
+        stack = _anchor_stack.get()
+        if stack is not None:
+            key = f"__region_{id(self):x}"
+            for reg in stack:
+                reg[key] = (border_x, border_y, border_w, border_h)
+
         if self.label:
             lbl_w = theme.text_width(self.label, self.label_size, bold=True)
             if self.label_align == "center":

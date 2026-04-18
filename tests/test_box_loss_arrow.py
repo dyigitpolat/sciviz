@@ -56,8 +56,11 @@ def test_box_to_label_arrow_starts_at_box_right_edge():
     svg, _, _ = _render(d, theme)
     box_size = Box("CE Loss", sub_label="FP32").measure(theme)
     right_edge = box_size.w
-    # M x,y  ...  in a path
-    m = re.search(r' d="M ([0-9.]+),', svg)
+    # Orthogonal flows emit <line> segments; the first segment starts at
+    # the box's right edge.  Bezier flows (if ever re-enabled on this
+    # test) would emit a <path d="M x,y ...">.
+    m = re.search(r'<line x1="([0-9.]+)"', svg) \
+        or re.search(r' d="M ([0-9.]+),', svg)
     assert m, svg
     mx = float(m.group(1))
     assert abs(mx - right_edge) < 2.0, (mx, right_edge)

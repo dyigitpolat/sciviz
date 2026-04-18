@@ -168,14 +168,20 @@ class TextBlock(Element):
         bbox = self.measure(theme)
         for i, line in enumerate(lines):
             baseline = y + sz * 0.88 + i * line_h
-            if self.align == "middle":
+            # Accept both "middle" (internal name) and "center" (what
+            # most authors reach for) as horizontal centre alignment.
+            if self.align in ("middle", "center"):
                 tx = x + bbox.w / 2
+                svg_anchor = "middle"
             elif self.align == "end":
                 tx = x + bbox.w
+                svg_anchor = "end"
             else:
                 tx = x
+                svg_anchor = "start"
             canvas.text(tx, baseline, line, size=sz, fill=fill,
-                       weight=self.weight, italic=self.italic, anchor=self.align)
+                       weight=self.weight, italic=self.italic,
+                       anchor=svg_anchor)
 
 
 # ---------------------------------------------------------------------------
@@ -242,12 +248,22 @@ class Box(Element):
         # Pass ``shape_key=""`` to opt out, or a custom string to force
         # a grouping.
         if shape_key is None:
-            self.shape_key = f"box::{repr(self.fill)}::{self.text_size}::{int(self.dashed)}"
+            # The shape_key must not depend on the label (which might be
+            # an opaque Element).  Based on visual-style fields only.
+            self.shape_key = (
+                f"box::{repr(self.fill)}::{self.text_size}::{int(self.dashed)}"
+            )
         else:
             self.shape_key = shape_key
 
+    def _label_is_element(self) -> bool:
+        """The label can be either a string or any :class:`Element`
+        (e.g. :class:`Math`).  Element labels are measured + rendered
+        as a unit, centred inside the box."""
+        return self.label is not None and isinstance(self.label, Element)
+
     def _label_lines(self):
-        if not self.label:
+        if not self.label or self._label_is_element():
             return []
         return self.label.split("\n")
 
@@ -268,7 +284,13 @@ class Box(Element):
         bold = self.text_weight in ("bold", "600", "700")
         lines = self._label_lines()
         line_h = theme.text_height(self.text_size)
-        if lines:
+        if self._label_is_element():
+            # Element label: measure as a single opaque block; the
+            # box sizes itself to fit the element plus standard pads.
+            eb = self.label.measure(theme)
+            label_w = eb.w
+            label_h = eb.h
+        elif lines:
             label_w = max(theme.text_width(l, self.text_size, bold=bold) for l in lines)
             label_h = line_h * len(lines) + line_h * 0.05 * max(0, len(lines) - 1)
         else:
@@ -325,6 +347,26 @@ class Box(Element):
             stroke_width=sw,
             rx=r, dasharray=dasharray, opacity=self.opacity,
         )
+        if self._label_is_element():
+            # Element label: reserve the sub_label strip at the bottom
+            # (if any) and centre the element in the remaining area.
+            sub_w, sub_h = self._sub_metrics(theme)
+            sub_pad = theme.unit * 0.25
+            bottom_reserve = (sub_h + sub_pad) if self.sub_label else 0.0
+            eb = self.label.measure(theme)
+            region_h = size.h - bottom_reserve
+            ex = x + (size.w - eb.w) / 2
+            ey = y + max(0.0, (region_h - eb.h) / 2)
+            self.label.render(canvas, ex, ey, theme)
+            if self.sub_label:
+                sub_sz = theme.size_px(self._SUB_LABEL_SIZE)
+                sub_baseline = y + size.h - sub_pad - sub_sz * 0.35
+                canvas.text(
+                    x + size.w - sub_pad, sub_baseline, self.sub_label,
+                    size=sub_sz, fill=theme.color_of(self.sub_color),
+                    weight="normal", italic=True, anchor="end",
+                )
+            return
         lines = self._label_lines()
         if not lines:
             return

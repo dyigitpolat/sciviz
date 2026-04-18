@@ -495,7 +495,7 @@ class VectorTiles(Element):
                  cell_size: float = 14.0,
                  cell_thickness: float = 14.0,
                  cell_spacing: float = 0.5,
-                 stroke = None,
+                 stroke = "text",
                  radius: float = 1.5,
                  palette: str = "blues"):
         self.n = n
@@ -524,8 +524,9 @@ class VectorTiles(Element):
         return theme.color_of(self.color)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
-        stroke_col = theme.color_of(self.stroke) if self.stroke is not None else "none"
-        sw = theme.hairline if self.stroke is not None else 0.0
+        has_stroke = self.stroke is not None and self.stroke != "none"
+        stroke_col = theme.color_of(self.stroke) if has_stroke else "none"
+        sw = theme.hairline if has_stroke else 0.0
         for i in range(self.n):
             offset = i * (self.cell_size + self.cell_spacing)
             if self.orientation == "vertical":
