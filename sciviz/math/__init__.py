@@ -21,7 +21,7 @@ import re
 from functools import lru_cache
 from typing import Optional, Tuple, Union
 
-from .core import Element, BBox, Canvas, Theme
+from ..core import Element, BBox, Canvas, Theme
 
 
 # ---------------------------------------------------------------------------

@@ -124,7 +124,8 @@ def plan_path(src: Endpoint, dst: Endpoint, *,
               anchors: Sequence[Box] = (),
               regions: Sequence[Box] = (),
               existing_segments: Sequence[Tuple[float, float, float, float]] = (),
-              policy: CrossPolicy = DEFAULT_POLICY) -> Plan:
+              policy: CrossPolicy = DEFAULT_POLICY,
+              owner: str = "") -> Plan:
     """Compute an orthogonal path from ``src`` to ``dst``.
 
     The path exits ``src.anchor`` perpendicular to ``src.side`` by at
@@ -152,17 +153,57 @@ def plan_path(src: Endpoint, dst: Endpoint, *,
     always gets a valid (possibly edge-grazing) route.
     """
     clearance = max(0.0, policy.min_clearance)
+    retried = False
     if clearance > 0.0:
         plan = _plan_path_impl(src, dst, anchors=anchors, regions=regions,
                                existing_segments=existing_segments,
                                policy=policy, obstacle_pad=clearance)
         if plan is not None:
+            _emit_route(owner, src, dst, anchors, regions, plan,
+                        retried_without_clearance=False,
+                        min_clearance=clearance)
             return plan
+        retried = True
     plan = _plan_path_impl(src, dst, anchors=anchors, regions=regions,
                            existing_segments=existing_segments,
                            policy=policy, obstacle_pad=0.0)
     assert plan is not None, "planner failed to return a path"
+    _emit_route(owner, src, dst, anchors, regions, plan,
+                retried_without_clearance=retried,
+                min_clearance=clearance)
     return plan
+
+
+def _emit_route(owner: str,
+                src: Endpoint, dst: Endpoint,
+                anchors: Sequence[Box], regions: Sequence[Box],
+                plan: Plan, *,
+                retried_without_clearance: bool,
+                min_clearance: float) -> None:
+    """Forward the planner result to the debug recorder (if any)."""
+    from .debug import active, emit_route
+    if active() is None:
+        return
+    src_ancestors = _region_ancestors(src.anchor, regions)
+    dst_ancestors = _region_ancestors(dst.anchor, regions)
+    required = sorted(set(r.name for r in src_ancestors)
+                      ^ set(r.name for r in dst_ancestors))
+    def _rect(b: Box) -> Tuple[float, float, float, float]:
+        return (b.x, b.y, b.x + b.w, b.y + b.h)
+    emit_route(
+        owner=owner,
+        src_name=src.anchor.name,
+        dst_name=dst.anchor.name,
+        src_side=plan.resolved_src_side or src.side,
+        dst_side=plan.resolved_dst_side or dst.side,
+        anchors=[(a.name, _rect(a)) for a in anchors],
+        regions=[(r.name, _rect(r)) for r in regions],
+        required_crossings=required,
+        waypoints=list(plan.waypoints),
+        style_hint=plan.style_hint,
+        retried_without_clearance=retried_without_clearance,
+        min_clearance=min_clearance,
+    )
 
 
 def _plan_path_impl(src: Endpoint, dst: Endpoint, *,

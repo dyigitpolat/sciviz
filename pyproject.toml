@@ -18,9 +18,15 @@ png = ["resvg-py>=0.3"]
 # PDF export (still uses cairosvg)
 pdf = ["cairosvg>=2.5"]
 
+[project.scripts]
+sciviz-debug = "sciviz._cli.debug:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["sciviz*"]
+
+[tool.setuptools.package-data]
+"sciviz.auto" = ["_debug_template.html"]
 
 [tool.setuptools.dynamic]
 version = { attr = "sciviz.__version__" }

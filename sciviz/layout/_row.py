@@ -1,0 +1,237 @@
+"""Row: horizontal layout container.
+
+A Row measures every child, arranges them left-to-right with automatic
+spacing, and reports a bounding box that contains all of them. See
+:class:`Column` for the vertical analogue.
+"""
+
+from __future__ import annotations
+
+from typing import List, Union
+
+from ..core import BBox, Canvas, Element, Theme
+
+
+class Row(Element):
+    """Horizontal container.
+
+    Parameters
+    ----------
+    *children : Element
+        The child elements, laid out left-to-right. ``None`` children are
+        silently dropped, which is handy for optional pieces.
+    gap : str or float
+        Spacing between children. Semantic tokens (``"xs"``, ``"sm"``,
+        ``"md"``, ``"lg"``, ``"xl"``, ``"2xl"``) are resolved against the
+        theme's base unit.
+    align : str
+        Vertical alignment of shorter children: ``"start"``, ``"center"``,
+        or ``"end"``.
+    equal_widths : bool
+        If True, every child gets the same horizontal slot (the max child
+        width). Critical for visually aligning columns of differing-width
+        labels (e.g. tokens, bars, pictograms). Each child is centered
+        within its slot.
+    """
+
+    def __init__(self, *children: Element, gap: Union[str, float] = "md",
+                 align: str = "center", equal_widths: bool = False):
+        self.children: List[Element] = [c for c in children if c is not None]
+        self.gap = gap
+        self.align = align
+        self.equal_widths = equal_widths
+        self._shape_normalized = False
+
+    def _find_shape_peer(self, elem):
+        """Unwrap one level of ``Anchor`` etc. to find a shape-key-bearing
+        child (e.g. ``Box``) so sibling-normalisation reaches into
+        ``Anchor(Box(...))`` without the author wrapping things differently.
+        """
+        seen = 0
+        cur = elem
+        while cur is not None and seen < 4:
+            if getattr(cur, "shape_key", None):
+                return cur
+            cur = getattr(cur, "child", None)
+            seen += 1
+        return None
+
+    def _normalize_shape_peers(self, theme: Theme) -> None:
+        """Siblings in this row sharing the same ``shape_key`` get equalised
+        min_width / min_height so they render at the same box size --
+        regardless of label length or sub_label length.
+        """
+        if self._shape_normalized:
+            return
+        self._shape_normalized = True
+        groups: dict = {}
+        for c in self.children:
+            peer = self._find_shape_peer(c)
+            if peer is None:
+                continue
+            key = peer.shape_key
+            if not key:
+                continue
+            groups.setdefault(key, []).append(peer)
+        for key, peers in groups.items():
+            if len(peers) < 2:
+                continue
+            sizes = [p.measure(theme) for p in peers]
+            target_w = max(s.w for s in sizes)
+            target_h = max(s.h for s in sizes)
+            for p in peers:
+                if getattr(p, "min_width", None) is None or p.min_width < target_w:
+                    p.min_width = target_w
+                if getattr(p, "min_height", None) is None or p.min_height < target_h:
+                    p.min_height = target_h
+
+    def _visible_children(self):
+        """Children that participate in main-axis layout. Invisible ones
+        are still rendered at the running cursor, but consume no gap."""
+        return [c for c in self.children
+                if not getattr(c, "is_layout_invisible", False)]
+
+    def measure(self, theme: Theme) -> BBox:
+        if not self.children:
+            return BBox(0, 0)
+        self._normalize_shape_peers(theme)
+        visible = self._visible_children()
+        vis_sizes = [c.measure(theme) for c in visible]
+        sizes = [c.measure(theme) for c in self.children]
+        g = theme.gap_px(self.gap)
+        n_vis = max(len(visible), 1)
+        if self.equal_widths and visible:
+            slot = max(s.w for s in vis_sizes)
+            w = slot * len(visible) + g * (len(visible) - 1)
+        else:
+            w = sum(s.w for s in vis_sizes) + g * (n_vis - 1)
+        # Row height must accommodate the TALLEST content bbox plus the
+        # asymmetric out-of-band margins of any individual child, so that
+        # content-axis centering still fits every child inside the row.
+        content = [c.content_bbox(theme) for c in self.children]
+        content_h = max(cb[3] for cb in content)
+        max_top = max(cb[1] for cb in content)
+        max_bot = max(s.h - cb[1] - cb[3] for s, cb in zip(sizes, content))
+        h = max(content_h + max_top + max_bot, max(s.h for s in sizes))
+        return BBox(w, h)
+
+    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        if not self.children:
+            return
+        self._normalize_shape_peers(theme)
+        sizes = [c.measure(theme) for c in self.children]
+        g = theme.gap_px(self.gap)
+        content = [c.content_bbox(theme) for c in self.children]
+        H = self.measure(theme).h
+        slot = None
+        if self.equal_widths:
+            vis_sizes = [c.measure(theme) for c in self._visible_children()]
+            slot = max(s.w for s in vis_sizes) if vis_sizes else 0.0
+        cx = x
+        for child, size, cb in zip(self.children, sizes, content):
+            invisible = getattr(child, "is_layout_invisible", False)
+            cb_y = cb[1]
+            cb_h = cb[3]
+            if self.align == "start":
+                cy = y - cb_y
+            elif self.align == "end":
+                cy = y + H - (cb_y + cb_h)
+            else:
+                row_content_center_y = y + H / 2
+                cy = row_content_center_y - (cb_y + cb_h / 2)
+            if self.equal_widths and not invisible:
+                cb_x = cb[0]
+                cb_w = cb[2]
+                slot_cx = cx + slot / 2
+                child.render(canvas, slot_cx - (cb_x + cb_w / 2), cy, theme)
+                cx += slot + g
+            else:
+                child.render(canvas, cx, cy, theme)
+                if not invisible:
+                    cx += size.w + g
+
+    def _child_offsets(self, theme: Theme):
+        """Same x/y placement math as :meth:`render`, but returns the
+        per-child offsets ``(ox, oy)`` in the Row's local frame.
+        """
+        if not self.children:
+            return []
+        self._normalize_shape_peers(theme)
+        sizes = [c.measure(theme) for c in self.children]
+        g = theme.gap_px(self.gap)
+        content = [c.content_bbox(theme) for c in self.children]
+        H = self.measure(theme).h
+        slot = None
+        if self.equal_widths:
+            vis_sizes = [c.measure(theme) for c in self._visible_children()]
+            slot = max(s.w for s in vis_sizes) if vis_sizes else 0.0
+        offs = []
+        cx = 0.0
+        for child, size, cb in zip(self.children, sizes, content):
+            invisible = getattr(child, "is_layout_invisible", False)
+            cb_y = cb[1]
+            cb_h = cb[3]
+            if self.align == "start":
+                oy = 0.0 - cb_y
+            elif self.align == "end":
+                oy = H - (cb_y + cb_h)
+            else:
+                oy = H / 2 - (cb_y + cb_h / 2)
+            if self.equal_widths and not invisible:
+                slot_cx = cx + slot / 2
+                ox = slot_cx - (cb[0] + cb[2] / 2)
+                offs.append((ox, oy, size))
+                cx += slot + g
+            else:
+                offs.append((cx, oy, size))
+                if not invisible:
+                    cx += size.w + g
+        return offs
+
+    def primary_anchor_bbox(self, theme: Theme):
+        """The Row's primary anchor is the union of its children's primary
+        anchors -- the smallest rectangle containing every visible face.
+        """
+        if not self.children:
+            return None
+        offs = self._child_offsets(theme)
+        xs_lo, ys_lo, xs_hi, ys_hi = [], [], [], []
+        for (ox, oy, _size), child in zip(offs, self.children):
+            for ax, ay, aw, ah in child.iter_primary_anchors(theme):
+                xs_lo.append(ox + ax)
+                ys_lo.append(oy + ay)
+                xs_hi.append(ox + ax + aw)
+                ys_hi.append(oy + ay + ah)
+        if not xs_lo:
+            return None
+        x0, y0 = min(xs_lo), min(ys_lo)
+        x1, y1 = max(xs_hi), max(ys_hi)
+        return (x0, y0, x1 - x0, y1 - y0)
+
+    def iter_primary_anchors(self, theme: Theme):
+        out = []
+        offs = self._child_offsets(theme)
+        for (ox, oy, _size), child in zip(offs, self.children):
+            for ax, ay, aw, ah in child.iter_primary_anchors(theme):
+                out.append((ox + ax, oy + ay, aw, ah))
+        return out
+
+    def content_bbox(self, theme: Theme):
+        """Union of children's content rectangles, translated into the
+        Row's local frame. Used by Column alignment to stack rows on
+        their visible content axis.
+        """
+        if not self.children:
+            b = self.measure(theme)
+            return (0.0, 0.0, b.w, b.h)
+        offs = self._child_offsets(theme)
+        xs_lo, ys_lo, xs_hi, ys_hi = [], [], [], []
+        for (ox, oy, _size), child in zip(offs, self.children):
+            cx, cy, cw, ch = child.content_bbox(theme)
+            xs_lo.append(ox + cx)
+            ys_lo.append(oy + cy)
+            xs_hi.append(ox + cx + cw)
+            ys_hi.append(oy + cy + ch)
+        x0, y0 = min(xs_lo), min(ys_lo)
+        x1, y1 = max(xs_hi), max(ys_hi)
+        return (x0, y0, x1 - x0, y1 - y0)

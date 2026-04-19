@@ -165,7 +165,11 @@ sciviz/connect/
 1. Phase 2b implements `Connect`.
 2. Phase 2c ports every existing connector test to assert parity.
 3. Phase 2d migrates all 12 galleries, with SHA-256 PNG comparison.
-4. Phase 2e deletes `Arrow`, `Connector`, `Flow`, `Flowed`, `Labeled`,
-   `Bus` entirely. Only `Connect` and `Anchor` remain.
+4. Phase 2e removes `Arrow`, `Connector`, `Flow`, `Flowed`, `Labeled`,
+   `Bus` from the public `__all__`. They survive as private
+   implementation details under `sciviz.elements._arrow` and
+   `sciviz.composition._flow` / `_flowed` / `_bus`, used only by
+   `Connect` itself.
 
-After Phase 2 the entire "connecting things" vocabulary is two nouns.
+After Phase 2 the entire public "connecting things" vocabulary is two
+nouns: `Connect` and `Anchor`.

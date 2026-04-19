@@ -32,8 +32,8 @@ No widths, heights, gaps, or spacers appear in the author's code.
 """
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
-from .core import BBox, Canvas, Element, Theme
-from .palette import Palette
+from ..core import BBox, Canvas, Element, Theme
+from ..palette import Palette
 
 
 GridKey = Union[str, Tuple[str, ...]]
@@ -333,7 +333,7 @@ class Grid(Element):
         # router treats specially (panels are NOT obstacles for flows
         # whose src or dst lives inside them).
         try:
-            from .composition import _anchor_stack as _as
+            from ..composition import _anchor_stack as _as
         except Exception:  # pragma: no cover
             _as = None
         pad = theme.unit * 0.8

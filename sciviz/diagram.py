@@ -247,6 +247,48 @@ class Diagram:
             out_paths.append(self.save(f"{base}.{fmt}", dpi=dpi))
         return out_paths
 
+    def save_debug(self, path: Union[str, os.PathLike]) -> Path:
+        """Render the diagram while recording every automatic-layout
+        decision, then emit a self-contained interactive HTML page at
+        ``path``.
+
+        The page embeds the SVG unchanged, overlays every routed-connector
+        path, bus spine, obstacle rectangle, and label-placement
+        candidate, and exposes per-decision statistics in a side panel.
+        It is the primary tool for diagnosing "why is my label sitting
+        here" or "why did this arrow detour" bugs.
+
+        Parameters
+        ----------
+        path : str or Path
+            Output path.  Should end in ``.html``; any other extension
+            is accepted but a warning is printed.
+
+        Returns
+        -------
+        Path
+            The written file path.
+        """
+        from .auto.debug import DebugRecorder, record_into
+        from .auto._debug_page import render_debug_html
+
+        out = Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+
+        recorder = DebugRecorder()
+        with record_into(recorder):
+            svg_source = self.render()
+        size = self.measure()
+        html = render_debug_html(
+            title=self.title or "sciviz debug",
+            svg=svg_source,
+            svg_width=size.w,
+            svg_height=size.h,
+            recorder=recorder,
+        )
+        out.write_text(html, encoding="utf-8")
+        return out
+
     # ------------------------------------------------------------------
     # convenience
     # ------------------------------------------------------------------

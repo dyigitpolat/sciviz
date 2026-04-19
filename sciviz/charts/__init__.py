@@ -14,8 +14,8 @@ from __future__ import annotations
 
 from typing import List, Optional, Sequence, Tuple, Union
 
-from .core import Element, BBox, Canvas, Theme
-from .elements import Text
+from ..core import Element, BBox, Canvas, Theme
+from ..elements import Text
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ class Table(Element):
         if not isinstance(cell, str):
             raise TypeError(
                 f"Table cells must be Element or str; got {type(cell)}")
-        from .elements import Text
+        from ..elements import Text
         style = {}
         if self.column_styles is not None:
             style = dict(self.column_styles[col_idx] or {})

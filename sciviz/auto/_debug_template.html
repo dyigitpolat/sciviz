@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>__TITLE__</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #222; }
+  body { display: grid; grid-template-columns: 1fr 360px; }
+  #stage {
+    position: relative;
+    overflow: hidden;
+    background: #fafafa;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+  }
+  #stage .frame {
+    position: relative;
+    transform-origin: 0 0;
+    background: white;
+    box-shadow: 0 2px 16px rgba(0,0,0,0.08);
+  }
+  #stage .frame > svg { display: block; }
+  #overlay {
+    position: absolute;
+    top: 0; left: 0;
+    pointer-events: none;
+  }
+  #sidebar {
+    border-left: 1px solid #e0e0e0;
+    background: #fff;
+    overflow-y: auto;
+    padding: 16px;
+  }
+  h1 { font-size: 14px; margin: 0 0 6px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: #555; margin: 16px 0 6px; }
+  .muted { color: #777; font-size: 12px; }
+  .toggle {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 0; font-size: 13px;
+  }
+  .toggle input { accent-color: #3b82f6; }
+  table.summary { font-size: 12px; width: 100%; border-collapse: collapse; }
+  table.summary td { padding: 2px 4px; }
+  table.summary td:first-child { color: #777; }
+  table.summary td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  ul.picks {
+    list-style: none; padding: 0; margin: 0;
+    font-size: 12px;
+  }
+  ul.picks li {
+    padding: 4px 6px;
+    border-bottom: 1px solid #eee;
+    cursor: pointer;
+    font-variant-numeric: tabular-nums;
+  }
+  ul.picks li:hover { background: #f0f7ff; }
+  ul.picks li.active { background: #e0ecff; }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 12px;
+  }
+  .legend .swatch {
+    display: inline-block; width: 10px; height: 10px; margin-right: 4px;
+    vertical-align: middle; border-radius: 2px;
+  }
+  .status {
+    margin-top: 12px; font-size: 12px; color: #444;
+    padding: 8px; background: #f4f4f4; border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="frame" id="frame">
+    __SVG__
+    <svg id="overlay" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 __W__ __H__" width="__W__" height="__H__"></svg>
+  </div>
+</div>
+<div id="sidebar">
+  <h1>__TITLE__ — layout debug</h1>
+  <div class="muted">__SUMMARY_LINE__</div>
+
+  <h2>Overlays</h2>
+  <label class="toggle"><input type="checkbox" data-layer="anchors"> Anchors (blue)</label>
+  <label class="toggle"><input type="checkbox" data-layer="regions"> Regions (orange dashed)</label>
+  <label class="toggle"><input type="checkbox" data-layer="paths" checked> Routed paths (green)</label>
+  <label class="toggle"><input type="checkbox" data-layer="label-obstacles"> Label obstacles (grey)</label>
+  <label class="toggle"><input type="checkbox" data-layer="label-candidates"> Label candidates (faded)</label>
+  <label class="toggle"><input type="checkbox" data-layer="label-chosen" checked> Chosen label rect (pink)</label>
+
+  <h2>Summary</h2>
+  <table class="summary">
+    <tr><td>Routed paths</td><td id="s-paths">0</td></tr>
+    <tr><td>Paths retried without clearance</td><td id="s-retry">0</td></tr>
+    <tr><td>Label placements</td><td id="s-labels">0</td></tr>
+    <tr><td>Labels with non-zero overlap</td><td id="s-overlap">0</td></tr>
+  </table>
+
+  <h2>Router decisions</h2>
+  <ul class="picks" id="router-list"></ul>
+
+  <h2>Label decisions</h2>
+  <ul class="picks" id="label-list"></ul>
+
+  <div class="status" id="status">Click a decision to inspect. Scroll in the canvas to zoom.</div>
+</div>
+
+<script>
+"use strict";
+const DATA = __DATA__;
+
+/* ---------- overlay layers --------------------------------------------- */
+
+const svgNS = "http://www.w3.org/2000/svg";
+const overlay = document.getElementById("overlay");
+
+function make(tag, attrs, parent) {
+  const el = document.createElementNS(svgNS, tag);
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+  (parent || overlay).appendChild(el);
+  return el;
+}
+
+const layers = {};
+for (const name of ["regions", "anchors", "paths", "label-obstacles",
+                    "label-candidates", "label-chosen", "highlight"]) {
+  layers[name] = make("g", {id: "layer-" + name, opacity: 0});
+}
+
+/* Anchors (blue outlines) */
+const seenAnchors = new Set();
+for (const rec of DATA.router_paths) {
+  for (const [name, rect] of rec.anchors) {
+    if (seenAnchors.has(name + JSON.stringify(rect))) continue;
+    seenAnchors.add(name + JSON.stringify(rect));
+    make("rect", {
+      x: rect[0], y: rect[1], width: rect[2]-rect[0], height: rect[3]-rect[1],
+      fill: "none", stroke: "#3b82f6", "stroke-width": 0.5, "stroke-opacity": 0.7,
+    }, layers["anchors"]);
+  }
+}
+
+/* Regions (orange dashed) */
+const seenRegions = new Set();
+for (const rec of DATA.router_paths) {
+  for (const [name, rect] of rec.regions) {
+    if (seenRegions.has(name + JSON.stringify(rect))) continue;
+    seenRegions.add(name + JSON.stringify(rect));
+    make("rect", {
+      x: rect[0], y: rect[1], width: rect[2]-rect[0], height: rect[3]-rect[1],
+      fill: "none", stroke: "#f59e0b", "stroke-dasharray": "4 3",
+      "stroke-width": 0.6, "stroke-opacity": 0.8,
+    }, layers["regions"]);
+  }
+}
+
+/* Routed paths (green polylines) */
+DATA.router_paths.forEach((rec, i) => {
+  const points = rec.waypoints.map(p => p.join(",")).join(" ");
+  make("polyline", {
+    points,
+    fill: "none", stroke: "#10b981", "stroke-width": 1.2,
+    "stroke-opacity": 0.8,
+    "data-path-idx": i,
+  }, layers["paths"]);
+});
+
+/* Label obstacles (grey) -- one combined layer; we show for whatever pick is active */
+/* Label candidates / chosen: toggled per-pick */
+
+/* ---------- list UIs --------------------------------------------------- */
+
+const routerList = document.getElementById("router-list");
+DATA.router_paths.forEach((rec, i) => {
+  const li = document.createElement("li");
+  li.textContent = `${i}. ${rec.src_name || "?"} → ${rec.dst_name || "?"}`
+    + (rec.retried_without_clearance ? "  ⚠ retried" : "");
+  li.addEventListener("click", () => focusRouter(i));
+  routerList.appendChild(li);
+});
+
+const labelList = document.getElementById("label-list");
+DATA.label_placements.forEach((rec, i) => {
+  const li = document.createElement("li");
+  const overlap = rec.chosen.overlap.toFixed(1);
+  li.textContent = `${i}. ${rec.owner || "(unnamed)"}  side=${rec.chosen.side}`
+    + `  overlap=${overlap}  clear=${rec.chosen.clearance.toFixed(1)}`;
+  li.addEventListener("click", () => focusLabel(i));
+  labelList.appendChild(li);
+});
+
+/* ---------- summary ---------------------------------------------------- */
+
+document.getElementById("s-paths").textContent = DATA.summary.router_paths;
+document.getElementById("s-retry").textContent = DATA.summary.router_retried;
+document.getElementById("s-labels").textContent = DATA.summary.label_placements;
+document.getElementById("s-overlap").textContent = DATA.summary.label_overlap_nonzero;
+
+/* ---------- toggles ---------------------------------------------------- */
+
+for (const cb of document.querySelectorAll("input[data-layer]")) {
+  const layer = layers[cb.dataset.layer];
+  const apply = () => layer.setAttribute("opacity", cb.checked ? 1 : 0);
+  cb.addEventListener("change", apply);
+  apply();
+}
+
+/* ---------- per-decision focus ----------------------------------------- */
+
+const statusEl = document.getElementById("status");
+let activeLi = null;
+
+function setActive(list, idx) {
+  if (activeLi) activeLi.classList.remove("active");
+  activeLi = list.children[idx] || null;
+  if (activeLi) activeLi.classList.add("active");
+}
+
+function clearLayer(layer) {
+  while (layer.firstChild) layer.removeChild(layer.firstChild);
+}
+
+function focusRouter(i) {
+  setActive(routerList, i);
+  clearLayer(layers["highlight"]);
+  const rec = DATA.router_paths[i];
+  const pts = rec.waypoints.map(p => p.join(",")).join(" ");
+  make("polyline", {
+    points: pts, fill: "none", stroke: "#dc2626",
+    "stroke-width": 2.5, "stroke-opacity": 0.9,
+  }, layers["highlight"]);
+  layers["highlight"].setAttribute("opacity", 1);
+  const crossings = rec.required_crossings.join(", ") || "(none)";
+  statusEl.innerHTML =
+    `<b>${rec.src_name}</b> → <b>${rec.dst_name}</b><br>`
+    + `sides: ${rec.src_side} → ${rec.dst_side}<br>`
+    + `required region crossings: ${crossings}<br>`
+    + `style: ${rec.style_hint}, min-clearance: ${rec.min_clearance}`
+    + (rec.retried_without_clearance ? "<br><b style='color:#dc2626'>Planner retried without clearance.</b>" : "");
+}
+
+function focusLabel(i) {
+  setActive(labelList, i);
+  clearLayer(layers["label-obstacles"]);
+  clearLayer(layers["label-candidates"]);
+  clearLayer(layers["label-chosen"]);
+  const rec = DATA.label_placements[i];
+  for (const ob of rec.obstacles) {
+    make("rect", {
+      x: ob[0], y: ob[1], width: ob[2]-ob[0], height: ob[3]-ob[1],
+      fill: "#6b7280", "fill-opacity": 0.08, stroke: "#6b7280",
+      "stroke-width": 0.4, "stroke-opacity": 0.6,
+    }, layers["label-obstacles"]);
+  }
+  rec.candidates.forEach((c, j) => {
+    const col = (c.overlap > 0) ? "#f87171" : "#60a5fa";
+    make("rect", {
+      x: c.rect[0], y: c.rect[1],
+      width: c.rect[2]-c.rect[0], height: c.rect[3]-c.rect[1],
+      fill: "none", stroke: col, "stroke-width": 0.5,
+      "stroke-opacity": 0.7,
+    }, layers["label-candidates"]);
+  });
+  const ch = rec.chosen.rect;
+  make("rect", {
+    x: ch[0], y: ch[1], width: ch[2]-ch[0], height: ch[3]-ch[1],
+    fill: "#ec4899", "fill-opacity": 0.18, stroke: "#ec4899",
+    "stroke-width": 1.2,
+  }, layers["label-chosen"]);
+  const [[sx, sy], [ex, ey]] = rec.segment;
+  make("line", {
+    x1: sx, y1: sy, x2: ex, y2: ey,
+    stroke: "#ec4899", "stroke-width": 0.8, "stroke-dasharray": "2 2",
+  }, layers["label-chosen"]);
+  /* Turn on the layers so the user sees the effect even if they untoggled. */
+  layers["label-obstacles"].setAttribute("opacity", 1);
+  layers["label-candidates"].setAttribute("opacity", 1);
+  layers["label-chosen"].setAttribute("opacity", 1);
+  statusEl.innerHTML =
+    `<b>${rec.owner || "(unnamed label)"}</b><br>`
+    + `prefer: ${rec.prefer}, chosen side: ${rec.chosen.side}<br>`
+    + `overlap: ${rec.chosen.overlap.toFixed(2)}, `
+    + `clearance: ${rec.chosen.clearance.toFixed(2)}<br>`
+    + `candidates considered: ${rec.candidates.length}`;
+}
+
+/* ---------- pan / zoom ------------------------------------------------- */
+
+const stage = document.getElementById("stage");
+const frame = document.getElementById("frame");
+let scale = 1, tx = 0, ty = 0;
+let fit = () => {
+  const rect = stage.getBoundingClientRect();
+  const pad = 24;
+  const sx = (rect.width - pad * 2) / __W__;
+  const sy = (rect.height - pad * 2) / __H__;
+  scale = Math.min(sx, sy, 1);
+  tx = (rect.width - __W__ * scale) / 2;
+  ty = (rect.height - __H__ * scale) / 2;
+  apply();
+};
+function apply() {
+  frame.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+}
+stage.addEventListener("wheel", e => {
+  e.preventDefault();
+  const rect = stage.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const factor = Math.exp(-e.deltaY * 0.001);
+  const newScale = Math.max(0.1, Math.min(8, scale * factor));
+  const worldX = (mx - tx) / scale, worldY = (my - ty) / scale;
+  scale = newScale;
+  tx = mx - worldX * scale;
+  ty = my - worldY * scale;
+  apply();
+}, {passive: false});
+let dragging = false, dragX = 0, dragY = 0;
+stage.addEventListener("pointerdown", e => {
+  dragging = true; dragX = e.clientX; dragY = e.clientY;
+  stage.setPointerCapture(e.pointerId);
+});
+stage.addEventListener("pointermove", e => {
+  if (!dragging) return;
+  tx += e.clientX - dragX; ty += e.clientY - dragY;
+  dragX = e.clientX; dragY = e.clientY;
+  apply();
+});
+stage.addEventListener("pointerup", () => { dragging = false; });
+window.addEventListener("resize", fit);
+fit();
+</script>
+</body>
+</html>

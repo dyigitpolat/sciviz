@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Sequence as Seq, Tuple, Union
 
-from .core import Element, BBox, Canvas, Theme
+from ..core import Element, BBox, Canvas, Theme
 
 
 # ---------------------------------------------------------------------------

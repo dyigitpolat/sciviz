@@ -3,12 +3,12 @@
 **Opinionated, compositional, paper-ready diagrams for scientific computing.**
 
 `sciviz` lets you build publication-quality figures from a declarative,
-bounding-box layout model.  You describe *what* the figure contains; the
-library handles typography, colour, alignment, math typesetting, and
-overlap avoidance.
+bounding-box layout model. You describe *what* the figure contains;
+the library handles typography, colour, alignment, math typesetting,
+arrow routing, and overlap avoidance.
 
 ```python
-from sciviz import Diagram, Row, Panel, Math, BarChart, Palette
+from sciviz import Diagram, Row, Panel, Math, BarChart
 
 d = Diagram(
     title="Post-training quantization",
@@ -30,46 +30,42 @@ d.save("figure.pdf")    # also .svg and .png
 
 1. **Declarative.**  You compose elements, not coordinates.
 2. **Opinionated, paper-first.**  Defaults target print: white background,
-   hairline borders, Computer Modern math, muted print-safe palette.  Call
+   hairline borders, Computer Modern math, muted print-safe palette. Call
    `Theme.slides()` for the looser slide aesthetic.
-3. **Bbox composition.**  Every element reports its extent; parents handle
-   placement.  Containment guarantees no sibling overlap.
-4. **Semantic colour.**  `color=Palette.alert`, `color=Palette.blue`,
-   `color=Palette.next("worker_0")` — never hex.  Concrete hex still works
-   as an escape hatch via `Palette.literal("#abc")`.
-5. **No manual spacers.**  `Section`, `Strip`, `Tokens`, `Sequence`, ...
-   absorb the spacing arithmetic.  When you do reach for `Spacer`, it's
-   for *intentional* irregularity.
+3. **Bbox composition.**  Every element reports its extent; parents
+   handle placement. Containment guarantees no sibling overlap.
+4. **One way to connect.**  `Connect` subsumes arrows, buses, inline
+   connectors, and labeled wires. Author intent, the backend routes.
+5. **Semantic colour.**  `color=Palette.alert`, `color=Palette.blue`,
+   `color=Palette.next("worker_0")` — never hex. Concrete hex still
+   works as an escape hatch via `Palette.literal("#abc")`.
 6. **Vector math.**  `Math(r"$...$")` renders LaTeX through matplotlib's
    `mathtext` as SVG paths — no raster, no font dependency.
-7. **Generic primitives in core; specialization in `examples/`.**  Core
-   ships building blocks that span domains.  Domain-specific presets
-   (attention heads, LoRA, quantization buckets) are examples that you
-   import explicitly and copy-modify.
 
-## Architecture
+## Package layout
 
 ```
 sciviz/
-  core.py         Theme, BBox, Canvas, Element base class
-  layout.py       Spacer, Row, Column, Stack, Grid, Panel, Padded, Framed,
-                  FixedSize
-  elements.py     Text, TextBlock, Box, Arrow, Connector, Matrix, Legend,
-                  Note, Caption, MiniGrid
-  math.py         Math, auto_text     (LaTeX via matplotlib mathtext)
-  charts.py       Table, BarChart
-  primitives.py   Heatmap, Histogram, MeshArray
-  specialized.py  Pyramid, Timeline, Tree, Scatter
-  structures.py   Strip, Section, BlockGroup, LayeredGraph
-  graphs.py       Token, Tokens, BipartiteGraph, NodeTree, Sequence,
-                  FlowChart
-  composition.py  Inline, Card, KeyValue, Bullets
-  ml.py           NNLayer, Pipeline, Tensor   (generic ML primitives)
-  palette.py      Palette, ColorRef           (semantic colour system)
-  diagram.py      Diagram (root container with title/subtitle/footer + export)
-  examples/
-    ml.py         AttentionHead, LoRA, QuantBins   (domain-specific presets)
+  core/           Element, BBox, Canvas, Theme
+  layout/         Row, Column, Panel, Spacer, FixedSize
+  elements/       Text, TextBlock, Box, Matrix, Legend, Caption, TokenRow
+  composition/    Inline, Captioned, Badge, Brace, Group, Region,
+                  LabeledChain, MatchSize, LoopIcon, (Anchor/Flow/Bus internals)
+  connect/        Connect, Anchor       -- the only public connector API
+  grid/           Grid                  -- per-column alignment
+  charts/         Table, AlignedColumns, BarChart
+  primitives/     Heatmap, Histogram, MeshArray, VectorTiles, StackedBoxes
+  specialized/    Pyramid, Timeline, Scatter
+  structures/     Section, BlockGroup
+  graphs/         Token, Tokens, NodeTree, Sequence
+  math/           Math                  -- LaTeX via matplotlib mathtext
+  palette/        Palette, ColorRef     -- semantic colour system
+  auto/           router, labelplacer   -- layout assistants (internal)
+  diagram.py      Diagram               -- root container with export
 ```
+
+Lower packages must not import higher packages; this is enforced by
+`tests/test_import_direction.py`.
 
 ## Core contract
 
@@ -79,9 +75,35 @@ class Element:
     def render(self, canvas, x, y, theme) -> None: ...
 ```
 
-Every drawable promises to keep its rendering inside the bounding box it
-reports.  That single invariant lets sibling elements compose without
+Every drawable promises to keep its rendering inside the bounding box
+it reports. That single invariant lets sibling elements compose without
 overlap — containers simply measure each child, place it, and advance.
+
+## Connecting things: `Connect`
+
+```python
+from sciviz import Row, Box, Anchor, Connect
+
+# Inline: a bare arrow between neighbours in a Row / Column.
+Row(Box("in"), Connect(), Box("out"))
+
+# Routed: a wire between two named anchors, planned around obstacles.
+Row(
+    Anchor("a", Box("alpha")),
+    Anchor("b", Box("beta")),
+    Connect("a", "b", label="to beta"),
+)
+
+# Bus: many sources fan into a single label or destination.
+Connect(["a1", "a2", "a3"], "sink", label="concat")
+
+# Labeled: a source element decorated with a short-arrow label.
+Connect.labeled(Anchor("op", Box("f")), Math(r"$y = f(x)$"))
+```
+
+`Connect(src, dst, ...)` auto-detects its mode (inline, routed, or bus)
+from the shape of `src` / `dst`. Colour, head shape, curvature, and
+dashing all have sensible defaults derived from the theme.
 
 ## Colour system
 
@@ -100,41 +122,30 @@ related entities (workers, micro-batches, kernels) that should share
 colours across panels — pass the same key string anywhere the colour
 should match, and you'll get the same hue.
 
-## Layout primitives that absorb manual work
-
-| Pattern | Old way | New way |
-|---|---|---|
-| Equal-width token cells | `Row(Spacer, Box, Spacer, Box, ...)` | `Tokens([(label, role), ...])` |
-| Title + rule + body + caption | `Column(Text, Spacer, Body, Spacer, Caption)` | `Section(title, body, caption=...)` |
-| Phase/group framing | manual `Box` + caption arithmetic | `BlockGroup(child, label=...)` |
-| Two-column DAG | hand-routed lines | `BipartiteGraph(left, right, edges)` |
-| Tree of pages | hand-routed lines | `NodeTree(tree_tuple)` |
-| UML message diagram | abused `Timeline` | `Sequence(actors, messages)` |
-| Layered DAG | hand-routed lines | `LayeredGraph(layers, edges)` |
-
 ## Gallery
 
-Twelve showcase figures ship in `gallery/`, each under 60 lines.
+Twelve showcase figures ship in `gallery/`, each under ~60 lines.
 
 | Diagram | Domain | Topic | Primary primitive |
 |---|---|---|---|
-| `memory_hierarchy.py` | hardware | CPU cache pyramid | `Pyramid` (auto-shaded) |
-| `roofline.py` | perf-engineering | A100 FP16 roofline | `Scatter` (log-log + lines) |
-| `pipeline_parallelism.py` | ML systems | GPipe schedule | `Timeline` + `Palette.next` |
-| `paxos.py` | distributed | Two-phase consensus | `Sequence` (UML lifelines) |
-| `speculative_decoding.py` | ML inference | Draft + target protocol | `Tokens` (auto-aligned) |
-| `bplus_tree.py` | data structures | Linked leaves | `NodeTree` (15 lines!) |
+| `memory_hierarchy.py` | hardware | CPU cache pyramid | `Pyramid` |
+| `roofline.py` | perf-engineering | A100 FP16 roofline | `Scatter` |
+| `pipeline_parallelism.py` | ML systems | GPipe schedule | `Timeline` |
+| `paxos.py` | distributed | Two-phase consensus | `Sequence` |
+| `speculative_decoding.py` | ML inference | Draft + target protocol | `Tokens` |
+| `bplus_tree.py` | data structures | Linked leaves | `NodeTree` |
 | `diffusion.py` | ML theory | Forward/reverse Markov chain | `Heatmap` |
 | `amortized_analysis.py` | algorithms | Doubling array push() | `Histogram` |
-| `crossbar_pruning.py` | ML hardware | Row/col pruning | `MeshArray` (grid + peripherals) |
+| `crossbar_pruning.py` | ML hardware | Row/col pruning | `MeshArray` |
 | `deepseek_v3.py` | ML systems | DeepSeek-V3 architecture | composed primitives |
-| `action_conditioning_modes.py` | ML | Action conditioning injection modes | composed primitives |
-| `ttt_mlp.py` | ML | In-place test-time training MLP | `Bus` + composed primitives |
+| `action_conditioning_modes.py` | ML | Action conditioning injection | composed primitives |
+| `ttt_mlp.py` | ML | In-place test-time training MLP | `Connect` bus + composites |
 
 ## Math
 
-Renders LaTeX through matplotlib's `mathtext` to vector SVG paths.  Cached
-by `(latex, size, color, bold)` so reused expressions don't re-render.
+Renders LaTeX through matplotlib's `mathtext` to vector SVG paths.
+Cached by `(latex, size, color, bold)` so reused expressions don't
+re-render.
 
 ```python
 Math(r"$\hat y = \mathrm{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}\right) V$")
@@ -153,18 +164,17 @@ From a clone of this repository (recommended for development):
 source .venv/bin/activate
 ```
 
-Or install manually:
+Or manually:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -U pip
-pip install -e ".[pdf]"      # omit [pdf] if you only need SVG; add for PDF/PNG
+pip install -e ".[pdf]"      # omit [pdf] for SVG-only
 ```
 
-After you build and publish a wheel or sdist, consumers can run `pip install sciviz` (or `pip install 'sciviz[pdf]'`) the same way.
-
-Runtime: **matplotlib** (required for `Math` and layouts). **cairosvg** is only needed for PDF/PNG export; SVG does not use it.
+Runtime: **matplotlib** (required for `Math` and layouts).
+**resvg** is used for PDF/PNG export; SVG export is pure-Python.
 
 ## Theme
 
@@ -177,7 +187,7 @@ theme = Theme().with_overrides(unit=8.0)  # partial customisation
 
 ## Version
 
-0.3.0 — paper-ready theme, `Palette` colour system, `Strip`/`Section`/
-`BlockGroup`/`LayeredGraph` structural primitives, `Heatmap`/`Histogram`/
-`MeshArray` general primitives, specialization moved to `examples/`,
-12 showcase figures spanning hardware, systems, algorithms, theory, and ML.
+0.3.0 — unified `Connect` API, clean package split (`core`, `layout`,
+`elements`, `composition`, `connect`, `grid`, `charts`, `primitives`,
+`specialized`, `structures`, `graphs`, `math`, `palette`, `auto`,
+`diagram`), 12 gallery figures, 130+ tests.

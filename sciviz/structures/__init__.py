@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from typing import Optional, Union
 
-from .core import Element, BBox, Canvas, Theme
-from .elements import Text, Box
+from ..core import Element, BBox, Canvas, Theme
+from ..elements import Text, Box
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +224,7 @@ class BlockGroup(Element):
         # Publish the border rectangle to every active anchor registry
         # under a `__region_<id>` key so connector routers can detect
         # required / forbidden boundary crossings.
-        from .composition import _anchor_stack
+        from ..composition import _anchor_stack
         stack = _anchor_stack.get()
         if stack is not None:
             key = f"__region_{id(self):x}"
