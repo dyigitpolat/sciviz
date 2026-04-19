@@ -733,6 +733,12 @@ class Element:
     # (or a 4-tuple ``(x, y, w, h)``).  The default is None.
     primary_anchor = None
 
+    # Declarative placeholders (e.g. ``Connect`` routed/bus specs) live in
+    # the tree as zero-size siblings so they can be collected by walkers,
+    # but they should NOT contribute a gap in Row/Column/Grid layout.
+    # Elements that are pure metadata set this to True.
+    is_layout_invisible: bool = False
+
     def measure(self, theme: Theme) -> BBox:  # pragma: no cover - abstract
         raise NotImplementedError(
             f"{type(self).__name__} must implement measure(theme)")

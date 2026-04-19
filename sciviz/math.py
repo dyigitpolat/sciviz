@@ -171,18 +171,3 @@ class Math(Element):
             f'{inner}'
             f'</g>'
         )
-
-
-# ---------------------------------------------------------------------------
-# Convenience: a Text element that switches to Math automatically when the
-# content begins with $ ... $.
-# ---------------------------------------------------------------------------
-
-def auto_text(content: str, **kwargs) -> Element:
-    """Return :class:`Math` if ``content`` is wrapped in ``$...$``, else a
-    regular :class:`Text`."""
-    from .elements import Text
-    s = content.strip()
-    if len(s) >= 2 and s.startswith("$") and s.endswith("$"):
-        return Math(s, **kwargs)
-    return Text(content, **kwargs)

@@ -8,7 +8,7 @@ import sys, random
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sciviz import (Diagram, Row, Column, Panel, MeshArray, Box, Connector,
+from sciviz import (Diagram, Row, Column, Panel, MeshArray, Box, Connect,
                     Math, Caption, Section, Text, Matrix, Palette)
 
 # Sparse weight matrix: rows {1,5} and cols {2,6} are zeroed.
@@ -66,10 +66,10 @@ d = Diagram(
     subtitle="zero rows -> gate off DACs;  zero columns -> remove ADCs (largest energy win)",
     body=Row(
         Panel("a", "Weight matrix", mat_panel),
-        Connector("map to", direction="right"),
+        Connect(label="map to", direction="right"),
         Panel("b", "Full crossbar",
               Column(xbar_full, mvm_caption, gap="md", align="center")),
-        Connector("gate off pruned", direction="right"),
+        Connect(label="gate off pruned", direction="right"),
         Panel("c", "After pruning", xbar_pruned),
         gap="md", align="center",
     ),

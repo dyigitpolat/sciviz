@@ -148,17 +148,26 @@ class Row(Element):
                 if getattr(p, "min_height", None) is None or p.min_height < target_h:
                     p.min_height = target_h
 
+    def _visible_children(self):
+        """Children that participate in main-axis layout. Invisible ones
+        are still rendered at the running cursor, but consume no gap."""
+        return [c for c in self.children
+                if not getattr(c, "is_layout_invisible", False)]
+
     def measure(self, theme: Theme) -> BBox:
         if not self.children:
             return BBox(0, 0)
         self._normalize_shape_peers(theme)
+        visible = self._visible_children()
+        vis_sizes = [c.measure(theme) for c in visible]
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
-        if self.equal_widths:
-            slot = max(s.w for s in sizes)
-            w = slot * len(sizes) + g * (len(sizes) - 1)
+        n_vis = max(len(visible), 1)
+        if self.equal_widths and visible:
+            slot = max(s.w for s in vis_sizes)
+            w = slot * len(visible) + g * (len(visible) - 1)
         else:
-            w = sum(s.w for s in sizes) + g * (len(sizes) - 1)
+            w = sum(s.w for s in vis_sizes) + g * (n_vis - 1)
         # Row height must accommodate the TALLEST content bbox plus the
         # asymmetric out-of-band margins of any individual child, so that
         # content-axis centering still fits every child inside the row.
@@ -180,31 +189,34 @@ class Row(Element):
         # Flow routing) to share a horizontal axis.  The row content y
         # band is the max content height centered within the row height.
         content = [c.content_bbox(theme) for c in self.children]
-        content_h = max(cb[3] for cb in content)
         # Use the measured row H (derived the same way in ``measure``).
         H = self.measure(theme).h
-        slot = max(s.w for s in sizes) if self.equal_widths else None
+        slot = None
+        if self.equal_widths:
+            vis_sizes = [c.measure(theme) for c in self._visible_children()]
+            slot = max(s.w for s in vis_sizes) if vis_sizes else 0.0
         cx = x
         for child, size, cb in zip(self.children, sizes, content):
+            invisible = getattr(child, "is_layout_invisible", False)
             cb_y = cb[1]
             cb_h = cb[3]
             if self.align == "start":
                 cy = y - cb_y
             elif self.align == "end":
                 cy = y + H - (cb_y + cb_h)
-            else:  # center each child's content centre on the row centre
+            else:
                 row_content_center_y = y + H / 2
                 cy = row_content_center_y - (cb_y + cb_h / 2)
-            if self.equal_widths:
+            if self.equal_widths and not invisible:
                 cb_x = cb[0]
                 cb_w = cb[2]
-                # Align content (not outer) centres inside the slot
                 slot_cx = cx + slot / 2
                 child.render(canvas, slot_cx - (cb_x + cb_w / 2), cy, theme)
                 cx += slot + g
             else:
                 child.render(canvas, cx, cy, theme)
-                cx += size.w + g
+                if not invisible:
+                    cx += size.w + g
 
     def _child_offsets(self, theme: Theme):
         """Same x/y placement math as :meth:`render`, but returns the
@@ -220,12 +232,15 @@ class Row(Element):
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
         content = [c.content_bbox(theme) for c in self.children]
-        content_h = max(cb[3] for cb in content)
         H = self.measure(theme).h
-        slot = max(s.w for s in sizes) if self.equal_widths else None
+        slot = None
+        if self.equal_widths:
+            vis_sizes = [c.measure(theme) for c in self._visible_children()]
+            slot = max(s.w for s in vis_sizes) if vis_sizes else 0.0
         offs = []
         cx = 0.0
-        for size, cb in zip(sizes, content):
+        for child, size, cb in zip(self.children, sizes, content):
+            invisible = getattr(child, "is_layout_invisible", False)
             cb_y = cb[1]
             cb_h = cb[3]
             if self.align == "start":
@@ -234,14 +249,15 @@ class Row(Element):
                 oy = H - (cb_y + cb_h)
             else:
                 oy = H / 2 - (cb_y + cb_h / 2)
-            if self.equal_widths:
+            if self.equal_widths and not invisible:
                 slot_cx = cx + slot / 2
                 ox = slot_cx - (cb[0] + cb[2] / 2)
                 offs.append((ox, oy, size))
                 cx += slot + g
             else:
                 offs.append((cx, oy, size))
-                cx += size.w + g
+                if not invisible:
+                    cx += size.w + g
         return offs
 
     def primary_anchor_bbox(self, theme: Theme):
@@ -307,20 +323,24 @@ class Column(Element):
         self.gap = gap
         self.align = align
 
+    def _visible_children(self):
+        return [c for c in self.children
+                if not getattr(c, "is_layout_invisible", False)]
+
     def measure(self, theme: Theme) -> BBox:
         if not self.children:
             return BBox(0, 0)
         sizes = [c.measure(theme) for c in self.children]
+        visible = self._visible_children()
+        vis_sizes = [c.measure(theme) for c in visible]
         g = theme.gap_px(self.gap)
-        # Width must accommodate the widest CONTENT bbox plus the
-        # out-of-band left/right margins of any individual child, so that
-        # content-axis alignment still fits every child inside the column.
         content = [c.content_bbox(theme) for c in self.children]
         content_w = max(cb[2] for cb in content)
         max_left = max(cb[0] for cb in content)
         max_right = max(s.w - cb[0] - cb[2] for s, cb in zip(sizes, content))
         w = max(content_w + max_left + max_right, max(s.w for s in sizes))
-        h = sum(s.h for s in sizes) + g * (len(sizes) - 1)
+        n_vis = max(len(visible), 1)
+        h = sum(s.h for s in vis_sizes) + g * (n_vis - 1)
         return BBox(w, h)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
@@ -328,61 +348,28 @@ class Column(Element):
             return
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
-        # Content-bbox alignment: we want siblings' CONTENT rectangles
-        # (excluding out-of-band margins like those added by Anchor for
-        # Flow routing) to share a vertical axis.  The column content x
-        # band is the max content width centered within the column width.
         content = [c.content_bbox(theme) for c in self.children]
-        content_w = max(cb[2] for cb in content)
         W = self.measure(theme).w
         cy = y
         for child, size, cb in zip(self.children, sizes, content):
+            invisible = getattr(child, "is_layout_invisible", False)
             cb_x = cb[0]
             cb_w = cb[2]
             if self.align == "start":
                 cx = x - cb_x
             elif self.align == "end":
                 cx = x + W - (cb_x + cb_w)
-            else:  # center each child's content centre on the column centre
+            else:
                 col_content_center_x = x + W / 2
                 cx = col_content_center_x - (cb_x + cb_w / 2)
             child.render(canvas, cx, cy, theme)
-            cy += size.h + g
+            if not invisible:
+                cy += size.h + g
 
 
 # ---------------------------------------------------------------------------
-# Stack & Grid
+# Grid
 # ---------------------------------------------------------------------------
-
-class Stack(Element):
-    """Overlay all children at the same origin.  Useful for annotation layers."""
-
-    def __init__(self, *children: Element, align: str = "center"):
-        self.children = [c for c in children if c is not None]
-        self.align = align
-
-    def measure(self, theme: Theme) -> BBox:
-        if not self.children:
-            return BBox(0, 0)
-        sizes = [c.measure(theme) for c in self.children]
-        return BBox(max(s.w for s in sizes), max(s.h for s in sizes))
-
-    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
-        if not self.children:
-            return
-        sizes = [c.measure(theme) for c in self.children]
-        W = max(s.w for s in sizes)
-        H = max(s.h for s in sizes)
-        for child, size in zip(self.children, sizes):
-            if self.align == "start":
-                dx, dy = 0, 0
-            elif self.align == "end":
-                dx, dy = W - size.w, H - size.h
-            else:
-                dx = (W - size.w) / 2
-                dy = (H - size.h) / 2
-            child.render(canvas, x + dx, y + dy, theme)
-
 
 class Grid(Element):
     """Regular N-column grid, children placed row-major.
@@ -446,51 +433,6 @@ class Grid(Element):
                 dx = (cell_w - size.w) / 2
                 dy = (cell_h - size.h) / 2
             child.render(canvas, x + col_x[c] + dx, y + row_y[r] + dy, theme)
-
-
-# ---------------------------------------------------------------------------
-# Padding
-# ---------------------------------------------------------------------------
-
-class Padded(Element):
-    """Wrap a child with padding (semantic tokens accepted)."""
-
-    def __init__(self, child: Element, *,
-                 all: Union[str, float, None] = None,
-                 x: Union[str, float, None] = None,
-                 y: Union[str, float, None] = None,
-                 top: Union[str, float, None] = None,
-                 right: Union[str, float, None] = None,
-                 bottom: Union[str, float, None] = None,
-                 left: Union[str, float, None] = None):
-        self.child = child
-        self._all = all
-        self._x = x
-        self._y = y
-        self._top = top
-        self._right = right
-        self._bottom = bottom
-        self._left = left
-
-    def _resolve(self, theme: Theme):
-        def gx(v, default):
-            if v is None:
-                return default
-            return theme.gap_px(v) if isinstance(v, str) else float(v)
-        a = gx(self._all, 0.0)
-        xp = gx(self._x, a)
-        yp = gx(self._y, a)
-        return (gx(self._top, yp), gx(self._right, xp),
-                gx(self._bottom, yp), gx(self._left, xp))
-
-    def measure(self, theme: Theme) -> BBox:
-        top, right, bottom, left = self._resolve(theme)
-        inner = self.child.measure(theme)
-        return BBox(inner.w + left + right, inner.h + top + bottom)
-
-    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
-        top, right, bottom, left = self._resolve(theme)
-        self.child.render(canvas, x + left, y + top, theme)
 
 
 # ---------------------------------------------------------------------------
@@ -582,42 +524,3 @@ class Panel(Element):
         inner_w = size.w - 2 * pad
         child_x = x + pad + (inner_w - inner.w) / 2
         self.child.render(canvas, child_x, content_y, theme)
-
-
-# ---------------------------------------------------------------------------
-# Framed (unlabeled frame, for summary bands etc.)
-# ---------------------------------------------------------------------------
-
-class Framed(Element):
-    """A simple rounded frame around a child, with configurable padding and bg."""
-
-    def __init__(self, child: Element, *,
-                 padding: Union[str, float] = "md",
-                 bg: str = "bg_panel",
-                 border: str = "border",
-                 radius: Optional[float] = None):
-        self.child = child
-        self.padding = padding
-        self.bg = bg
-        self.border = border
-        self.radius = radius
-
-    def _pad(self, theme: Theme) -> float:
-        return theme.gap_px(self.padding) if isinstance(self.padding, str) else float(self.padding)
-
-    def measure(self, theme: Theme) -> BBox:
-        inner = self.child.measure(theme)
-        p = self._pad(theme)
-        return BBox(inner.w + 2 * p, inner.h + 2 * p)
-
-    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
-        size = self.measure(theme)
-        p = self._pad(theme)
-        r = self.radius if self.radius is not None else theme.panel_radius
-        canvas.rect(
-            x, y, size.w, size.h,
-            fill=theme.color_of(self.bg),
-            stroke=theme.color_of(self.border),
-            stroke_width=1.0, rx=r,
-        )
-        self.child.render(canvas, x + p, y + p, theme)

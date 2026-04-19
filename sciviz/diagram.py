@@ -81,7 +81,7 @@ class Diagram:
     def measure(self) -> BBox:
         """Measure total diagram size (including margins, title, footer)."""
         m = self.theme.diagram_margin
-        body_sz = self.body.measure(self.theme)
+        body_sz = self._body_for_render().measure(self.theme)
         footer_sz = self.footer.measure(self.theme) if self.footer else BBox(0, 0)
         content_w = max(body_sz.w, footer_sz.w)
         if self.title:
@@ -98,13 +98,35 @@ class Diagram:
                    + 2 * m)
         return BBox(total_w, total_h)
 
+    def _body_for_render(self) -> Element:
+        """Wrap the body in a _FlowResolver so any ``Connect`` placeholders
+        in the tree are auto-resolved without the author writing a
+        ``Flowed`` wrapper.
+
+        The wrapper is cached on the ``Diagram`` instance: a fresh resolver
+        is used for every top-level render cycle so its ``_margins_applied``
+        flag behaves correctly, but within a single ``render()`` call the
+        ``measure()`` side-effect and the real ``render()`` share state.
+        """
+        from .connect._resolver import _FlowResolver
+        from .composition import Flowed
+
+        if isinstance(self.body, (Flowed, _FlowResolver)):
+            return self.body
+        cached = getattr(self, "_resolver_cache", None)
+        if cached is None or cached.child is not self.body:
+            cached = _FlowResolver(self.body)
+            self._resolver_cache = cached
+        return cached
+
     def render(self) -> str:
         """Produce SVG source for the diagram."""
         size = self.measure()
         canvas = Canvas()
         m = self.theme.diagram_margin
         # paper: title left-aligned at content origin
-        body_sz = self.body.measure(self.theme)
+        body_for_render = self._body_for_render()
+        body_sz = body_for_render.measure(self.theme)
         content_x = (size.w - max(body_sz.w,
                                   self.footer.measure(self.theme).w if self.footer else 0)) / 2
         if content_x < m:
@@ -135,7 +157,7 @@ class Diagram:
 
         # body: center horizontally within available width
         body_x = (size.w - body_sz.w) / 2
-        self.body.render(canvas, body_x, y, self.theme)
+        body_for_render.render(canvas, body_x, y, self.theme)
         y += body_sz.h
 
         if self.footer:

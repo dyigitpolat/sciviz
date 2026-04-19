@@ -13,9 +13,8 @@ from __future__ import annotations
 
 import re
 
-from sciviz import (
-    Anchor, Box, Bus, Canvas, Flowed, Grid, Palette, Theme,
-)
+from sciviz import (Anchor, Box, Canvas, Grid, Palette, Theme)
+from sciviz.composition import Bus, Flowed
 
 
 def _render(elem) -> str:

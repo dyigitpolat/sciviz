@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import re
 
-from sciviz import Box, Labeled, Theme, Canvas
+from sciviz import (Box, Theme, Canvas)
+from sciviz.composition import Labeled
 from sciviz.math import Math
 
 

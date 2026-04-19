@@ -5,7 +5,7 @@ table.  Author code touches *content* only -- no manual coordinates,
 text colours, alignment widths, or brace spans.
 
 Demonstrates the design-cleanup primitives:
-  * Anchor/Flow/Flowed   -- curved arrows by name, no pixel maths
+  * Anchor + Connect     -- curved arrows by name, no pixel maths
   * MatchSize            -- equalise heights / widths automatically
   * Group                -- row of children with auto-braced label
   * Box(text_color="auto") -- contrast-correct labels by default
@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sciviz import (Diagram, Row, Column, Box, Heatmap, Text, Caption,
-                    Badge, LoopIcon, Brace, Group, Anchor, Flow, Flowed, MatchSize,
+                    Badge, LoopIcon, Brace, Group, Anchor, Connect, MatchSize,
                     BlockGroup, MeshArray, Palette, Spacer, Table, TextBlock,
                     Inline, Captioned)
 
@@ -52,8 +52,8 @@ def attn_block(label, accent=False):
 
 def diffusion_transformer(*, accent: int, plus_anchor=None):
     """Diffusion Transformer block group (Self-Attn | Cross-Attn | FFN),
-    with optional + badge after FFN tagged with ``plus_anchor`` so a Flow
-    can route into it."""
+    with optional + badge after FFN tagged with ``plus_anchor`` so a
+    Connect can route into it."""
     sub = [
         attn_block("Self-Attention",  accent == 0),
         attn_block("Cross-Attention", accent == 1),
@@ -80,8 +80,8 @@ def loop_marker():
 # Panel 1 -- external: action conditions the VAE input
 # ---------------------------------------------------------------------------
 
-panel_external = Flowed(
-    child=Column(
+panel_external = Column(
+    Column(
         Row(Anchor("vae_plus", encoder("VAE\nEncoder", Palette.alert)),
             Spacer(2, 0),
             Anchor("vae_op",
@@ -91,9 +91,10 @@ panel_external = Flowed(
         Anchor("ae1", encoder("Action\nEncoder", Palette.success)),
         gap="none", align="end",
     ),
-    flows=[Flow("ae1", "vae_op",
-                src_side="top", dst_side="bottom",
-                color=Palette.warn.dark(), curvature=0.4)],
+    Connect("ae1", "vae_op",
+            src_side="top", dst_side="bottom",
+            color=Palette.warn.dark(), curvature=0.4),
+    gap=0,
 )
 
 # ---------------------------------------------------------------------------
@@ -135,8 +136,8 @@ panel_contextual = Column(
 # Panel 3 -- residual: action delta added at FFN output
 # ---------------------------------------------------------------------------
 
-panel_residual = Flowed(
-    child=BlockGroup(
+panel_residual = Column(
+    BlockGroup(
         MatchSize(           # auto-equalises heights of these three
             Anchor("ae3", encoder("Action\nEncoder", Palette.success)),
             diffusion_transformer(accent=2, plus_anchor="dt3_plus"),
@@ -150,9 +151,10 @@ panel_residual = Flowed(
     # blocks instead of crossing through them.  Exits bottom of the
     # Action Encoder, runs along the panel floor, then rises into the
     # + badge from below.
-    flows=[Flow("ae3", "dt3_plus",
-                src_side="bottom", dst_side="bottom",
-                color=Palette.warn.dark(), style="orthogonal")],
+    Connect("ae3", "dt3_plus",
+            src_side="bottom", dst_side="bottom",
+            color=Palette.warn.dark(), style="orthogonal"),
+    gap=0,
 )
 
 # ---------------------------------------------------------------------------
@@ -173,8 +175,8 @@ def diffusion_transformer_with_anchor(*, accent, anchor_at):
                       color=Palette.muted, fill=Palette.success.soft(),
                       dashed=False, padding="md", label_align="center")
 
-panel_internal = Flowed(
-    child=BlockGroup(
+panel_internal = Column(
+    BlockGroup(
         MatchSize(
             Anchor("ae4", encoder("Action\nEncoder", Palette.success)),
             diffusion_transformer_with_anchor(accent=1, anchor_at=1),
@@ -187,9 +189,10 @@ panel_internal = Flowed(
     # Orthogonal routing so the line does not sweep THROUGH the
     # Self-Attention / FFN blocks on its way into Cross-Attention's
     # bottom edge.
-    flows=[Flow("ae4", "dt4_target",
-                src_side="bottom", dst_side="bottom",
-                color=Palette.warn.dark(), style="orthogonal")],
+    Connect("ae4", "dt4_target",
+            src_side="bottom", dst_side="bottom",
+            color=Palette.warn.dark(), style="orthogonal"),
+    gap=0,
 )
 
 # ---------------------------------------------------------------------------

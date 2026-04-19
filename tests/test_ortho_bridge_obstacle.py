@@ -4,7 +4,8 @@ segment does not pass through the obstacle.
 """
 import re
 
-from sciviz import Anchor, Box, Diagram, Flow, Row, Column, Spacer, Flowed
+from sciviz import (Anchor, Box, Diagram, Row, Column, Spacer)
+from sciviz.composition import Flow, Flowed
 
 
 def _line_rects(svg: str):

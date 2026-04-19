@@ -2,17 +2,8 @@
 anchor registry under a `__region_*` key so connector routers can see
 them as logical boundaries.
 """
-from sciviz import (
-    Anchor,
-    Box,
-    BlockGroup,
-    Diagram,
-    Flow,
-    Flowed,
-    Region,
-    Row,
-    Spacer,
-)
+from sciviz import (Anchor, Box, BlockGroup, Diagram, Region, Row, Spacer)
+from sciviz.composition import Flow, Flowed
 from sciviz.composition import _anchor_stack
 
 

@@ -6,7 +6,7 @@ import sys, random
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sciviz import (Diagram, Column, Row, Heatmap, Connector, Math,
+from sciviz import (Diagram, Column, Heatmap, Math,
                     Section, Text, Inline, LabeledChain)
 
 PATTERN = [[(i + j) / 10 for j in range(6)] for i in range(6)]

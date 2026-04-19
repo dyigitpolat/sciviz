@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import re
 
-from sciviz import (Anchor, Box, Column, Flow, Flowed, Row, Spacer,
-                    Theme, Canvas)
+from sciviz import (Anchor, Box, Column, Row, Spacer, Theme, Canvas)
+from sciviz.composition import Flow, Flowed
 
 
 _ATTR_RX = re.compile(r'(\w[\w-]*)="([^"]*)"')

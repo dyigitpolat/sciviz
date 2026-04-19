@@ -3,9 +3,9 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sciviz import (Diagram, Row, Column, Box, Text, TextBlock, Badge, Arrow,
-                    Connector, BlockGroup, Anchor, Flow, Flowed, Region,
-                    VectorTiles, Palette, Math, Bus)
+from sciviz import (Diagram, Row, Column, Box, Text, TextBlock, Badge, Connect,
+                    BlockGroup, Anchor, Region,
+                    VectorTiles, Palette, Math)
 
 # -- paper-faithful identity colours -----------------------------------------
 #
@@ -32,7 +32,7 @@ def wdown(latex):
 
 generating = Column(
     Text("Generating Direction", rotate=-90, weight="700"),
-    Arrow(direction="down", length=140, color=Palette.alert),
+    Connect(direction="down", length=140, color=Palette.alert),
 )
 
 # -- Attention residual block (owns the single input embedding) --------------
@@ -43,7 +43,7 @@ generating = Column(
 # part of the attention column without pulling the tiles outside the dashed
 # region.
 
-attention_block = Flowed(
+attention_block = Column(
     BlockGroup(Row(
         Column(
             TextBlock("Input\nEmbedding", weight="700", align="center"),
@@ -52,7 +52,8 @@ attention_block = Flowed(
         Box("Attention", vertical_text=True, fill=ATTN),
         Anchor("attn_plus", add()),
     )),
-    flows=[Flow("inp", "attn_plus", src_side="top", dst_side="top")],
+    Connect("inp", "attn_plus", src_side="top", dst_side="top"),
+    gap=0,
 )
 
 # -- chunks and W_downs: three rows, all W's identical width ----------------
@@ -87,7 +88,7 @@ update_stack = Region(
 
 # -- MLP block ---------------------------------------------------------------
 
-mlp_block = Flowed(
+mlp_block = Column(
     BlockGroup(Row(
         Anchor("mlp_entry", Box("Gated Linear\nLayer", vertical_text=True, fill=GLL)),
         Anchor("mlp_in", VectorTiles(15, color=ACT)),
@@ -95,54 +96,52 @@ mlp_block = Flowed(
         update_stack,
         Anchor("mlp_plus", add()),
     ), label="MLP with In-Place TTT", label_size="title", label_align="end"),
-    flows=[
-        # residual skip over the top: GLL output -> final +
-        Flow("mlp_entry", "mlp_plus", src_side="top", dst_side="top"),
-        # mlp_in (activation vector) fans out to every chunk on a single
-        # labelled bus -- the shared spine reads as "split into chunks"
-        # once instead of repeating the label on each tap.
-        Bus(sources="mlp_in",
-            sinks=["chunk_im1", "chunk_i", "chunk_ip1"],
+    # residual skip over the top: GLL output -> final +
+    Connect("mlp_entry", "mlp_plus", src_side="top", dst_side="top"),
+    # mlp_in (activation vector) fans out to every chunk on a single
+    # labelled bus -- the shared spine reads as "split into chunks"
+    # once instead of repeating the label on each tap.
+    Connect("mlp_in", ["chunk_im1", "chunk_i", "chunk_ip1"],
             label="Split into chunks",
             color="ink",
             orientation="horizontal"),
-        # Each chunk -> its W_down
-        Flow("chunk_im1", "wdown_im1"),
-        Flow("chunk_i",   "wdown_i"),
-        Flow("chunk_ip1", "wdown_ip1"),
-        # Apply output -> Update input
-        Flow("apply_out", "yvec"),
-        # Update internals: yvec -> loss, loss -> dW, teal -> loss
-        Flow("yvec", "loss"),
-        Flow("loss", "dW",   src_side="bottom", dst_side="top"),
-        Flow("conv", "teal", src_side="top",    dst_side="bottom"),
-        Flow("teal", "loss", src_side="top",    dst_side="bottom"),
-        # Feedback: dW -> wdown_i (routes around the Region boundary)
-        Flow("dW", "wdown_i", src_side="left", dst_side="right"),
-        # Vertical dashed control flow through the W_down column
-        Flow("wdown_im1", "wdown_i",
-             src_side="bottom", dst_side="top", dashed=True, arrow=False),
-        Flow("wdown_i",   "wdown_ip1",
-             src_side="bottom", dst_side="top", dashed=True, arrow=False),
-    ],
+    # Each chunk -> its W_down
+    Connect("chunk_im1", "wdown_im1"),
+    Connect("chunk_i",   "wdown_i"),
+    Connect("chunk_ip1", "wdown_ip1"),
+    # Apply output -> Update input
+    Connect("apply_out", "yvec"),
+    # Update internals: yvec -> loss, loss -> dW, teal -> loss
+    Connect("yvec", "loss"),
+    Connect("loss", "dW",   src_side="bottom", dst_side="top"),
+    Connect("conv", "teal", src_side="top",    dst_side="bottom"),
+    Connect("teal", "loss", src_side="top",    dst_side="bottom"),
+    # Feedback: dW -> wdown_i (routes around the Region boundary)
+    Connect("dW", "wdown_i", src_side="left", dst_side="right"),
+    # Vertical dashed control flow through the W_down column
+    Connect("wdown_im1", "wdown_i",
+            src_side="bottom", dst_side="top", dashed=True, head=False),
+    Connect("wdown_i",   "wdown_ip1",
+            src_side="bottom", dst_side="top", dashed=True, head=False),
+    gap=0,
 )
 
-# -- outer Flowed for the long cross-diagram residual ------------------------
+# -- outer diagram: the resolver picks up every Connect in the tree ---------
 
 d = Diagram(
     title="MLP with In-Place Test-Time Training (TTT)",
     subtitle=("each chunk of post-GLL activations goes through its own "
               "W_down; the Update branch computes a delta from the per-chunk loss"),
-    body=Flowed(
+    body=Column(
         Row(generating,
             attention_block,
             mlp_block,
-            Connector(direction="right")),
-        flows=[
-            Flow("inp", "mlp_plus",
-                 src_side="bottom", dst_side="bottom",
-                 color=Palette.muted),
-        ],
+            Connect(direction="right")),
+        # cross-diagram residual: Input embedding -> final +
+        Connect("inp", "mlp_plus",
+                src_side="bottom", dst_side="bottom",
+                color=Palette.muted),
+        gap=0,
     ),
 )
 d.save_all(Path(__file__).resolve().parents[1] / "_out" / "ttt_mlp")

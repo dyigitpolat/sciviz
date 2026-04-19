@@ -9,8 +9,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sciviz import (Diagram, Row, Box, Text, Anchor, Flow, Flowed, Bus,
-                    Grid, Labeled, StackedBoxes, TokenRow)
+from sciviz import (Diagram, Column, Row, Box, Text, Anchor, Connect,
+                    Grid, StackedBoxes, TokenRow)
 from sciviz.math import Math
 
 
@@ -37,8 +37,8 @@ def main_column():
     return {
         "_panel": "Main Model\n(Next Token Prediction)",
         "target": TokenRow(2, 3, 4, 5),
-        "ce":     Labeled(Anchor("main_ce", proc("Cross-Entropy Loss", sub="FP32")),
-                          loss_math("Main")),
+        "ce":     Connect.labeled(Anchor("main_ce", proc("Cross-Entropy Loss", sub="FP32")),
+                                  loss_math("Main")),
         "out":    Anchor("main_out", shared("Output Head", sub="BF16")),
         ("tf", "proj", "rms"):
                   Anchor("main_tf",  StackedBoxes(4, "Transformer Block \u00d7 L",
@@ -53,8 +53,8 @@ def mtp_column(k, input_indices, target_indices):
     return {
         "_panel": panel_label,
         "target": TokenRow(*target_indices),
-        "ce":     Labeled(Anchor(f"mtp{k}_ce", proc("Cross-Entropy Loss", sub="FP32")),
-                          loss_math("MTP", sup=str(k))),
+        "ce":     Connect.labeled(Anchor(f"mtp{k}_ce", proc("Cross-Entropy Loss", sub="FP32")),
+                                  loss_math("MTP", sup=str(k))),
         "out":    Anchor(f"mtp{k}_out",  shared("Output Head", sub="BF16")),
         "tf":     Anchor(f"mtp{k}_tf",   proc("Transformer Block",
                                                sub="FP8 Mixed Precision")),
@@ -68,7 +68,7 @@ def mtp_column(k, input_indices, target_indices):
         "input":  TokenRow(*input_indices),
     }
 
-top_strip = Flowed(
+top_strip = Column(
     Grid(
         rows=ROW_ORDER,
         row_labels={"target": "Target Tokens", "input": "Input Tokens"},
@@ -84,36 +84,32 @@ top_strip = Flowed(
         # Y-merge (two RMSNorms -> one Linear Projection) below.
         column_flow_skip_before=["proj"],
     ),
-    flows=[
-        # Shared-parameter buses: single source, multiple sinks on same row.
-        Bus(sources="main_out",
-            sinks=["mtp1_out", "mtp2_out", "mtp3_out"],
-            label="Shared", dashed=True, arrow=False),
-        Bus(sources="main_emb",
-            sinks=["mtp1_emb", "mtp2_emb", "mtp3_emb"],
-            label="Shared", dashed=True, arrow=False),
-        # Concatenation merge: both RMSNorms fan into Linear Projection.
-        *[Bus(sources=[f"mtp{k}_rn_l", f"mtp{k}_rn_r"],
-              sinks=f"mtp{k}_proj", label="concatenation", color="text")
-          for k in (1, 2, 3)],
-        # Cascading inter-module flows: the previous module's transformer
-        # output feeds the next module's LEFT RMSNorm from below, merging
-        # with the embedding-layer signal already travelling up into it.
-        Flow("main_tf",  "mtp1_rn_l", src_side="top", dst_side="bottom",
-             style="orthogonal", color="text"),
-        Flow("mtp1_tf",  "mtp2_rn_l", src_side="top", dst_side="bottom",
-             style="orthogonal", color="text"),
-        Flow("mtp2_tf",  "mtp3_rn_l", src_side="top", dst_side="bottom",
-             style="orthogonal", color="text"),
-        # Embedding-layer signal feeds the RIGHT RMSNorm in each MTP
-        # module (the LEFT one is already driven by the cascading
-        # inter-module flow above).  Column-flow can't pick between
-        # two siblings automatically, so we name the destination here.
-        *[Flow(f"mtp{k}_emb", f"mtp{k}_rn_r",
-               src_side="top", dst_side="bottom",
-               style="orthogonal", color="text")
-          for k in (1, 2, 3)],
-    ],
+    # Shared-parameter buses: single source, multiple sinks on same row.
+    Connect("main_out", ["mtp1_out", "mtp2_out", "mtp3_out"],
+            label="Shared", dashed=True, head=False),
+    Connect("main_emb", ["mtp1_emb", "mtp2_emb", "mtp3_emb"],
+            label="Shared", dashed=True, head=False),
+    # Concatenation merge: both RMSNorms fan into Linear Projection.
+    *[Connect([f"mtp{k}_rn_l", f"mtp{k}_rn_r"], f"mtp{k}_proj",
+              label="concatenation", color="text")
+      for k in (1, 2, 3)],
+    # Cascading inter-module flows: the previous module's transformer
+    # output feeds the next module's LEFT RMSNorm from below, merging
+    # with the embedding-layer signal already travelling up into it.
+    Connect("main_tf",  "mtp1_rn_l", src_side="top", dst_side="bottom",
+            style="orthogonal", color="text"),
+    Connect("mtp1_tf",  "mtp2_rn_l", src_side="top", dst_side="bottom",
+            style="orthogonal", color="text"),
+    Connect("mtp2_tf",  "mtp3_rn_l", src_side="top", dst_side="bottom",
+            style="orthogonal", color="text"),
+    # Embedding-layer signal feeds the RIGHT RMSNorm in each MTP
+    # module (the LEFT one is already driven by the cascading
+    # inter-module flow above).
+    *[Connect(f"mtp{k}_emb", f"mtp{k}_rn_r",
+              src_side="top", dst_side="bottom",
+              style="orthogonal", color="text")
+      for k in (1, 2, 3)],
+    gap=0,
 )
 
 

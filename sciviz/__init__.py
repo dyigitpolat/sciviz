@@ -13,7 +13,7 @@ Quick start
                   Math(r"$\\frac{\\partial L}{\\partial W}$")),
         ),
     )
-    d.save("figure.pdf")   # also .svg and .png
+    d.save_all("figure")   # writes figure.svg, figure.pdf, figure.png
 
 Design principles
 -----------------
@@ -26,10 +26,7 @@ Design principles
 4. **Semantic tokens.**  ``gap="lg"``, ``size="label"``, ``color="highlight"``.
 5. **Vector math.**  :class:`Math` renders LaTeX via matplotlib as SVG
    paths -- embeds cleanly into the output PDF.
-6. **Rich ML primitives.**  :class:`Crossbar`, :class:`AttentionHead`,
-   :class:`LoRA`, :class:`Tensor`, :class:`NNLayer`, :class:`Pipeline`,
-   :class:`QuantBins`.
-7. **Aligned charts.**  :class:`Table` and :class:`BarChart` take care of
+6. **Aligned charts.**  :class:`Table` and :class:`BarChart` take care of
    cross-row column alignment automatically.
 """
 
@@ -48,11 +45,7 @@ from .layout import (
     FixedSize,
     Row,
     Column,
-    Stack,
-    Grid,
-    Padded,
     Panel,
-    Framed,
 )
 
 # ----- generic elements ----------------------------------------------------
@@ -60,28 +53,24 @@ from .elements import (
     Text,
     TextBlock,
     Box,
-    Arrow,
-    Connector,
     Matrix,
     Legend,
     LegendItem,
-    Note,
     Caption,
-    MiniGrid,
     TokenRow,
 )
 
 # ----- math ----------------------------------------------------------------
-from .math import Math, auto_text
+from .math import Math
 
 # ----- charts --------------------------------------------------------------
 from .charts import Table, AlignedColumns, BarChart
 
 # ----- specialized ---------------------------------------------------------
-from .specialized import Pyramid, Timeline, Tree, Scatter
+from .specialized import Pyramid, Timeline, Scatter
 
 # ----- structures (high-level layout primitives) --------------------------
-from .structures import Strip, Section, BlockGroup, LayeredGraph
+from .structures import Section, BlockGroup
 
 # ----- general primitives -------------------------------------------------
 from .primitives import Heatmap, Histogram, MeshArray, VectorTiles, StackedBoxes
@@ -89,46 +78,29 @@ from .primitives import Heatmap, Histogram, MeshArray, VectorTiles, StackedBoxes
 # ----- color system --------------------------------------------------------
 from .palette import Palette, ColorRef
 
-# ----- ML-specific elements (generic primitives) --------------------------
-from .ml import (
-    NNLayer,
-    Pipeline,
-    Tensor,
-)
-# Domain-specific presets live in sciviz.examples.ml:
-#     from sciviz.examples.ml import AttentionHead, LoRA, QuantBins
-
 # ----- composition ---------------------------------------------------------
 from .composition import (
     Inline,
     Captioned,
     LabeledChain,
-    Card,
-    KeyValue,
-    Bullets,
     Badge,
     LoopIcon,
     Brace,
-    Annotated,
-    Anchor,
-    Flow,
-    Flowed,
-    Labeled,
     MatchSize,
     Group,
     Region,
-    Bus,
 )
 from .grid import Grid
+
+# ----- unified connector ---------------------------------------------------
+from .connect import Connect, Anchor
 
 # ----- generic graphs ------------------------------------------------------
 from .graphs import (
     Token,
     Tokens,
-    BipartiteGraph,
     NodeTree,
     Sequence,
-    FlowChart,
 )
 
 # ----- top-level Diagram ---------------------------------------------------
@@ -138,33 +110,30 @@ __all__ = [
     # core
     "Theme", "DEFAULT_THEME", "BBox", "Canvas", "Element",
     # layout
-    "Spacer", "FixedSize", "Row", "Column", "Stack", "Grid",
-    "Padded", "Panel", "Framed",
+    "Spacer", "FixedSize", "Row", "Column", "Grid", "Panel",
     # elements
-    "Text", "TextBlock", "Box", "Arrow", "Connector",
-    "Matrix", "Legend", "LegendItem", "Note", "Caption", "MiniGrid", "TokenRow",
+    "Text", "TextBlock", "Box",
+    "Matrix", "Legend", "LegendItem", "Caption", "TokenRow",
     # math
-    "Math", "auto_text",
+    "Math",
     # charts
     "Table", "AlignedColumns", "BarChart",
     # specialized
-    "Pyramid", "Timeline", "Tree", "Scatter",
+    "Pyramid", "Timeline", "Scatter",
     # structures
-    "Strip", "Section", "BlockGroup", "LayeredGraph",
+    "Section", "BlockGroup",
     # primitives
     "Heatmap", "Histogram", "MeshArray", "VectorTiles", "StackedBoxes",
     # color
     "Palette", "ColorRef",
-    # ml
-    "NNLayer", "Pipeline", "Tensor",
     # composition
-    "Inline", "Captioned", "LabeledChain", "Card", "KeyValue", "Bullets",
-    "Badge", "Brace",
-    "Annotated", "Anchor", "Flow", "Flowed", "Labeled",
-    "MatchSize", "Group", "Region", "Bus",
-    "Grid",
+    "Inline", "Captioned", "LabeledChain",
+    "Badge", "LoopIcon", "Brace",
+    "MatchSize", "Group", "Region",
+    # unified connector
+    "Connect", "Anchor",
     # graphs
-    "Token", "Tokens", "BipartiteGraph", "NodeTree", "Sequence", "FlowChart",
+    "Token", "Tokens", "NodeTree", "Sequence",
     # root
     "Diagram",
 ]

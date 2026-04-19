@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import re
 
-from sciviz import (Anchor, Box, Flow, Flowed, Row, Theme, Canvas, Spacer)
+from sciviz import (Anchor, Box, Row, Theme, Canvas, Spacer)
+from sciviz.composition import Flow, Flowed
 from sciviz.math import Math
 
 

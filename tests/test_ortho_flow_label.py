@@ -5,9 +5,8 @@ from __future__ import annotations
 
 import re
 
-from sciviz import (
-    Anchor, Box, Canvas, Flow, Flowed, Row, Theme,
-)
+from sciviz import (Anchor, Box, Canvas, Row, Theme)
+from sciviz.composition import Flow, Flowed
 
 
 def _render(elem) -> str:

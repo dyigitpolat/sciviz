@@ -822,7 +822,7 @@ class LegendItem(Element):
     """Single entry in a :class:`Legend`: a swatch element + a text label.
 
     The swatch can be any :class:`Element` (a small :class:`Box`, a
-    :class:`Badge`, a :class:`MiniGrid`, ...) -- this lets legends pair
+    :class:`Badge`, a :class:`Matrix`, ...) -- this lets legends pair
     non-trivial icons with descriptions without reinventing the layout.
 
     Parameters
@@ -976,59 +976,6 @@ class Legend(Element):
 
 
 # ---------------------------------------------------------------------------
-# Note (callout card with title + body + optional illustration)
-# ---------------------------------------------------------------------------
-
-class Note(Element):
-    """A labelled explanatory card, optionally with a small illustration.
-
-    Typically used in the summary strip of a multi-panel diagram.
-    """
-
-    def __init__(self, title: str, body: str, *,
-                 tone: str = "neutral",
-                 illustration: Optional[Element] = None,
-                 emphasis: Optional[str] = None,
-                 width: float = 380.0):
-        self.title = title
-        self.body = body
-        self.tone = tone  # "neutral", "primary", "accent", "highlight"
-        self.illustration = illustration
-        self.emphasis = emphasis
-        self.width = width
-
-    _TONE_COLORS = {
-        "neutral": ("muted", "text", "muted"),
-        "primary": ("primary", "text", "primary"),
-        "accent": ("accent", "text", "accent"),
-        "highlight": ("highlight", "text", "highlight"),
-    }
-
-    def measure(self, theme: Theme) -> BBox:
-        inner = self._compose(theme)
-        return inner.measure(theme)
-
-    def _compose(self, theme: Theme):
-        title_color, body_color, emph_color = self._TONE_COLORS.get(self.tone, self._TONE_COLORS["neutral"])
-        parts = [
-            Text(self.title, size="section", color=title_color, weight="700"),
-            TextBlock(self.body, size="label", color=body_color,
-                      max_width=self.width),
-        ]
-        if self.emphasis:
-            parts.append(Spacer(0, theme.unit * 0.5))
-            parts.append(Text(self.emphasis, size="label",
-                              color=emph_color, weight="700"))
-        if self.illustration is not None:
-            parts.append(Spacer(0, theme.unit * 1.0))
-            parts.append(self.illustration)
-        return Column(*parts, gap="xs", align="start")
-
-    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
-        self._compose(theme).render(canvas, x, y, theme)
-
-
-# ---------------------------------------------------------------------------
 # Caption (small italic text under a figure)
 # ---------------------------------------------------------------------------
 
@@ -1052,52 +999,6 @@ class Caption(Element):
             size=sz, fill=theme.color_of(self.color),
             italic=True, anchor="middle",
         )
-
-
-# ---------------------------------------------------------------------------
-# MiniGrid (tiny illustrative matrix, for notes)
-# ---------------------------------------------------------------------------
-
-class MiniGrid(Element):
-    """Tiny illustrative grid, smaller than :class:`Matrix`.
-
-    Used for "what unstructured pruning looks like" thumbnails inside notes.
-    """
-
-    def __init__(self, rows: int, cols: int, *,
-                 zero_cells: Optional[Sequence[Tuple[int, int]]] = None,
-                 zero_rows: Optional[Sequence[int]] = None,
-                 zero_cols: Optional[Sequence[int]] = None,
-                 cell: float = 12.0,
-                 active_color: str = "primary_fill",
-                 zero_color: str = "disabled_fill"):
-        self.rows = rows
-        self.cols = cols
-        self.zero_cells = set(tuple(x) for x in (zero_cells or []))
-        self.zero_rows = set(zero_rows or [])
-        self.zero_cols = set(zero_cols or [])
-        self.cell = cell
-        self.active_color = active_color
-        self.zero_color = zero_color
-
-    def measure(self, theme: Theme) -> BBox:
-        return BBox(self.cols * self.cell, self.rows * self.cell)
-
-    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
-        c = self.cell
-        for i in range(self.rows):
-            for j in range(self.cols):
-                is_zero = (
-                    (i, j) in self.zero_cells or
-                    i in self.zero_rows or
-                    j in self.zero_cols
-                )
-                color = theme.color_of(self.zero_color if is_zero else self.active_color)
-                canvas.rect(
-                    x + j * c + 0.75, y + i * c + 0.75,
-                    c - 1.5, c - 1.5,
-                    fill=color, rx=1.5,
-                )
 
 
 # ---------------------------------------------------------------------------

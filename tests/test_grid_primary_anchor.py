@@ -16,9 +16,8 @@ from __future__ import annotations
 
 import re
 
-from sciviz import (
-    Anchor, Box, Canvas, Grid, Labeled, Palette, Theme,
-)
+from sciviz import (Anchor, Box, Canvas, Grid, Palette, Theme)
+from sciviz.composition import Labeled
 from sciviz.math import Math
 
 

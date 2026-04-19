@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import re
 
-from sciviz import (Anchor, Box, Bus, Flowed, Row, Column, Theme,
-                    Canvas, Spacer)
+from sciviz import (Anchor, Box, Row, Column, Theme, Canvas, Spacer)
+from sciviz.composition import Bus, Flowed
 
 
 def _render(body, flows, theme: Theme | None = None) -> tuple[str, float, float]:

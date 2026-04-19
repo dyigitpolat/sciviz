@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import re
 
-from sciviz import (Anchor, Box, Canvas, Flowed, Flow, Grid, Theme)
+from sciviz import (Anchor, Box, Canvas, Grid, Theme)
+from sciviz.composition import Flowed, Flow
 
 
 _MARKER_RX = re.compile(

@@ -2,11 +2,19 @@
 
 These eliminate the most common patterns I kept writing manually:
 
-* :class:`Inline`   -- baseline-aligned mixed text/math, no manual Spacers.
-* :class:`Card`     -- title + body card with semantic tone.
-* :class:`Section`  -- inline-label + math + body block (formula card).
-* :class:`KeyValue` -- two-column key-value table (auto-aligns).
-* :class:`Bullets`  -- list with consistent bullet/dash markers.
+* :class:`Inline`       -- baseline-aligned mixed text/math, no manual Spacers.
+* :class:`Captioned`    -- wrap a child with a numbered badge or titled caption.
+* :class:`LabeledChain` -- horizontal items with auto-aligned top/bottom labels.
+* :class:`Badge`        -- small filled circle for numbered/lettered markers.
+* :class:`LoopIcon`     -- '\u21bb' glyph for "repeat N times" annotations.
+* :class:`Brace`        -- horizontal curly brace with an optional label.
+* :class:`Anchor` / :class:`Flow` / :class:`Flowed` -- declarative curved arrows
+  between named elements, resolved after their bboxes are known.
+* :class:`Labeled`      -- a source element annotated by a short arrow to a label.
+* :class:`MatchSize`    -- stretch siblings to share a major-axis dimension.
+* :class:`Group`        -- Row with an automatic brace + label beneath.
+* :class:`Region`       -- labeled bordered container with outside label.
+* :class:`Bus`          -- multi-endpoint connector routed through a single spine.
 """
 
 from __future__ import annotations
@@ -362,232 +370,6 @@ class LabeledChain(Element):
 
 
 # ---------------------------------------------------------------------------
-# Card -- title + body with semantic tone
-# ---------------------------------------------------------------------------
-
-class Card(Element):
-    """Header + body block.  Replaces the common ``Column(Text(title), body)``
-    pattern.  The header uses the role's ink colour; an optional accent rule
-    sits below it.
-
-    Parameters
-    ----------
-    title : str
-        Header text.
-    body : Element
-        Anything composable.
-    tone : str
-        Color role (``"blue"``, ``"red"``, ``"green"``, ...) or ``"neutral"``.
-        Determines header colour and the optional accent rule.
-    rule : bool
-        Draw a thin accent rule under the header.
-    width : float, optional
-        Constrain the card to a fixed width (body is centered).
-    title_size : str
-        Size token for the header (default ``"section"``).
-    """
-
-    def __init__(self, title: str, body: Element, *,
-                 tone: str = "neutral",
-                 rule: bool = False,
-                 width: Optional[float] = None,
-                 title_size: str = "section"):
-        self.title = title
-        self.body = body
-        self.tone = tone
-        self.rule = rule
-        self.width = width
-        self.title_size = title_size
-
-    def _header(self, theme: Theme) -> Element:
-        ink = theme.role(self.tone, "ink") if self.tone != "neutral" else theme.text
-        return Text(self.title, size=self.title_size, color=ink, weight="700")
-
-    def measure(self, theme: Theme) -> BBox:
-        h = self._header(theme).measure(theme)
-        b = self.body.measure(theme)
-        gap = theme.unit * 0.6
-        rule_h = 1.0 + theme.unit * 0.3 if self.rule else 0.0
-        w = self.width if self.width is not None else max(h.w, b.w)
-        return BBox(w, h.h + rule_h + gap + b.h)
-
-    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
-        size = self.measure(theme)
-        header = self._header(theme)
-        h = header.measure(theme)
-        header.render(canvas, x, y, theme)
-        cy = y + h.h
-        if self.rule:
-            cy += theme.unit * 0.15
-            ink = theme.role(self.tone, "fill") if self.tone != "neutral" else theme.color_of("border")
-            canvas.line(x, cy, x + size.w, cy,
-                       stroke=ink, stroke_width=theme.hairline)
-            cy += 1.0 + theme.unit * 0.15
-        cy += theme.unit * 0.5
-        # body x: centered if width was set, else left-aligned
-        b = self.body.measure(theme)
-        bx = x + (size.w - b.w) / 2 if self.width is not None else x
-        self.body.render(canvas, bx, cy, theme)
-
-
-# ---------------------------------------------------------------------------
-# KeyValue -- two-column metadata block
-# ---------------------------------------------------------------------------
-
-class KeyValue(Element):
-    """A two-column key/value table that auto-aligns its columns.
-
-    Convenient for a metadata sidebar: ``KeyValue([("height", "$h$"),
-    ("lookup I/O", "$O(h)$"), ("range scan", "$O(h + k/B)$")])``.
-
-    Each value may be a string (auto-coerced to :class:`Text` or :class:`Math`)
-    or any :class:`Element`.
-
-    Parameters
-    ----------
-    items : list of (key, value)
-    key_color : str
-        Colour role for the key column (default muted).
-    value_color : str
-        Colour role for the value column (default text).
-    gap_x, gap_y : str or float
-    """
-
-    def __init__(self, items, *,
-                 key_color: str = "muted",
-                 value_color: str = "text",
-                 key_size: str = "small",
-                 value_size: str = "small",
-                 key_weight: str = "700",
-                 gap_x="md", gap_y="xs"):
-        self.items = list(items)
-        self.key_color = key_color
-        self.value_color = value_color
-        self.key_size = key_size
-        self.value_size = value_size
-        self.key_weight = key_weight
-        self.gap_x = gap_x
-        self.gap_y = gap_y
-
-    def _coerce(self, v, color, size):
-        if isinstance(v, Element):
-            return v
-        s = str(v).strip()
-        if len(s) >= 2 and s.startswith("$") and s.endswith("$"):
-            from .math import Math
-            return Math(s, size=size, color=color)
-        return Text(s, size=size, color=color)
-
-    def _build(self, theme):
-        rows = []
-        for k, v in self.items:
-            key = self._coerce(k, self.key_color, self.key_size)
-            # explicitly set key to the requested weight if it was a plain string
-            if not isinstance(k, Element):
-                key = Text(str(k), size=self.key_size,
-                           color=self.key_color, weight=self.key_weight)
-            val = self._coerce(v, self.value_color, self.value_size)
-            rows.append((key, val))
-        return rows
-
-    def measure(self, theme: Theme) -> BBox:
-        rows = self._build(theme)
-        if not rows:
-            return BBox(0, 0)
-        ksizes = [k.measure(theme) for k, _ in rows]
-        vsizes = [v.measure(theme) for _, v in rows]
-        kw = max(s.w for s in ksizes)
-        vw = max(s.w for s in vsizes)
-        gx = theme.gap_px(self.gap_x)
-        gy = theme.gap_px(self.gap_y)
-        row_h = [max(k.h, v.h) for k, v in zip(ksizes, vsizes)]
-        return BBox(kw + gx + vw, sum(row_h) + gy * (len(rows) - 1))
-
-    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
-        rows = self._build(theme)
-        ksizes = [k.measure(theme) for k, _ in rows]
-        vsizes = [v.measure(theme) for _, v in rows]
-        kw = max(s.w for s in ksizes)
-        gx = theme.gap_px(self.gap_x)
-        gy = theme.gap_px(self.gap_y)
-        cy = y
-        for (key, val), ksize, vsize in zip(rows, ksizes, vsizes):
-            row_h = max(ksize.h, vsize.h)
-            # baseline-align key and value vertically
-            key.render(canvas, x + (kw - ksize.w), cy + (row_h - ksize.h) / 2, theme)
-            val.render(canvas, x + kw + gx, cy + (row_h - vsize.h) / 2, theme)
-            cy += row_h + gy
-
-
-# ---------------------------------------------------------------------------
-# Bullets -- list with consistent markers
-# ---------------------------------------------------------------------------
-
-class Bullets(Element):
-    """Vertical list of items prefixed with a bullet/dash/number.
-
-    Each item may be a string or an :class:`Element`.  The marker column is
-    auto-sized so the body indent is consistent.
-    """
-
-    def __init__(self, items, *,
-                 marker: str = "\u2022",
-                 size: str = "label",
-                 color: str = "text",
-                 gap_y="xs",
-                 numbered: bool = False):
-        self.items = list(items)
-        self.marker = marker
-        self.size = size
-        self.color = color
-        self.gap_y = gap_y
-        self.numbered = numbered
-
-    def _children(self):
-        out = []
-        for i, it in enumerate(self.items):
-            if self.numbered:
-                m = Text(f"{i+1}.", size=self.size, color="muted",
-                         weight="700")
-            else:
-                m = Text(self.marker, size=self.size, color="muted")
-            if isinstance(it, Element):
-                body = it
-            else:
-                body = TextBlock(str(it), size=self.size, color=self.color)
-            out.append((m, body))
-        return out
-
-    def measure(self, theme: Theme) -> BBox:
-        kids = self._children()
-        if not kids:
-            return BBox(0, 0)
-        msizes = [m.measure(theme) for m, _ in kids]
-        bsizes = [b.measure(theme) for _, b in kids]
-        mw = max(s.w for s in msizes)
-        bw = max(s.w for s in bsizes)
-        gx = theme.unit * 0.6
-        gy = theme.gap_px(self.gap_y)
-        return BBox(mw + gx + bw,
-                    sum(max(m.h, b.h) for m, b in zip(msizes, bsizes))
-                    + gy * (len(kids) - 1))
-
-    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
-        kids = self._children()
-        msizes = [m.measure(theme) for m, _ in kids]
-        bsizes = [b.measure(theme) for _, b in kids]
-        mw = max(s.w for s in msizes)
-        gx = theme.unit * 0.6
-        gy = theme.gap_px(self.gap_y)
-        cy = y
-        for (mark, body), ms, bs in zip(kids, msizes, bsizes):
-            row_h = max(ms.h, bs.h)
-            mark.render(canvas, x + (mw - ms.w), cy, theme)
-            body.render(canvas, x + mw + gx, cy, theme)
-            cy += row_h + gy
-
-
-# ---------------------------------------------------------------------------
 # Badge -- small filled circle with centred text (number, letter, or symbol)
 # ---------------------------------------------------------------------------
 
@@ -855,52 +637,6 @@ class Brace(Element):
             if self.label:
                 canvas.text(mid, tip - 6, self.label,
                            size=sz, fill=col, anchor="middle")
-
-
-# ---------------------------------------------------------------------------
-# Annotated -- overlay arbitrary drawing on top of a child element
-# ---------------------------------------------------------------------------
-
-class Annotated(Element):
-    """Wrap a child and overlay arbitrary annotations after it renders.
-
-    The escape hatch for visualisations the high-level API doesn't directly
-    support: curved arrows between specific anchors, callouts, custom
-    decoration.  The ``draw`` callback receives the raw canvas, the bbox
-    coordinates, and the theme; you can draw anything you want with absolute
-    coordinates relative to the bbox.
-
-    Example
-    -------
-    >>> def overlay(canvas, x, y, w, h, theme):
-    ...     canvas.path(f"M {x+10},{y+h} C ...", stroke="red")
-    >>> Annotated(my_panel, draw=overlay)
-    """
-
-    def __init__(self, child: Element, *, draw=None,
-                 inflate: tuple = (0, 0, 0, 0)):
-        """
-        ``inflate`` -- (left, top, right, bottom) pixels to extend the bbox
-        beyond the child, useful when an annotation needs to extend outside
-        the child's drawn area.
-        """
-        self.child = child
-        self.draw = draw
-        self.inflate = inflate
-
-    def measure(self, theme: Theme) -> BBox:
-        b = self.child.measure(theme)
-        l, t, r, bt = self.inflate
-        return BBox(b.w + l + r, b.h + t + bt)
-
-    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
-        l, t, r, bt = self.inflate
-        b = self.child.measure(theme)
-        # render child offset by (l, t) so inflate gives space around it
-        self.child.render(canvas, x + l, y + t, theme)
-        if self.draw is not None:
-            # callback gets the child's bbox in absolute coords
-            self.draw(canvas, x + l, y + t, b.w, b.h, theme)
 
 
 # ---------------------------------------------------------------------------

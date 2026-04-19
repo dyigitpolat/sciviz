@@ -13,9 +13,8 @@ from __future__ import annotations
 
 import re
 
-from sciviz import (
-    Anchor, Box, Canvas, Flow, Flowed, Palette, Row, Theme,
-)
+from sciviz import (Anchor, Box, Canvas, Palette, Row, Theme)
+from sciviz.composition import Flow, Flowed
 
 
 _RECT_RX = re.compile(r'<rect ([^/]+?)/>')

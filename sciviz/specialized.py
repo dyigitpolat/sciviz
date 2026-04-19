@@ -5,9 +5,7 @@ up repeatedly but don't merit inclusion in :mod:`sciviz.elements`:
 
 * :class:`Pyramid`  -- a stacked-trapezoid layout (memory hierarchies, taxonomies)
 * :class:`Timeline` -- a horizontal time axis with labelled events and lanes
-* :class:`Tree`     -- a top-down tree with node boxes and connector lines
 * :class:`Scatter`  -- 2D scatter plot with axes and gridlines
-* :class:`Surface`  -- discrete 2D contour "loss landscape" approximation
 """
 
 from __future__ import annotations
@@ -328,127 +326,6 @@ class Timeline(Element):
         if len(task) >= 3:
             return f"lbl:{task[2]}"
         return None
-
-
-# ---------------------------------------------------------------------------
-# Tree
-# ---------------------------------------------------------------------------
-
-class Tree(Element):
-    """A top-down tree of boxed nodes with connector lines.
-
-    The tree is given as nested tuples: ``(label, [child, child, ...])``.
-    Leaves are either strings or ``(label, None)``.  The element computes a
-    bottom-up layout by measuring subtree widths.
-
-    Parameters
-    ----------
-    root : tuple
-        ``(label, [child, ...])`` or just ``"label"`` for a leaf.
-    node_w, node_h : float
-        Default node box size.
-    level_gap : float
-        Vertical distance between adjacent levels.
-    sibling_gap : float
-        Horizontal gap between siblings (minimum).
-    node_color : str
-        Fill colour for nodes.  Use ``"none"`` for outline-only.
-    """
-
-    def __init__(self, root, *,
-                 node_w: float = 70.0, node_h: float = 24.0,
-                 level_gap: float = 28.0, sibling_gap: float = 14.0,
-                 node_fill: str = "bg_panel",
-                 node_stroke: str = "text",
-                 edge_color: str = "text",
-                 highlight_leaves: Optional[Sequence[str]] = None,
-                 leaf_fill: Optional[str] = None):
-        self.root = self._normalise(root)
-        self.node_w = node_w
-        self.node_h = node_h
-        self.level_gap = level_gap
-        self.sibling_gap = sibling_gap
-        self.node_fill = node_fill
-        self.node_stroke = node_stroke
-        self.edge_color = edge_color
-        self.highlight_leaves = set(highlight_leaves or [])
-        self.leaf_fill = leaf_fill
-
-    @staticmethod
-    def _normalise(node):
-        if isinstance(node, str):
-            return (node, [])
-        if isinstance(node, tuple) and len(node) == 2:
-            label, children = node
-            return (label, [Tree._normalise(c) for c in (children or [])])
-        raise ValueError(f"Bad tree node: {node!r}")
-
-    # layout: compute subtree width recursively
-    def _subtree_w(self, node, theme) -> float:
-        label, children = node
-        if not children:
-            return max(self.node_w,
-                       theme.text_width(label, "small", bold=False) + 14)
-        child_widths = [self._subtree_w(c, theme) for c in children]
-        total = sum(child_widths) + self.sibling_gap * (len(children) - 1)
-        return max(total, self.node_w)
-
-    def _depth(self, node) -> int:
-        label, children = node
-        if not children:
-            return 1
-        return 1 + max(self._depth(c) for c in children)
-
-    def measure(self, theme: Theme) -> BBox:
-        W = self._subtree_w(self.root, theme)
-        D = self._depth(self.root)
-        H = D * self.node_h + (D - 1) * self.level_gap
-        return BBox(W, H)
-
-    def _draw_node(self, canvas, cx, cy, label, is_leaf, theme):
-        w = max(self.node_w,
-                theme.text_width(label, "small", bold=False) + 14)
-        x, y = cx - w / 2, cy - self.node_h / 2
-        fill = self.leaf_fill if (is_leaf and self.leaf_fill) else self.node_fill
-        if label in self.highlight_leaves:
-            fill = "highlight_soft"
-            stroke = "highlight"
-        else:
-            stroke = self.node_stroke
-        canvas.rect(x, y, w, self.node_h,
-                   fill=theme.color_of(fill),
-                   stroke=theme.color_of(stroke),
-                   stroke_width=theme.hairline, rx=2)
-        canvas.text(cx, cy + theme.size_px("small") * 0.33, label,
-                   size=theme.size_px("small"),
-                   fill=theme.color_of("text"), weight="500",
-                   anchor="middle")
-        return w
-
-    def _render_rec(self, canvas, node, x, y, theme):
-        label, children = node
-        subtree_w = self._subtree_w(node, theme)
-        cx = x + subtree_w / 2
-        cy = y + self.node_h / 2
-        self._draw_node(canvas, cx, cy, label, not children, theme)
-        if children:
-            child_widths = [self._subtree_w(c, theme) for c in children]
-            total = sum(child_widths) + self.sibling_gap * (len(children) - 1)
-            start_x = x + (subtree_w - total) / 2
-            child_y = y + self.node_h + self.level_gap
-            cursor = start_x
-            for c, cw in zip(children, child_widths):
-                c_cx = cursor + cw / 2
-                # connector line
-                canvas.line(cx, cy + self.node_h / 2,
-                           c_cx, child_y + self.node_h / 2 - self.node_h / 2,
-                           stroke=theme.color_of(self.edge_color),
-                           stroke_width=theme.hairline)
-                self._render_rec(canvas, c, cursor, child_y, theme)
-                cursor += cw + self.sibling_gap
-
-    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
-        self._render_rec(canvas, self.root, x, y, theme)
 
 
 # ---------------------------------------------------------------------------
