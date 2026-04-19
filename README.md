@@ -26,6 +26,10 @@ d = Diagram(
 d.save("figure.pdf")    # also .svg and .png
 ```
 
+Read [`docs/AUTHORING.md`](docs/AUTHORING.md) for the single-document
+tour of every primitive -- icons, images, line charts, generic trees,
+aligned stacks, structured text runs, and the rest of the vocabulary.
+
 ## Design principles
 
 1. **Declarative.**  You compose elements, not coordinates.
@@ -47,19 +51,22 @@ d.save("figure.pdf")    # also .svg and .png
 ```
 sciviz/
   core/           Element, BBox, Canvas, Theme
-  layout/         Row, Column, Panel, Spacer, FixedSize
-  elements/       Text, TextBlock, Box, Matrix, Legend, Caption, TokenRow
-  composition/    Inline, Captioned, Badge, Brace, Group, Region,
-                  LabeledChain, MatchSize, LoopIcon, (Anchor/Flow/Bus internals)
+  layout/         Row, Column, Panel, Spacer, FixedSize, AlignedStack
+  elements/       Text, TextBlock, Span, Box, Matrix, Legend, Caption,
+                  TokenRow, Icon, Image, Separator
+  composition/    Inline, Captioned, Badge, Brace (+ Brace.spanning),
+                  Group, Region (label_position/annotations/corner_badge),
+                  LabeledChain, MatchSize, LoopIcon
   connect/        Connect, Anchor       -- the only public connector API
   grid/           Grid                  -- per-column alignment
   charts/         Table, AlignedColumns, BarChart
   primitives/     Heatmap, Histogram, MeshArray, VectorTiles, StackedBoxes
-  specialized/    Pyramid, Timeline, Scatter
+  specialized/    Pyramid, Timeline, Scatter, LineChart, Series, Annotate
   structures/     Section, BlockGroup
-  graphs/         Token, Tokens, NodeTree, Sequence
+  graphs/         Tree, TreeNode, NodeTree, Token, Tokens, Sequence
   math/           Math                  -- LaTeX via matplotlib mathtext
   palette/        Palette, ColorRef     -- semantic colour system
+  _assets/        bundled Lucide icon SVG paths
   auto/           router, labelplacer   -- layout assistants (internal)
   diagram.py      Diagram               -- root container with export
 ```
@@ -124,7 +131,9 @@ should match, and you'll get the same hue.
 
 ## Gallery
 
-Twelve showcase figures ship in `gallery/`, each under ~60 lines.
+Twenty-two showcase figures ship in `gallery/`, each under ~60 lines.
+
+Twelve "domain" figures lead with real diagrams from papers and textbooks:
 
 | Diagram | Domain | Topic | Primary primitive |
 |---|---|---|---|
@@ -140,6 +149,13 @@ Twelve showcase figures ship in `gallery/`, each under ~60 lines.
 | `deepseek_v3.py` | ML systems | DeepSeek-V3 architecture | composed primitives |
 | `action_conditioning_modes.py` | ML | Action conditioning injection | composed primitives |
 | `ttt_mlp.py` | ML | In-place test-time training MLP | `Connect` bus + composites |
+
+Ten "feature" figures (`gallery/fig01.py` ... `gallery/fig10.py`)
+exercise the new 0.4.0 primitives one at a time: `Image`,
+`Brace.spanning`, structured text runs, `Region` side labels and
+annotations, `AlignedStack`, corner badges with semantic role colours,
+`LineChart` with annotations, `Tree` with per-edge style, icon-heavy
+compositions, and `Separator` + `AlignedStack`.
 
 ## Math
 
@@ -190,4 +206,7 @@ theme = Theme().with_overrides(unit=8.0)  # partial customisation
 0.3.0 — unified `Connect` API, clean package split (`core`, `layout`,
 `elements`, `composition`, `connect`, `grid`, `charts`, `primitives`,
 `specialized`, `structures`, `graphs`, `math`, `palette`, `auto`,
-`diagram`), 12 gallery figures, 130+ tests.
+`diagram`), 22 gallery figures, 250+ tests. Wave-7 primitives:
+`Icon`, `Image`, `Separator`, `Span`, `AlignedStack`, `LineChart`,
+`Annotate`, `Tree`, `Brace.spanning`, enriched `Region`, semantic
+role colours.

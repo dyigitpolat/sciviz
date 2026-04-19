@@ -28,6 +28,7 @@ class Grid(Element):
         self.gap_x = gap_x
         self.gap_y = gap_y
         self.align = align
+        self._forced_col_w: "list[float] | None" = None
 
     def _col_row_extents(self, theme):
         sizes = [c.measure(theme) for c in self.children]
@@ -38,7 +39,23 @@ class Grid(Element):
             r, c = i // self.cols, i % self.cols
             col_w[c] = max(col_w[c], s.w)
             row_h[r] = max(row_h[r], s.h)
+        if self._forced_col_w is not None:
+            for j in range(min(len(col_w), len(self._forced_col_w))):
+                if self._forced_col_w[j] > col_w[j]:
+                    col_w[j] = self._forced_col_w[j]
         return sizes, col_w, row_h
+
+    def _shared_column_widths(self, theme) -> "list[float]":
+        saved = self._forced_col_w
+        self._forced_col_w = None
+        try:
+            _, col_w, _ = self._col_row_extents(theme)
+        finally:
+            self._forced_col_w = saved
+        return list(col_w)
+
+    def _apply_shared_columns(self, widths) -> None:
+        self._forced_col_w = list(widths)
 
     def measure(self, theme: Theme) -> BBox:
         if not self.children:

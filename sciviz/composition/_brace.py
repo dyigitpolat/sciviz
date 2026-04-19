@@ -1,4 +1,14 @@
-"""Brace: horizontal curly brace with an optional label."""
+"""Brace: horizontal curly brace with an optional label.
+
+Two construction modes:
+
+* ``Brace(span, label=...)`` -- explicit pixel span (the historic API).
+* ``Brace.spanning(element, label=...)`` -- defer span computation until
+  measure time. The returned ``Brace`` measures the child first, then
+  inherits its width as the brace span. Compose this with a
+  :class:`~sciviz.Column` to render the brace directly below (or above)
+  any element without hard-coding widths.
+"""
 
 from __future__ import annotations
 
@@ -38,14 +48,44 @@ class Brace(Element):
         self.color = color
         self.height = float(height)
         self.label_size = label_size
+        # Deferred span source; when set, ``span`` is recomputed at
+        # measure() time from the element's width.
+        self._span_source: Optional[Element] = None
+
+    @classmethod
+    def spanning(cls, element: Element, label: Optional[str] = None, *,
+                 direction: str = "down",
+                 color="muted",
+                 height: float = 6.0,
+                 label_size: str = "small") -> "Brace":
+        """Return a :class:`Brace` whose ``span`` matches ``element``'s width.
+
+        The span is resolved lazily at :meth:`measure`, so the brace
+        stays in sync even if the element's size changes between
+        construction and rendering (e.g. inside an :class:`AlignedStack`).
+        """
+        if not isinstance(element, Element):
+            raise TypeError(
+                f"Brace.spanning(...) needs an Element; got {type(element)}")
+        # Start with a throwaway span; refreshed each measure.
+        brace = cls(1.0, label=label, direction=direction, color=color,
+                    height=height, label_size=label_size)
+        brace._span_source = element
+        return brace
+
+    def _refresh_span(self, theme: Theme) -> None:
+        if self._span_source is not None:
+            self.span = float(self._span_source.measure(theme).w)
 
     def measure(self, theme: Theme) -> BBox:
+        self._refresh_span(theme)
         h = self.height + 2
         if self.label:
             h += theme.text_height(self.label_size) + theme.unit * 0.4
         return BBox(self.span, h)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        self._refresh_span(theme)
         col = theme.color_of(self.color)
         sz = theme.size_px(self.label_size)
         if self.direction == "down":

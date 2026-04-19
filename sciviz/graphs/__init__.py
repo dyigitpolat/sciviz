@@ -8,8 +8,10 @@ across hardware, systems, ML, theory, and algorithms.
                        for tokens, code letters, picograms, ...).
 * :class:`Tokens`   -- a row of equal-width chips (handles vertical
                        alignment of differing-length tokens automatically).
-* :class:`NodeTree` -- top-down tree with node groups acting as one page
-                       and visible per-cell separators.
+* :class:`Tree`     -- generic top-down tree with arbitrary :class:`Element`
+                       nodes and per-edge colour / label / style.
+* :class:`NodeTree` -- DEPRECATED alias for :class:`Tree`, retained for
+                       back-compat. New callers should use :class:`Tree`.
 * :class:`Sequence` -- UML-style sequence diagram with lifelines and
                        message arrows between participants.
 """
@@ -19,6 +21,8 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Sequence as Seq, Tuple, Union
 
 from ..core import Element, BBox, Canvas, Theme
+
+from ._tree import Tree, TreeNode
 
 
 # ---------------------------------------------------------------------------

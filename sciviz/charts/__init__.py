@@ -77,6 +77,10 @@ class Table(Element):
             [self._coerce_cell(cell, j) for j, cell in enumerate(r)]
             for r in raw_rows
         ]
+        # Per-column widths forced by a containing AlignedStack. When set,
+        # supersedes the intrinsic max-column widths computed in
+        # :meth:`_extents`.
+        self._forced_col_w: Optional[List[float]] = None
 
     def _coerce_cell(self, cell, col_idx: int) -> Element:
         """String cells in a column with a configured style become ``Text``.
@@ -109,7 +113,30 @@ class Table(Element):
                 if s.h > row_h[i]:
                     row_h[i] = s.h
             sizes.append(row_sizes)
+        if self._forced_col_w is not None:
+            for j in range(min(len(col_w), len(self._forced_col_w))):
+                if self._forced_col_w[j] > col_w[j]:
+                    col_w[j] = self._forced_col_w[j]
         return sizes, col_w, row_h
+
+    # ---- AlignedStack hooks ---------------------------------------------
+
+    def _shared_column_widths(self, theme: Theme) -> List[float]:
+        """Intrinsic per-column widths, used by :class:`AlignedStack`."""
+        if not self.rows:
+            return []
+        # Compute without the forcing override so every sibling gets the
+        # same intrinsic report.
+        saved = self._forced_col_w
+        self._forced_col_w = None
+        try:
+            _, col_w, _ = self._extents(theme)
+        finally:
+            self._forced_col_w = saved
+        return list(col_w)
+
+    def _apply_shared_columns(self, widths: List[float]) -> None:
+        self._forced_col_w = list(widths)
 
     def measure(self, theme: Theme) -> BBox:
         if not self.rows:

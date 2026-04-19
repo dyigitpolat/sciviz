@@ -17,6 +17,8 @@ dependencies = [
 png = ["resvg-py>=0.3"]
 # PDF export (still uses cairosvg)
 pdf = ["cairosvg>=2.5"]
+# JPEG intrinsic-size inference for Image(...) (PNG works without it)
+image = ["Pillow>=10"]
 
 [project.scripts]
 sciviz-debug = "sciviz._cli.debug:main"
@@ -27,6 +29,7 @@ include = ["sciviz*"]
 
 [tool.setuptools.package-data]
 "sciviz.auto" = ["_debug_template.html"]
+"sciviz._assets" = ["*.py"]
 
 [tool.setuptools.dynamic]
 version = { attr = "sciviz.__version__" }

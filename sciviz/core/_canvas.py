@@ -235,6 +235,58 @@ class Canvas:
             f'{_build_text_runs(sub)}</tspan></text>'
         )
 
+    def svg_path(self, x: float, y: float, w: float, h: float, *,
+                 paths: List[str],
+                 viewbox: "tuple[float, float, float, float]" = (0.0, 0.0, 24.0, 24.0),
+                 stroke: str = "#0f172a", stroke_width: float = 1.5,
+                 fill: str = "none",
+                 linecap: str = "round",
+                 linejoin: str = "round",
+                 opacity: float = 1.0) -> None:
+        """Place a list of SVG path commands inside an ``(x, y, w, h)`` box.
+
+        Used by :class:`sciviz.Icon` to render a Lucide-style stroke icon
+        at any size. Each entry in ``paths`` is the value of a ``d="..."``
+        attribute. A nested ``<svg viewBox=...>`` scales the icon so its
+        ``viewbox`` maps to ``(w, h)`` in user space while preserving the
+        linecap/linejoin perception authors expect.
+        """
+        vx, vy, vw, vh = viewbox
+        attrs = [
+            f'x="{_fmt(x)}"', f'y="{_fmt(y)}"',
+            f'width="{_fmt(w)}"', f'height="{_fmt(h)}"',
+            f'viewBox="{_fmt(vx)} {_fmt(vy)} {_fmt(vw)} {_fmt(vh)}"',
+            f'fill="{fill}"',
+            f'stroke="{stroke}"',
+            f'stroke-width="{_fmt(stroke_width)}"',
+            f'stroke-linecap="{linecap}"',
+            f'stroke-linejoin="{linejoin}"',
+        ]
+        if opacity < 1.0:
+            attrs.append(f'opacity="{_fmt(opacity)}"')
+        inner = "".join(f'<path d="{d}"/>' for d in paths)
+        self._body.append(f"<svg {' '.join(attrs)}>{inner}</svg>")
+
+    def image(self, x: float, y: float, w: float, h: float, *,
+              href: str,
+              preserve_aspect_ratio: str = "xMidYMid meet",
+              opacity: float = 1.0) -> None:
+        """Place a raster or vector image at ``(x, y)`` sized ``(w, h)``.
+
+        ``href`` is typically a ``data:image/png;base64,...`` URL so the
+        image travels with the SVG; external URLs also work but break
+        offline export.
+        """
+        parts = [
+            f'x="{_fmt(x)}"', f'y="{_fmt(y)}"',
+            f'width="{_fmt(w)}"', f'height="{_fmt(h)}"',
+            f'href="{href}"',
+            f'preserveAspectRatio="{preserve_aspect_ratio}"',
+        ]
+        if opacity < 1.0:
+            parts.append(f'opacity="{_fmt(opacity)}"')
+        self._body.append(f"<image {' '.join(parts)}/>")
+
     def group_open(self, *, transform: Optional[str] = None,
                    opacity: float = 1.0, clip: Optional[str] = None) -> None:
         attrs = []

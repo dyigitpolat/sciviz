@@ -39,10 +39,15 @@ class Column(Element):
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         if not self.children:
             return
+        # Give cross-axis stretchers (horizontal separators etc.) the
+        # column's full width so they render as full-width rules.
+        W = self.measure(theme).w
+        for c in self.children:
+            if getattr(c, "stretch_main_axis", False) and hasattr(c, "set_stretched_length"):
+                c.set_stretched_length(W)
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
         content = [c.content_bbox(theme) for c in self.children]
-        W = self.measure(theme).w
         cy = y
         for child, size, cb in zip(self.children, sizes, content):
             invisible = getattr(child, "is_layout_invisible", False)

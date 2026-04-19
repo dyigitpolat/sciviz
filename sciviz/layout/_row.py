@@ -41,6 +41,9 @@ class Row(Element):
         self.align = align
         self.equal_widths = equal_widths
         self._shape_normalized = False
+        # Per-child widths forced by a containing AlignedStack. When set,
+        # each visible child occupies at least ``forced_slot_w[i]`` px.
+        self._forced_slot_w: List[float] | None = None
 
     def _find_shape_peer(self, elem):
         """Unwrap one level of ``Anchor`` etc. to find a shape-key-bearing
@@ -91,6 +94,33 @@ class Row(Element):
         return [c for c in self.children
                 if not getattr(c, "is_layout_invisible", False)]
 
+    def _stretch_children(self):
+        """Children that want to fill the main axis (:class:`Separator` et al.)."""
+        return [c for c in self.children
+                if getattr(c, "stretch_main_axis", False)]
+
+    def _slot_widths_for_visible(self, vis_sizes) -> List[float]:
+        """Per-visible-child slot width, honouring :attr:`_forced_slot_w`."""
+        slots: List[float] = []
+        forced = self._forced_slot_w or []
+        for i, s in enumerate(vis_sizes):
+            base = s.w
+            if i < len(forced) and forced[i] > base:
+                slots.append(forced[i])
+            else:
+                slots.append(base)
+        return slots
+
+    # ---- AlignedStack hooks ---------------------------------------------
+
+    def _shared_column_widths(self, theme: Theme) -> List[float]:
+        """Intrinsic per-visible-child widths."""
+        vis_sizes = [c.measure(theme) for c in self._visible_children()]
+        return [s.w for s in vis_sizes]
+
+    def _apply_shared_columns(self, widths: List[float]) -> None:
+        self._forced_slot_w = list(widths)
+
     def measure(self, theme: Theme) -> BBox:
         if not self.children:
             return BBox(0, 0)
@@ -103,6 +133,9 @@ class Row(Element):
         if self.equal_widths and visible:
             slot = max(s.w for s in vis_sizes)
             w = slot * len(visible) + g * (len(visible) - 1)
+        elif self._forced_slot_w is not None:
+            slots = self._slot_widths_for_visible(vis_sizes)
+            w = sum(slots) + g * (len(slots) - 1)
         else:
             w = sum(s.w for s in vis_sizes) + g * (n_vis - 1)
         # Row height must accommodate the TALLEST content bbox plus the
@@ -119,15 +152,26 @@ class Row(Element):
         if not self.children:
             return
         self._normalize_shape_peers(theme)
+        # Resolve cross-axis stretchers (vertical separators etc.) to Row height
+        # BEFORE taking measurements, so their measured height fits the row.
+        H = self.measure(theme).h
+        for c in self.children:
+            if getattr(c, "stretch_main_axis", False) and hasattr(c, "set_stretched_length"):
+                c.set_stretched_length(H)
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
         content = [c.content_bbox(theme) for c in self.children]
-        H = self.measure(theme).h
         slot = None
         if self.equal_widths:
             vis_sizes = [c.measure(theme) for c in self._visible_children()]
             slot = max(s.w for s in vis_sizes) if vis_sizes else 0.0
+        # AlignedStack-forced per-slot widths (visible children only).
+        forced_slots = None
+        if not self.equal_widths and self._forced_slot_w is not None:
+            vis_sizes = [c.measure(theme) for c in self._visible_children()]
+            forced_slots = self._slot_widths_for_visible(vis_sizes)
         cx = x
+        vis_idx = 0
         for child, size, cb in zip(self.children, sizes, content):
             invisible = getattr(child, "is_layout_invisible", False)
             cb_y = cb[1]
@@ -145,10 +189,19 @@ class Row(Element):
                 slot_cx = cx + slot / 2
                 child.render(canvas, slot_cx - (cb_x + cb_w / 2), cy, theme)
                 cx += slot + g
+            elif forced_slots is not None and not invisible:
+                slot_w = forced_slots[vis_idx]
+                cb_x = cb[0]
+                cb_w = cb[2]
+                slot_cx = cx + slot_w / 2
+                child.render(canvas, slot_cx - (cb_x + cb_w / 2), cy, theme)
+                cx += slot_w + g
+                vis_idx += 1
             else:
                 child.render(canvas, cx, cy, theme)
                 if not invisible:
                     cx += size.w + g
+                    vis_idx += 1
 
     def _child_offsets(self, theme: Theme):
         """Same x/y placement math as :meth:`render`, but returns the
@@ -165,8 +218,13 @@ class Row(Element):
         if self.equal_widths:
             vis_sizes = [c.measure(theme) for c in self._visible_children()]
             slot = max(s.w for s in vis_sizes) if vis_sizes else 0.0
+        forced_slots = None
+        if not self.equal_widths and self._forced_slot_w is not None:
+            vis_sizes = [c.measure(theme) for c in self._visible_children()]
+            forced_slots = self._slot_widths_for_visible(vis_sizes)
         offs = []
         cx = 0.0
+        vis_idx = 0
         for child, size, cb in zip(self.children, sizes, content):
             invisible = getattr(child, "is_layout_invisible", False)
             cb_y = cb[1]
@@ -182,10 +240,18 @@ class Row(Element):
                 ox = slot_cx - (cb[0] + cb[2] / 2)
                 offs.append((ox, oy, size))
                 cx += slot + g
+            elif forced_slots is not None and not invisible:
+                slot_w = forced_slots[vis_idx]
+                slot_cx = cx + slot_w / 2
+                ox = slot_cx - (cb[0] + cb[2] / 2)
+                offs.append((ox, oy, size))
+                cx += slot_w + g
+                vis_idx += 1
             else:
                 offs.append((cx, oy, size))
                 if not invisible:
                     cx += size.w + g
+                    vis_idx += 1
         return offs
 
     def primary_anchor_bbox(self, theme: Theme):

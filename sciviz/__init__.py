@@ -15,6 +15,9 @@ Quick start
     )
     d.save_all("figure")   # writes figure.svg, figure.pdf, figure.png
 
+Read the single-doc reference at
+[`docs/AUTHORING.md`](../../docs/AUTHORING.md) for the full vocabulary.
+
 Design principles
 -----------------
 
@@ -26,7 +29,8 @@ Design principles
 4. **One way to connect.**  :class:`Connect` subsumes arrows, buses,
    inline connectors, and labeled wires -- author intent, let the
    backend route.
-5. **Semantic tokens.**  ``gap="lg"``, ``size="label"``, ``color="highlight"``.
+5. **Semantic tokens.**  ``gap="lg"``, ``size="label"``,
+   ``color="positive"``, ``color="negative"``, ``color="warning"``.
 6. **Vector math.**  :class:`Math` renders LaTeX via matplotlib as SVG
    paths -- embeds cleanly into the output PDF.
 
@@ -36,9 +40,12 @@ Package layout
 * ``sciviz.core``       -- :class:`Element`, :class:`BBox`, :class:`Canvas`,
                            :class:`Theme`.
 * ``sciviz.layout``     -- :class:`Row`, :class:`Column`, :class:`Panel`,
-                           :class:`Spacer`, :class:`FixedSize`.
+                           :class:`Spacer`, :class:`FixedSize`,
+                           :class:`AlignedStack`.
 * ``sciviz.elements``   -- :class:`Text`, :class:`Box`, :class:`Matrix`,
-                           :class:`Legend`, :class:`Caption`, :class:`TokenRow`.
+                           :class:`Legend`, :class:`Caption`, :class:`TokenRow`,
+                           :class:`Icon`, :class:`Image`, :class:`Separator`,
+                           :func:`Span`.
 * ``sciviz.composition``-- :class:`Inline`, :class:`Captioned`, :class:`Badge`,
                            :class:`Brace`, :class:`Group`, :class:`Region`,
                            :class:`LabeledChain`, :class:`MatchSize`,
@@ -47,9 +54,11 @@ Package layout
 * ``sciviz.grid``       -- :class:`Grid` (declarative per-column alignment).
 * ``sciviz.charts``     -- :class:`Table`, :class:`AlignedColumns`,
                            :class:`BarChart`.
-* ``sciviz.primitives`` / ``sciviz.specialized`` / ``sciviz.structures`` /
-  ``sciviz.graphs``     -- domain-specific visualisations (heatmaps,
-                           pyramids, token graphs, sections, ...).
+* ``sciviz.specialized``-- :class:`Pyramid`, :class:`Timeline`,
+                           :class:`Scatter`, :class:`LineChart`,
+                           :class:`Series`, :class:`Annotate`.
+* ``sciviz.graphs``     -- :class:`Tree` (arbitrary element nodes),
+                           :class:`NodeTree`, :class:`Token`, ...
 * ``sciviz.math``       -- :class:`Math` (LaTeX-via-matplotlib).
 * ``sciviz.palette``    -- :class:`Palette`, :class:`ColorRef`.
 * ``sciviz.auto``       -- :mod:`sciviz.auto.router`,
@@ -76,18 +85,23 @@ from .layout import (
     Row,
     Column,
     Panel,
+    AlignedStack,
 )
 
 # ----- generic elements ----------------------------------------------------
 from .elements import (
     Text,
     TextBlock,
+    Span,
     Box,
     Matrix,
     Legend,
     LegendItem,
     Caption,
     TokenRow,
+    Icon,
+    Image,
+    Separator,
 )
 
 # ----- math ----------------------------------------------------------------
@@ -97,7 +111,7 @@ from .math import Math
 from .charts import Table, AlignedColumns, BarChart
 
 # ----- specialized ---------------------------------------------------------
-from .specialized import Pyramid, Timeline, Scatter
+from .specialized import Pyramid, Timeline, Scatter, LineChart, Series, Annotate
 
 # ----- structures (high-level layout primitives) --------------------------
 from .structures import Section, BlockGroup
@@ -131,6 +145,8 @@ from .graphs import (
     Tokens,
     NodeTree,
     Sequence,
+    Tree,
+    TreeNode,
 )
 
 # ----- top-level Diagram ---------------------------------------------------
@@ -140,16 +156,17 @@ __all__ = [
     # core
     "Theme", "DEFAULT_THEME", "BBox", "Canvas", "Element",
     # layout
-    "Spacer", "FixedSize", "Row", "Column", "Grid", "Panel",
+    "Spacer", "FixedSize", "Row", "Column", "Grid", "Panel", "AlignedStack",
     # elements
-    "Text", "TextBlock", "Box",
+    "Text", "TextBlock", "Span", "Box",
     "Matrix", "Legend", "LegendItem", "Caption", "TokenRow",
+    "Icon", "Image", "Separator",
     # math
     "Math",
     # charts
     "Table", "AlignedColumns", "BarChart",
     # specialized
-    "Pyramid", "Timeline", "Scatter",
+    "Pyramid", "Timeline", "Scatter", "LineChart", "Series", "Annotate",
     # structures
     "Section", "BlockGroup",
     # primitives
@@ -163,7 +180,7 @@ __all__ = [
     # unified connector
     "Connect", "Anchor",
     # graphs
-    "Token", "Tokens", "NodeTree", "Sequence",
+    "Token", "Tokens", "NodeTree", "Sequence", "Tree", "TreeNode",
     # root
     "Diagram",
 ]

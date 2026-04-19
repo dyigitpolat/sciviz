@@ -11,10 +11,13 @@ This means a deeply nested diagram always lays out correctly: measuring
 is bottom-up, rendering is top-down.
 """
 
+from ._aligned_stack import AlignedStack
 from ._column import Column
 from ._panel import Panel
 from ._row import Row
 from ._simple_grid import Grid
 from ._spacer import FixedSize, Spacer
 
-__all__ = ["Spacer", "FixedSize", "Row", "Column", "Grid", "Panel"]
+__all__ = [
+    "Spacer", "FixedSize", "Row", "Column", "Grid", "Panel", "AlignedStack",
+]

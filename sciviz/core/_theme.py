@@ -184,6 +184,12 @@ class Theme:
         "accent": "accent", "accent_fill": "accent_fill",
         "highlight": "highlight", "highlight_fill": "highlight_fill",
         "warning": "warning", "warning_fill": "warning_fill",
+        # Semantic positive / negative / warning shortcuts: resolve to
+        # coordinated role colours (deep ink shade) that pair with the
+        # existing soft/fill families.  ``positive = accent (emerald)``,
+        # ``negative = highlight (red)``, ``warning = amber``.
+        "positive": "accent",
+        "negative": "highlight",
         "border": "border", "grid": "grid", "disabled": "disabled_text",
     }
 
@@ -242,6 +248,9 @@ class Theme:
             "warn":     "#b45309",
             "emphasis": "#1e3a8a",
             "accent":   "#134e4a",
+            "positive": "#2d7a70",
+            "negative": "#b91c1c",
+            "warning":  "#b45309",
         }
 
     def role(self, name: str, variant: str = "fill") -> str:
