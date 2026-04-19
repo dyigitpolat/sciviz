@@ -68,8 +68,35 @@ class ColorRef:
 # Palette namespace
 # ---------------------------------------------------------------------------
 
+# Custom (figure-scoped) registration table.  Populated by ``Palette.register``.
+# ``resolve_color`` consults this table for ``ColorRef(role=f"_custom:{name}")``.
+_CUSTOM_COLORS: dict = {}
+
+# Reserved names that must not be overridden.  Kept in sync with the class
+# attributes exposed by ``_PaletteMeta``.
+_RESERVED = frozenset({
+    "alert", "success", "info", "warn", "neutral", "muted", "emphasis", "accent",
+    "red", "orange", "amber", "yellow", "green", "teal", "cyan", "blue",
+    "indigo", "violet", "purple", "pink", "gray",
+    "accent_proc", "accent_shared", "panel_soft", "muted_label",
+    "literal", "next", "reset", "register", "custom", "clear_custom",
+})
+
+
 class _PaletteMeta(type):
     """Class with both class-attribute color refs and a stateful next()."""
+
+    def __getattr__(cls, name):
+        """Expose custom-registered colours as attributes: ``Palette.my_name``.
+
+        Called only when normal attribute lookup fails; the static
+        properties below still win for builtin names.
+        """
+        if name in _CUSTOM_COLORS:
+            return ColorRef(role=f"_custom:{name}")
+        raise AttributeError(
+            f"type object 'Palette' has no attribute '{name}'. "
+            f"Did you forget to Palette.register('{name}', '#...')?")
 
     # semantic roles
     @property
@@ -175,6 +202,44 @@ class Palette(metaclass=_PaletteMeta):
         """Reset the categorical assignment counter (use between figures)."""
         cls._key_to_idx.clear()
         cls._next_idx = 0
+
+    # ----- custom named colours -----
+    @classmethod
+    def register(cls, name: str, hex_color: str) -> ColorRef:
+        """Register a named custom colour for the rest of the process.
+
+        After registration, the colour resolves through three access paths:
+
+        * ``Palette.custom(name)``  -- explicit lookup (never raises
+          ``AttributeError`` on typos; raises :class:`KeyError` if unknown).
+        * ``Palette.<name>``        -- attribute access, so ``name`` must
+          be a valid Python identifier and must not shadow a builtin.
+        * ``ColorRef.soft()`` / ``.dark()`` -- work as usual.
+
+        Returns the registered :class:`ColorRef` for immediate use.
+        """
+        if not name.isidentifier():
+            raise ValueError(
+                f"custom colour name must be a valid identifier; got {name!r}")
+        if name in _RESERVED:
+            raise ValueError(
+                f"{name!r} is a reserved Palette name; pick a different one")
+        _CUSTOM_COLORS[name] = hex_color
+        return ColorRef(role=f"_custom:{name}")
+
+    @classmethod
+    def custom(cls, name: str) -> ColorRef:
+        """Return the ColorRef for a previously registered custom colour."""
+        if name not in _CUSTOM_COLORS:
+            raise KeyError(
+                f"no custom colour registered under {name!r}; "
+                f"call Palette.register({name!r}, '#...') first")
+        return ColorRef(role=f"_custom:{name}")
+
+    @classmethod
+    def clear_custom(cls):
+        """Clear all custom registrations (use between figures / tests)."""
+        _CUSTOM_COLORS.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +376,9 @@ def resolve_color(ref, theme) -> str:
         if ref.role.startswith("_cat:"):
             idx = int(ref.role.split(":")[1])
             base = cat_table[idx % len(cat_table)]
+        elif ref.role.startswith("_custom:"):
+            key = ref.role.split(":", 1)[1]
+            base = _CUSTOM_COLORS.get(key, theme.text)
         else:
             base = role_table.get(ref.role, theme.text)
     else:  # named

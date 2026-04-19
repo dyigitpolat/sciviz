@@ -4,7 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sciviz import (Diagram, Row, Column, Scatter, Math, Section, Text,
-                    Spacer, Palette)
+                    Palette)
 
 PEAK_FLOPS_GF, PEAK_BW = 312_000.0, 2_000.0   # GFLOP/s, GB/s
 RIDGE = PEAK_FLOPS_GF / PEAK_BW
@@ -47,7 +47,7 @@ notes = Column(
 d = Diagram(
     title="Roofline model: NVIDIA A100, FP16 Tensor cores",
     subtitle="peak 312 TFLOP/s, 2.0 TB/s HBM",
-    body=Row(plot, Spacer(20, 0), notes, gap="lg", align="center"),
+    body=Row(plot, notes, gap="xl", align="center"),
 )
 d.save_all(Path(__file__).resolve().parents[1] / "_out" / "roofline")
 print("Rendered:", d.measure())

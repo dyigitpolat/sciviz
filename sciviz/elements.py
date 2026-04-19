@@ -818,25 +818,80 @@ class Matrix(Element):
 # Legend
 # ---------------------------------------------------------------------------
 
+class LegendItem(Element):
+    """Single entry in a :class:`Legend`: a swatch element + a text label.
+
+    The swatch can be any :class:`Element` (a small :class:`Box`, a
+    :class:`Badge`, a :class:`MiniGrid`, ...) -- this lets legends pair
+    non-trivial icons with descriptions without reinventing the layout.
+
+    Parameters
+    ----------
+    swatch : Element
+        Visual swatch (rendered verbatim at its intrinsic size).
+    text : str
+        Label text, rendered to the right of the swatch.
+    gap : str or float
+        Horizontal spacing between swatch and text (default ``"xs"``).
+    text_size : str
+        Theme size token for the label.
+    text_color : str
+        Colour for the label (default ``"muted"``).
+    """
+
+    def __init__(self, swatch: Element, text: str, *,
+                 gap: Union[str, float] = "xs",
+                 text_size: str = "small",
+                 text_color: str = "muted"):
+        self.swatch = swatch
+        self.text = text
+        self.gap = gap
+        self.text_size = text_size
+        self.text_color = text_color
+
+    def _row(self):
+        from .layout import Row
+        return Row(
+            self.swatch,
+            Text(self.text, size=self.text_size, color=self.text_color),
+            gap=self.gap, align="center",
+        )
+
+    def measure(self, theme: Theme) -> BBox:
+        return self._row().measure(theme)
+
+    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        self._row().render(canvas, x, y, theme)
+
+
 class Legend(Element):
     """Compact horizontal key.
 
-    Two forms:
-    * ``Legend(items=[("#3b82f6", "Active"), ("#e2e8f0", "Pruned")])``
-    * ``Legend(scale=("blues", 5), label="|w|")`` for a sequential colour ramp.
+    Three forms (use whichever matches the data you have):
+
+    * ``Legend(LegendItem(Box(...), "leaf page"), LegendItem(...), ...)`` --
+      positional items with custom swatch elements.  Preferred form.
+    * ``Legend(items=[("#3b82f6", "Active"), ("#e2e8f0", "Pruned")])`` --
+      the legacy kwarg form: pairs of (colour, label) drawn as small
+      rectangles.  Supported for backward compatibility.
+    * ``Legend(scale=("blues", 5), label="|w|")`` -- a sequential colour
+      ramp for heatmap-like data.
     """
 
-    def __init__(self, *,
+    def __init__(self, *children,
                  items: Optional[List[Tuple[str, str]]] = None,
                  scale: Optional[Tuple[str, int]] = None,
                  label: Optional[str] = None,
                  swatch_size: float = 14.0,
-                 orientation: str = "horizontal"):
+                 orientation: str = "horizontal",
+                 gap: Union[str, float] = "md"):
+        self._children = list(children)
         self.items = items
         self.scale = scale
         self.label = label
         self.swatch_size = swatch_size
         self.orientation = orientation
+        self.gap = gap
 
     def _resolved_items(self, theme: Theme) -> List[Tuple[str, str]]:
         if self.items is not None:
@@ -857,7 +912,14 @@ class Legend(Element):
             return list(zip(picks, labels))
         return []
 
+    def _positional_container(self):
+        from .layout import Row, Column
+        cls = Row if self.orientation == "horizontal" else Column
+        return cls(*self._children, gap=self.gap, align="center")
+
     def measure(self, theme: Theme) -> BBox:
+        if self._children:
+            return self._positional_container().measure(theme)
         items = self._resolved_items(theme)
         sw = self.swatch_size
         pad = theme.unit * 0.6
@@ -884,6 +946,9 @@ class Legend(Element):
             return BBox(w, h)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        if self._children:
+            self._positional_container().render(canvas, x, y, theme)
+            return
         items = self._resolved_items(theme)
         sw = self.swatch_size
         pad = theme.unit * 0.6

@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sciviz import (Diagram, Column, Row, NodeTree, Math, Caption, Section,
-                    Text, Box, Spacer)
+                    Text, Box, Spacer, Inline, Legend, LegendItem)
 
 # Tree structure: (cells, children) recursively.  Leaves have children=[].
 tree = (["30", "60"], [
@@ -25,25 +25,24 @@ tree = (["30", "60"], [
 ])
 node_tree = NodeTree(tree, cell_w=30, cell_h=24, level_gap=40, page_gap=14)
 
-legend = Row(
-    Box(width=18, height=14, fill="none", stroke="text", radius=1),
-    Text("internal page (separator keys)", size="small", color="muted"),
-    Spacer(20, 0),
-    Box(width=18, height=14, fill="accent_soft", stroke="text", radius=1),
-    Text("leaf page (payload + sibling pointer)", size="small", color="muted"),
-    gap="sm", align="center",
+legend = Legend(
+    LegendItem(Box(width=18, height=14, fill="none", stroke="text", radius=1),
+               "internal page (separator keys)"),
+    LegendItem(Box(width=18, height=14, fill="accent_soft", stroke="text", radius=1),
+               "leaf page (payload + sibling pointer)"),
+    gap="lg",
 )
 
-complexity = Row(
+complexity = Inline(
     Text("height", size="small", color="muted", weight="700"),
-    Math(r"$h = \lceil \log_B N \rceil$"),
-    Spacer(20, 0),
+    r"$h = \lceil \log_B N \rceil$",
+    Spacer(14, 0),
     Text("lookup", size="small", color="muted", weight="700"),
-    Math(r"$O(h)$"),
-    Spacer(20, 0),
+    r"$O(h)$",
+    Spacer(14, 0),
     Text("range scan of k keys", size="small", color="muted", weight="700"),
-    Math(r"$O(h + k/B)$"),
-    gap="sm", align="center",
+    r"$O(h + k/B)$",
+    gap="xs",
 )
 
 d = Diagram(

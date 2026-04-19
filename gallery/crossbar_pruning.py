@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sciviz import (Diagram, Row, Column, Panel, MeshArray, Box, Connector,
-                    Math, Caption, Section, Text, Matrix)
+                    Math, Caption, Section, Text, Matrix, Palette)
 
 # Sparse weight matrix: rows {1,5} and cols {2,6} are zeroed.
 rng = random.Random(1)
@@ -20,19 +20,20 @@ for i in PR: W[i] = [0.0] * N
 for r in W:
     for j in PC: r[j] = 0.0
 
-# Helper: small DAC and ADC blocks
+def _peripheral(label, role, *, width, height, active):
+    """Peripheral block (DAC / ADC) coloured by role; gated off when inactive."""
+    if active:
+        fill, stroke, text_color = role.soft(), role, "text"
+    else:
+        fill, stroke, text_color = Palette.gray.soft(), Palette.gray, "muted"
+    return Box(label=label, width=width, height=height,
+               fill=fill, stroke=stroke, text_color=text_color,
+               text_size="tiny", text_weight="700", radius=2)
+
 def dac(active=True):
-    return Box(label="DAC", width=30, height=14,
-               fill="#dbe3f1" if active else "#e5e7eb",
-               stroke="#3b5fa0" if active else "#9ca3af",
-               text_color="text" if active else "muted",
-               text_size="tiny", text_weight="700", radius=2)
+    return _peripheral("DAC", Palette.blue, width=30, height=14, active=active)
 def adc(active=True):
-    return Box(label="ADC", width=18, height=24,
-               fill="#c7e5df" if active else "#e5e7eb",
-               stroke="#2d7a70" if active else "#9ca3af",
-               text_color="text" if active else "muted",
-               text_size="tiny", text_weight="700", radius=2)
+    return _peripheral("ADC", Palette.teal, width=18, height=24, active=active)
 
 # Panel (a): the matrix with pruned rows / columns highlighted
 mat_panel = Matrix(W, cell_size="md",
@@ -47,12 +48,15 @@ xbar_full = MeshArray(
     bottom=[adc(True) for _ in range(N)],
 )
 
-# Panel (c): pruned crossbar (DACs/ADCs at pruned indices are gated off)
+# Panel (c): pruned crossbar (DACs/ADCs at pruned indices are gated off).
+# ``disable_rows`` / ``disable_cols`` fades the grid cells themselves; the
+# peripheral factories still decide their own active/inactive palette.
 xbar_pruned = MeshArray(
     shape=(N, N), cell=22, cell_data=W, palette="blues",
     cell_padding=4,
     left=[dac(i not in PR) for i in range(N)],
     bottom=[adc(j not in PC) for j in range(N)],
+    disable_rows=PR, disable_cols=PC,
 )
 
 mvm_caption = Math(r"$y = W x \ \Rightarrow\ I_j = \sum_i G_{ij} \cdot V_i$")

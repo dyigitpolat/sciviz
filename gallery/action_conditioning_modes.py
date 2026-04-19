@@ -20,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sciviz import (Diagram, Row, Column, Box, Heatmap, Text, Caption,
                     Badge, LoopIcon, Brace, Group, Anchor, Flow, Flowed, MatchSize,
-                    BlockGroup, MeshArray, Palette, Spacer, Table, TextBlock)
+                    BlockGroup, MeshArray, Palette, Spacer, Table, TextBlock,
+                    Inline, Captioned)
 
 
 # Mode -> colour: same hue used for the panel header AND its table row.
@@ -69,11 +70,10 @@ def diffusion_transformer(*, accent: int, plus_anchor=None):
                       dashed=False, padding="md", label_align="center")
 
 def loop_marker():
-    return Row(
+    return Inline(
         LoopIcon(size=20, color=Palette.info),
-        Spacer(4, 0),
         Text("\u00d7 N", size="small", color="muted", weight="700"),
-        gap="none", align="center",
+        gap="xs",
     )
 
 # ---------------------------------------------------------------------------
@@ -197,12 +197,8 @@ panel_internal = Flowed(
 # ---------------------------------------------------------------------------
 
 def headed_panel(num, role, body):
-    return Column(
-        Badge(num, color=role, size=24, text_size="small"),
-        Spacer(0, 6),
-        body,
-        gap="none", align="center",
-    )
+    return Captioned(body, number=num, number_role=role, number_size=24,
+                     gap="xs", align="center")
 
 top_row = Row(
     headed_panel("1", COLORS["external"],   panel_external),
@@ -217,38 +213,47 @@ top_row = Row(
 # ---------------------------------------------------------------------------
 
 def mode_cell(num, role, name):
-    return Row(
+    return Inline(
         Badge(num, color=role, size=18, text_size="tiny"),
-        Spacer(8, 0),
         Text(name, size="small", weight="700", font="mono"),
-        gap="none", align="center",
+        gap="sm",
     )
 
+def notes(s):
+    return TextBlock(s, size="small", color="muted", max_width=380)
+
+
+# column_styles: per-column defaults applied to raw string cells.  Column 1
+# ("Injection point") becomes a list of plain strings -- Table coerces them
+# into small muted Text via the declared style.  Column 0 is a numbered
+# badge-cell pair (custom Element); Column 2 is a wrapped TextBlock; both
+# pass through unchanged.
 table = Table(
     [
         [Text("Mode",            size="small", weight="700"),
          Text("Injection point", size="small", weight="700"),
          Text("Notes",           size="small", weight="700")],
         [mode_cell("1", COLORS["external"],   "external"),
-         Text("Conditioned VAE input", size="small", color="muted"),
-         TextBlock("Actions injected as an external conditioning stream that "
-                   "modulates the backbone without sharing the main token sequence.",
-                   size="small", color="muted", max_width=380)],
+         "Conditioned VAE input",
+         notes("Actions injected as an external conditioning stream that "
+               "modulates the backbone without sharing the main token sequence.")],
         [mode_cell("2", COLORS["contextual"], "contextual"),
-         Text("Concat frames, actions", size="small", color="muted"),
-         TextBlock("Video and action tokens share one sequence with a "
-                   "lag-aware temporal attention mask, enabling mid-level fusion.",
-                   size="small", color="muted", max_width=380)],
+         "Concat frames, actions",
+         notes("Video and action tokens share one sequence with a "
+               "lag-aware temporal attention mask, enabling mid-level fusion.")],
         [mode_cell("3", COLORS["residual"],   "residual"),
-         Text("Hidden state with action delta", size="small", color="muted"),
-         TextBlock("Actions added through residual-style modulation branches; "
-                   "a strong but more indirect baseline.",
-                   size="small", color="muted", max_width=380)],
+         "Hidden state with action delta",
+         notes("Actions added through residual-style modulation branches; "
+               "a strong but more indirect baseline.")],
         [mode_cell("4", COLORS["internal"],   "internal"),
-         Text("After cross-attn, before FFN", size="small", color="muted"),
-         TextBlock("Actions enter through dedicated cross-attention inside the "
-                   "transformer blocks, fusing near the backbone core.",
-                   size="small", color="muted", max_width=380)],
+         "After cross-attn, before FFN",
+         notes("Actions enter through dedicated cross-attention inside the "
+               "transformer blocks, fusing near the backbone core.")],
+    ],
+    column_styles=[
+        None,
+        {"size": "small", "color": "muted"},
+        None,
     ],
     col_align=("start", "start", "start"),
     gap_y="md", gap_x="xl",

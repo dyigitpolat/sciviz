@@ -9,21 +9,35 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sciviz import (Diagram, Row, Column, Panel, Tokens, Math, Caption,
-                    Section, BarChart, Text)
+                    Section, BarChart, Text, AlignedColumns)
 
-# (a) Token strips: equal-width chips line up vertically because Tokens
-# uses the longest-label slot for every cell across all three rows.
-strips = Column(
-    Row(Text("draft:",  size="small", color="muted", weight="700"),
-        Tokens([("The","accept"), ("cat","accept"), ("sat","accept"), ("on","reject")]),
-        gap="sm", align="center"),
-    Row(Text("target:", size="small", color="muted", weight="700"),
-        Tokens([("The","accept"), ("cat","accept"), ("sat","accept"), ("a","reject")]),
-        gap="sm", align="center"),
-    Row(Text("kept:",   size="small", color="muted", weight="700"),
-        Tokens([("The","accept"), ("cat","accept"), ("sat","accept"), ("a","accept")]),
-        gap="sm", align="center"),
-    gap="sm", align="end",
+
+def _strip_label(name):
+    return Text(name, size="small", color="muted", weight="700")
+
+
+def _strip_tokens(tokens):
+    return Tokens(tokens)
+
+
+# (a) Token strips: AlignedColumns forces the three rows to share column
+# widths so the "draft:" / "target:" / "kept:" labels stack into a rigid
+# left column and the Tokens strips line up to the right of them.
+strips = AlignedColumns(
+    rows=[
+        [_strip_label("draft:"),
+         _strip_tokens([("The","accept"), ("cat","accept"),
+                        ("sat","accept"), ("on","reject")])],
+        [_strip_label("target:"),
+         _strip_tokens([("The","accept"), ("cat","accept"),
+                        ("sat","accept"), ("a","reject")])],
+        [_strip_label("kept:"),
+         _strip_tokens([("The","accept"), ("cat","accept"),
+                        ("sat","accept"), ("a","accept")])],
+    ],
+    col_align=("end", "start"),
+    gap_x="sm",
+    gap_y="sm",
 )
 protocol_panel = Section(
     "Protocol on one step", strips,

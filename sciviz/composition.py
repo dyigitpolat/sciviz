@@ -91,6 +91,277 @@ class Inline(Element):
 
 
 # ---------------------------------------------------------------------------
+# Captioned -- numbered / titled decoration stacked above a child
+# ---------------------------------------------------------------------------
+
+class Captioned(Element):
+    """Wrap a child with a small vertical decoration above it.
+
+    One of two kinds of decoration is supported, chosen by which
+    keyword you pass:
+
+    * ``number="1"`` (optionally with ``number_role=Palette.alert``) draws a
+      :class:`Badge` above the child -- the canonical "numbered panel
+      header" pattern (panel markers in a multi-variant figure).
+    * ``title="FORWARD  (fixed)"`` (optionally with ``title_color=...``) draws
+      a short bold :class:`Text` above the child -- the canonical
+      "section kicker" pattern.
+
+    Exactly one decoration is rendered; if you pass neither, ``Captioned``
+    returns the child's extent unchanged so the wrapper is a no-op.
+
+    Parameters
+    ----------
+    child : Element
+        The body to decorate.
+    number : str, optional
+        A short badge label (typically "1", "2", "a", ...).
+    number_role : ColorRef or str, optional
+        Badge colour.  Defaults to theme ``info`` if omitted.
+    number_size : float
+        Badge diameter in pixels (default 24).
+    title : str, optional
+        A short bold kicker drawn above the child.
+    title_color : ColorRef or str, optional
+        Colour for the kicker.  Defaults to theme ``text``.
+    title_size : str
+        Theme size token for the kicker (default ``"small"``).
+    gap : str or float
+        Vertical gap between decoration and child.
+    align : str
+        Horizontal alignment of the narrower of (decoration, child) within
+        the wider one.  Default ``"center"``.
+    """
+
+    def __init__(self, child: Element, *,
+                 number: Optional[str] = None,
+                 number_role=None,
+                 number_size: float = 24.0,
+                 title: Optional[str] = None,
+                 title_color=None,
+                 title_size: str = "small",
+                 gap: Union[str, float] = "xs",
+                 align: str = "center"):
+        self.child = child
+        self.number = number
+        self.number_role = number_role
+        self.number_size = number_size
+        self.title = title
+        self.title_color = title_color
+        self.title_size = title_size
+        self.gap = gap
+        self.align = align
+
+    def _decoration(self) -> Optional[Element]:
+        if self.number is not None:
+            role = self.number_role if self.number_role is not None else "info"
+            return Badge(self.number, color=role, size=self.number_size,
+                         text_size="small")
+        if self.title is not None:
+            color = self.title_color if self.title_color is not None else "text"
+            return Text(self.title, size=self.title_size, color=color,
+                        weight="700")
+        return None
+
+    def measure(self, theme: Theme) -> BBox:
+        d = self._decoration()
+        if d is None:
+            return self.child.measure(theme)
+        d_bb = d.measure(theme)
+        c_bb = self.child.measure(theme)
+        gap_px = theme.gap_px(self.gap)
+        return BBox(max(d_bb.w, c_bb.w), d_bb.h + gap_px + c_bb.h)
+
+    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        d = self._decoration()
+        if d is None:
+            self.child.render(canvas, x, y, theme)
+            return
+        size = self.measure(theme)
+        d_bb = d.measure(theme)
+        c_bb = self.child.measure(theme)
+        gap_px = theme.gap_px(self.gap)
+
+        def _offset(outer_w: float, inner_w: float) -> float:
+            if self.align == "start":
+                return 0.0
+            if self.align == "end":
+                return outer_w - inner_w
+            return (outer_w - inner_w) / 2
+
+        d_x = x + _offset(size.w, d_bb.w)
+        d.render(canvas, d_x, y, theme)
+
+        c_y = y + d_bb.h + gap_px
+        c_x = x + _offset(size.w, c_bb.w)
+        self.child.render(canvas, c_x, c_y, theme)
+
+
+# ---------------------------------------------------------------------------
+# LabeledChain -- horizontal sequence with optional aligned labels above/below
+# ---------------------------------------------------------------------------
+
+
+class LabeledChain(Element):
+    """Horizontal row of items with optional labels above and/or below.
+
+    This primitive solves the recurring "three parallel rows that must
+    share the same column centres" pattern (diffusion chains, labelled
+    token strips, staged pipelines).  Each label is positioned so its
+    horizontal centre lines up exactly with its item's centre, regardless
+    of label width.
+
+    Parameters
+    ----------
+    items : sequence of Element
+        The main row of content.
+    top_labels : sequence of Element, optional
+        If provided, must have the same length as ``items``.  Each label
+        is drawn above its item, centred on the item's column.
+    bottom_labels : sequence of Element, optional
+        Same as ``top_labels`` but rendered below the items row.
+    arrow : str or Element, optional
+        Either a short symbolic spec (``"->"``, ``"<-"``, ``"--"``) or an
+        explicit :class:`Element` to draw between successive items.
+        Default ``None`` (no connector).  String specs lower to
+        :class:`Connector` with sensible defaults.
+    gap : str or float
+        Horizontal spacing between items (and between an item and its
+        adjacent connector).
+    label_gap : str or float
+        Vertical spacing between the item row and each label row.
+    """
+
+    def __init__(self, items, *,
+                 top_labels=None,
+                 bottom_labels=None,
+                 arrow=None,
+                 gap: Union[str, float] = "md",
+                 label_gap: Union[str, float] = "xs"):
+        self.items = list(items)
+        self.top_labels = list(top_labels) if top_labels is not None else None
+        self.bottom_labels = list(bottom_labels) if bottom_labels is not None else None
+        if self.top_labels is not None and len(self.top_labels) != len(self.items):
+            raise ValueError(
+                f"top_labels length {len(self.top_labels)} != items length "
+                f"{len(self.items)}")
+        if self.bottom_labels is not None and len(self.bottom_labels) != len(self.items):
+            raise ValueError(
+                f"bottom_labels length {len(self.bottom_labels)} != items length "
+                f"{len(self.items)}")
+        self.arrow = arrow
+        self.gap = gap
+        self.label_gap = label_gap
+
+    # --- arrow lowering ----------------------------------------------------
+    def _arrow_element(self) -> Optional[Element]:
+        if self.arrow is None:
+            return None
+        if isinstance(self.arrow, Element):
+            return self.arrow
+        if isinstance(self.arrow, str):
+            from .elements import Connector
+            style = self.arrow
+            if style == "->":
+                return Connector(direction="right", length=22)
+            if style == "<-":
+                return Connector(direction="left", length=22)
+            if style == "--":
+                return Connector(direction="right", length=22, head=False)
+            raise ValueError(
+                f"arrow string spec must be one of '->', '<-', '--'; got {style!r}")
+        raise TypeError(f"arrow must be None, Element or str; got {type(self.arrow)}")
+
+    def _items_row(self) -> Row:
+        arrow = self._arrow_element()
+        if arrow is None:
+            kids = list(self.items)
+        else:
+            kids = []
+            for i, it in enumerate(self.items):
+                kids.append(it)
+                if i < len(self.items) - 1:
+                    kids.append(arrow)
+        return Row(*kids, gap=self.gap, align="center")
+
+    # --- geometry helpers --------------------------------------------------
+    def _item_centres(self, theme: Theme):
+        """Return the (x_centre, item_width) for each item when the row is
+        rendered with its top-left at (0, 0).  Includes arrow separators."""
+        row = self._items_row()
+        row_bb = row.measure(theme)
+        gap_px = theme.gap_px(self.gap)
+        arrow = self._arrow_element()
+        arrow_w = arrow.measure(theme).w if arrow is not None else 0.0
+        item_sizes = [it.measure(theme) for it in self.items]
+        row_h = max(s.h for s in item_sizes) if item_sizes else 0.0
+
+        cx_list = []
+        cur = 0.0
+        for i, sz in enumerate(item_sizes):
+            cx = cur + sz.w / 2
+            cx_list.append(cx)
+            cur += sz.w + gap_px
+            if arrow is not None and i < len(item_sizes) - 1:
+                cur += arrow_w + gap_px
+        return cx_list, row_bb, row_h
+
+    def _label_band(self, labels, theme: Theme):
+        """Measure a label band by positioning each label centred on its
+        item's x-centre.  Returns the band height."""
+        if labels is None:
+            return 0.0
+        return max((lbl.measure(theme).h for lbl in labels), default=0.0)
+
+    def measure(self, theme: Theme) -> BBox:
+        _, row_bb, _ = self._item_centres(theme)
+        top_h = self._label_band(self.top_labels, theme)
+        bot_h = self._label_band(self.bottom_labels, theme)
+        lg = theme.gap_px(self.label_gap)
+        h = row_bb.h
+        if self.top_labels is not None:
+            h += top_h + lg
+        if self.bottom_labels is not None:
+            h += bot_h + lg
+        return BBox(row_bb.w, h)
+
+    def _render_label_band(self, labels, cx_list, canvas: Canvas, x: float,
+                           y_top: float, theme: Theme, align_bottom: bool):
+        """Render ``labels`` at rows whose centres line up with each item."""
+        if labels is None:
+            return
+        band_h = max(lbl.measure(theme).h for lbl in labels)
+        for lbl, cx in zip(labels, cx_list):
+            lbb = lbl.measure(theme)
+            lx = x + cx - lbb.w / 2
+            if align_bottom:
+                ly = y_top + (band_h - lbb.h)
+            else:
+                ly = y_top + (band_h - lbb.h)  # both bands bottom-aligned to
+                # their band baseline, which looks better than top-align
+            lbl.render(canvas, lx, ly, theme)
+
+    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        cx_list, row_bb, _ = self._item_centres(theme)
+        lg = theme.gap_px(self.label_gap)
+        cur_y = y
+
+        if self.top_labels is not None:
+            top_h = max(lbl.measure(theme).h for lbl in self.top_labels)
+            self._render_label_band(self.top_labels, cx_list, canvas, x, cur_y,
+                                    theme, align_bottom=True)
+            cur_y += top_h + lg
+
+        self._items_row().render(canvas, x, cur_y, theme)
+        cur_y += row_bb.h
+
+        if self.bottom_labels is not None:
+            cur_y += lg
+            self._render_label_band(self.bottom_labels, cx_list, canvas, x, cur_y,
+                                    theme, align_bottom=False)
+
+
+# ---------------------------------------------------------------------------
 # Card -- title + body with semantic tone
 # ---------------------------------------------------------------------------
 

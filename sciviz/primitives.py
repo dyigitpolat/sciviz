@@ -333,7 +333,10 @@ class MeshArray(Element):
                  top = None, bottom = None, left = None, right = None,
                  show_lines: bool = True,
                  line_color = "border_strong",
-                 cell_border = True):
+                 cell_border = True,
+                 disable_rows = None,
+                 disable_cols = None,
+                 disabled_opacity: float = 0.25):
         self.rows, self.cols = shape
         self.cell = cell
         self.cell_renderer = cell_renderer
@@ -351,7 +354,16 @@ class MeshArray(Element):
         self.show_lines = show_lines
         self.line_color = line_color
         self.cell_border = cell_border
+        self.disable_rows = frozenset(disable_rows) if disable_rows else frozenset()
+        self.disable_cols = frozenset(disable_cols) if disable_cols else frozenset()
+        self.disabled_opacity = disabled_opacity
         self._validate()
+
+    def _cell_opacity(self, i: int, j: int) -> float:
+        """Return 1.0 for fully active cells, ``disabled_opacity`` otherwise."""
+        if i in self.disable_rows or j in self.disable_cols:
+            return self.disabled_opacity
+        return 1.0
 
     def _validate(self):
         if self.top is not None and len(self.top) != self.cols:
@@ -416,6 +428,7 @@ class MeshArray(Element):
             for j in range(self.cols):
                 cx = gx + j * self.cell
                 cy = gy + i * self.cell
+                op = self._cell_opacity(i, j)
                 if self.cell_renderer is not None:
                     elem = self.cell_renderer(i, j)
                     if elem is not None:
@@ -432,7 +445,8 @@ class MeshArray(Element):
                                fill=color,
                                stroke=theme.color_of("text") if self.cell_border else "none",
                                stroke_width=theme.hairline if self.cell_border else 0,
-                               rx=1)
+                               rx=1,
+                               opacity=op)
 
         # peripherals
         def _place_col_periph(items, anchor_y, align_top):

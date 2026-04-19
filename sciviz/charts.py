@@ -41,30 +41,59 @@ class Table(Element):
         Column gap and row gap (semantic or px).
     """
 
-    def __init__(self, rows: Sequence[Sequence[Element]], *,
+    def __init__(self, rows: Sequence[Sequence], *,
                  col_align: Optional[Sequence[str]] = None,
                  row_align: str = "center",
                  gap_x: Union[str, float] = "sm",
                  gap_y: Union[str, float] = "sm",
                  header_rule: bool = False,
-                 row_rules: bool = False):
-        self.rows = [list(r) for r in rows]
-        if not self.rows:
+                 row_rules: bool = False,
+                 column_styles: Optional[Sequence[dict]] = None):
+        raw_rows = [list(r) for r in rows]
+        if not raw_rows:
             self.n_cols = 0
         else:
-            widths = {len(r) for r in self.rows}
+            widths = {len(r) for r in raw_rows}
             if len(widths) != 1:
                 raise ValueError(
                     f"Table rows must all have equal length; got {widths}")
-            self.n_cols = self.rows[0].__len__()
+            self.n_cols = len(raw_rows[0])
         self.col_align = list(col_align) if col_align else ["start"] * self.n_cols
         if len(self.col_align) != self.n_cols:
             raise ValueError("col_align length must equal number of columns")
+        if column_styles is not None and len(column_styles) != self.n_cols:
+            raise ValueError(
+                f"column_styles must have length {self.n_cols}; "
+                f"got {len(column_styles)}")
+        self.column_styles = (
+            [dict(cs) if cs else {} for cs in column_styles]
+            if column_styles is not None else None)
         self.row_align = row_align
         self.gap_x = gap_x
         self.gap_y = gap_y
         self.header_rule = header_rule
         self.row_rules = row_rules
+        self.rows = [
+            [self._coerce_cell(cell, j) for j, cell in enumerate(r)]
+            for r in raw_rows
+        ]
+
+    def _coerce_cell(self, cell, col_idx: int) -> Element:
+        """String cells in a column with a configured style become ``Text``.
+
+        Element cells are always passed through unchanged so authors can
+        override the column default by explicitly constructing the cell.
+        """
+        if isinstance(cell, Element):
+            return cell
+        if not isinstance(cell, str):
+            raise TypeError(
+                f"Table cells must be Element or str; got {type(cell)}")
+        from .elements import Text
+        style = {}
+        if self.column_styles is not None:
+            style = dict(self.column_styles[col_idx] or {})
+        return Text(cell, **style)
 
     def _extents(self, theme: Theme):
         col_w = [0.0] * self.n_cols
@@ -133,6 +162,64 @@ class Table(Element):
                            stroke=theme.color_of("border"),
                            stroke_width=theme.hairline)
             cur_y += row_h[i] + gy
+
+
+# ---------------------------------------------------------------------------
+# AlignedColumns
+# ---------------------------------------------------------------------------
+
+
+class AlignedColumns(Element):
+    """Force multiple rows to share per-column widths (centred by default).
+
+    This is :class:`Table` configured for the common "parallel rows share
+    the same grid" case used for top/middle/bottom label bands, labelled
+    token strips, and similar aligned compositions.  All rows must have
+    the same number of children.
+
+    Parameters
+    ----------
+    rows : list of lists of Element
+        Row-major cells.
+    col_align : str or list of str
+        Either a single alignment used for every column (``"center"``,
+        ``"start"``, ``"end"``) or a per-column list.  Default ``"center"``.
+    gap_x, gap_y : str or float
+        Column / row spacing.
+    row_align : str
+        Vertical alignment of cells within their row band.
+    """
+
+    def __init__(self, rows: Sequence[Sequence[Element]], *,
+                 col_align: Union[str, Sequence[str]] = "center",
+                 gap_x: Union[str, float] = "sm",
+                 gap_y: Union[str, float] = "xs",
+                 row_align: str = "center"):
+        raw = [list(r) for r in rows]
+        if raw:
+            widths = {len(r) for r in raw}
+            if len(widths) != 1:
+                raise ValueError(
+                    f"AlignedColumns rows must all have equal length; "
+                    f"got {widths}")
+        n_cols = len(raw[0]) if raw else 0
+        if isinstance(col_align, str):
+            col_align_list = [col_align] * n_cols
+        else:
+            col_align_list = list(col_align)
+        self._table = Table(
+            raw,
+            col_align=col_align_list,
+            gap_x=gap_x,
+            gap_y=gap_y,
+            row_align=row_align,
+        )
+
+    def measure(self, theme: Theme) -> BBox:
+        return self._table.measure(theme)
+
+    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        self._table.render(canvas, x, y, theme)
 
 
 # ---------------------------------------------------------------------------

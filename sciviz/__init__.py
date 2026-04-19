@@ -64,6 +64,7 @@ from .elements import (
     Connector,
     Matrix,
     Legend,
+    LegendItem,
     Note,
     Caption,
     MiniGrid,
@@ -74,7 +75,7 @@ from .elements import (
 from .math import Math, auto_text
 
 # ----- charts --------------------------------------------------------------
-from .charts import Table, BarChart
+from .charts import Table, AlignedColumns, BarChart
 
 # ----- specialized ---------------------------------------------------------
 from .specialized import Pyramid, Timeline, Tree, Scatter
@@ -100,6 +101,8 @@ from .ml import (
 # ----- composition ---------------------------------------------------------
 from .composition import (
     Inline,
+    Captioned,
+    LabeledChain,
     Card,
     KeyValue,
     Bullets,
@@ -139,11 +142,11 @@ __all__ = [
     "Padded", "Panel", "Framed",
     # elements
     "Text", "TextBlock", "Box", "Arrow", "Connector",
-    "Matrix", "Legend", "Note", "Caption", "MiniGrid", "TokenRow",
+    "Matrix", "Legend", "LegendItem", "Note", "Caption", "MiniGrid", "TokenRow",
     # math
     "Math", "auto_text",
     # charts
-    "Table", "BarChart",
+    "Table", "AlignedColumns", "BarChart",
     # specialized
     "Pyramid", "Timeline", "Tree", "Scatter",
     # structures
@@ -155,7 +158,8 @@ __all__ = [
     # ml
     "NNLayer", "Pipeline", "Tensor",
     # composition
-    "Inline", "Card", "KeyValue", "Bullets", "Badge", "Brace",
+    "Inline", "Captioned", "LabeledChain", "Card", "KeyValue", "Bullets",
+    "Badge", "Brace",
     "Annotated", "Anchor", "Flow", "Flowed", "Labeled",
     "MatchSize", "Group", "Region", "Bus",
     "Grid",

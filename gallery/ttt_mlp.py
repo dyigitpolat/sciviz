@@ -8,14 +8,18 @@ from sciviz import (Diagram, Row, Column, Box, Text, TextBlock, Badge, Arrow,
                     VectorTiles, Palette, Math, Bus)
 
 # -- paper-faithful identity colours -----------------------------------------
+#
+# Registered once as named Palette entries so every subsequent reference
+# (``Palette.emb``, ``Palette.w``, ...) resolves through the usual theme
+# pipeline -- including ``.soft()`` / ``.dark()`` modifiers where needed.
 
-EMB  = Palette.literal("#f1ead0")
-ACT  = Palette.literal("#e9b88f")
-OUT  = Palette.literal("#9fbedd")   # saturated paper blue (Apply output tile)
-PROJ = Palette.literal("#2f4a66")   # dark slate (Conv output array)
-ATTN = Palette.literal("#a83b3b")
-GLL  = Palette.literal("#5a6b78")
-W    = Palette.literal("#c0c8d0")
+EMB  = Palette.register("emb",  "#f1ead0")
+ACT  = Palette.register("act",  "#e9b88f")
+OUT  = Palette.register("out",  "#9fbedd")   # saturated paper blue (Apply output tile)
+PROJ = Palette.register("proj", "#2f4a66")   # dark slate (Conv output array)
+ATTN = Palette.register("attn", "#a83b3b")
+GLL  = Palette.register("gll",  "#5a6b78")
+W    = Palette.register("wblk", "#c0c8d0")
 
 W_WIDTH = 62   # identical width for every W_down block
 
