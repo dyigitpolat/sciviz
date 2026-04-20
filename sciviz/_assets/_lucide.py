@@ -358,4 +358,34 @@ LUCIDE_ICONS: Dict[str, List[str]] = {
     "mountain": [
         "m8 3 4 8 5-5 5 15H2L8 3z",
     ],
+    # --- figure-specific glyphs ---
+    # Slab-serif capital T used as a "text" glyph inside tiles.
+    "serif-t": [
+        "M4 6h16",
+        "M4 4v4",
+        "M20 4v4",
+        "M12 6v14",
+        "M8 20h8",
+    ],
+    # Two offset rounded frames (back + front) for "stacked windows".
+    "frames-stacked": [
+        "M9 4h11v11",
+        "M4 9h11v11H4z",
+    ],
+    # Filled mask-blob: closed smooth outline, intended to be rendered
+    # with fill="match" so the whole shape is a solid coloured patch.
+    "blob": [
+        "M12 4c3.2 0 6 1.8 7 4.5.8 2.3-.3 5-2.3 6.7-2 1.7-5 2.6-7.5 1.8-2.5-.8-4.7-3.1-5-5.7-.3-2.6 1.8-5.3 4.3-6.4A7.7 7.7 0 0 1 12 4z",
+    ],
+    # Three horizontally-spaced filled ovals, drifting to the right.
+    "ovals-stack": [
+        "M6 12c0-1.7 1.1-3 2.5-3s2.5 1.3 2.5 3-1.1 3-2.5 3S6 13.7 6 12z",
+        "M10.5 12c0-1.7 1.1-3 2.5-3s2.5 1.3 2.5 3-1.1 3-2.5 3-2.5-1.3-2.5-3z",
+        "M15 12c0-1.7 1.1-3 2.5-3s2.5 1.3 2.5 3-1.1 3-2.5 3-2.5-1.3-2.5-3z",
+    ],
+    # Two-peak mountain with a baseline underline.
+    "peaks": [
+        "M3 18 8 8l3 5 3-7 7 12Z",
+        "M3 20h18",
+    ],
 }

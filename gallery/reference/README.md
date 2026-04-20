@@ -13,7 +13,7 @@ paper figures in a small number of lines.
 | ----------------- | ------------------------------------------- | ------------------------------------------------------------------ |
 | `fig01.png`       | [`gallery/fig01.py`](../fig01.py)           | `Image` embedding + `Brace.spanning`                               |
 | `fig02.png`       | [`gallery/fig02.py`](../fig02.py)           | Existing primitives + structured text runs                         |
-| `fig03.png`       | [`gallery/fig03.py`](../fig03.py)           | `Region` side labels and per-zone annotations                      |
+| `fig03.png`       | [`gallery/fig03.py`](../fig03.py)           | Grouped vertical bar chart + multi-tier data/role explainer        |
 | `fig04.png`       | [`gallery/fig04.py`](../fig04.py)           | `AlignedStack` cross-parent column alignment                       |
 | `fig05.png`       | [`gallery/fig05.py`](../fig05.py)           | `Region` corner badges + structured text runs                      |
 | `fig06.png`       | [`gallery/fig06.py`](../fig06.py)           | `LineChart` with annotations                                       |

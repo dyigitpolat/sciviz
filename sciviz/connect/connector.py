@@ -22,8 +22,9 @@ class Connect(Element):
     from the shapes of ``src`` / ``dst`` — see the module docstring.
     """
 
-    # Sentinel to detect "caller didn't pass color/label_color".
+    # Sentinel to detect "caller didn't pass color/label_color/style".
     _COLOR_UNSET = object()
+    _STYLE_UNSET = object()
 
     def __init__(
         self,
@@ -40,8 +41,10 @@ class Connect(Element):
         color=_COLOR_UNSET,
         dashed: bool = False,
         head: Union[bool, str] = True,
+        # Routing toggle (all modes) -------------------------------------
+        auto_route: bool = True,
         # Routed-mode options --------------------------------------------
-        style: str = "orthogonal",
+        style=_STYLE_UNSET,
         curvature: float = 0.5,
         detour: float = 24.0,
         # Inline-mode options --------------------------------------------
@@ -52,6 +55,12 @@ class Connect(Element):
         # Bus-mode options -----------------------------------------------
         orientation: str = "auto",
     ):
+        # Auto-routing is the default for every connector type. When the
+        # caller does not pin ``style`` explicitly, ``auto_route`` picks
+        # it: True -> topological ``"orthogonal"`` planner; False -> plain
+        # ``"straight"`` line. An explicit ``style=`` always wins.
+        if style is Connect._STYLE_UNSET:
+            style = "orthogonal" if auto_route else "straight"
         mode = classify(src, dst, direction=direction, length=length)
         self.mode = mode
 
@@ -120,6 +129,7 @@ class Connect(Element):
                 dashed=dashed,
                 head=head,
                 orientation=orientation,
+                auto_route=auto_route,
             )
         else:  # routed
             label_str = label if isinstance(label, str) or label is None else label[0]

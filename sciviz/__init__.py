@@ -111,7 +111,10 @@ from .math import Math
 from .charts import Table, AlignedColumns, BarChart
 
 # ----- specialized ---------------------------------------------------------
-from .specialized import Pyramid, Timeline, Scatter, LineChart, Series, Annotate
+from .specialized import (
+    Annotate, BarGroup, BarSeries, GroupedBarChart, LineChart, Pyramid,
+    Scatter, Series, Timeline,
+)
 
 # ----- structures (high-level layout primitives) --------------------------
 from .structures import Section, BlockGroup
@@ -125,6 +128,7 @@ from .palette import Palette, ColorRef
 # ----- composition ---------------------------------------------------------
 from .composition import (
     Inline,
+    Banner,
     Captioned,
     LabeledChain,
     Badge,
@@ -133,6 +137,7 @@ from .composition import (
     MatchSize,
     Group,
     Region,
+    StackedTiles,
 )
 from .grid import Grid
 
@@ -167,6 +172,7 @@ __all__ = [
     "Table", "AlignedColumns", "BarChart",
     # specialized
     "Pyramid", "Timeline", "Scatter", "LineChart", "Series", "Annotate",
+    "GroupedBarChart", "BarGroup", "BarSeries",
     # structures
     "Section", "BlockGroup",
     # primitives
@@ -174,9 +180,9 @@ __all__ = [
     # color
     "Palette", "ColorRef",
     # composition
-    "Inline", "Captioned", "LabeledChain",
+    "Inline", "Banner", "Captioned", "LabeledChain",
     "Badge", "LoopIcon", "Brace",
-    "MatchSize", "Group", "Region",
+    "MatchSize", "Group", "Region", "StackedTiles",
     # unified connector
     "Connect", "Anchor",
     # graphs

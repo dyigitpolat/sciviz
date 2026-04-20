@@ -109,9 +109,17 @@ class Brace(Element):
                 canvas.text(mid, tip + sz + 2, self.label,
                            size=sz, fill=col, anchor="middle")
         else:  # "up"
-            bot = y + self.height
-            shoulder = y + self.height * 0.45
-            tip = y - 3
+            # Overbrace: endpoints at bottom, tip projects upward, label
+            # sits above the tip.  Shift every y coordinate down by the
+            # reserved label-strip height so the label fits inside the
+            # bbox (previously it rendered above ``y`` and got clipped by
+            # sibling containers).
+            label_h = (theme.text_height(self.label_size)
+                       + theme.unit * 0.4) if self.label else 0.0
+            offset = label_h + 3  # +3 so the tip stays inside the bbox
+            bot = y + offset + self.height
+            shoulder = y + offset + self.height * 0.45
+            tip = y + offset - 3
             mid = x + self.span / 2
             d = (
                 f"M {x:.2f},{bot:.2f} "
@@ -124,7 +132,7 @@ class Brace(Element):
             )
             canvas.path(d, stroke=col, fill="none", stroke_width=theme.hairline)
             if self.label:
-                canvas.text(mid, tip - 6, self.label,
+                canvas.text(mid, y + sz * 0.85, self.label,
                            size=sz, fill=col, anchor="middle")
 
 

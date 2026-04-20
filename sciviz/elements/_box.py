@@ -30,6 +30,8 @@ class Box(Element):
                  radius: Optional[float] = None,
                  sub_label: Optional[str] = None,
                  sub_color: str = "muted",
+                 badge: Optional[str] = None,
+                 badge_color: str = "muted",
                  dashed: bool = False,
                  opacity: float = 1.0,
                  vertical_text: bool = False,
@@ -58,6 +60,12 @@ class Box(Element):
         self.radius = radius
         self.sub_label = sub_label
         self.sub_color = sub_color
+        # ``badge`` is a small chip in the TOP-RIGHT corner, the
+        # semantic counterpart to ``sub_label`` (bottom-right). Good
+        # for section-number tags like "§2" or version chips like
+        # "v2.0" without composing a Row + Spacer by hand.
+        self.badge = badge
+        self.badge_color = badge_color
         self.dashed = dashed
         self.opacity = opacity
         self.vertical_text = vertical_text
@@ -76,6 +84,30 @@ class Box(Element):
         else:
             self.shape_key = shape_key
 
+    def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
+        """Lift ``min_width``/``min_height`` so the Box renders at least
+        the requested size. Honoured by sibling-aware layouts that want
+        every Box in a row/column to render at the same outer dimension.
+
+        For *element* labels (a Column of chips, a Row, ...), the
+        inflation is forwarded to the label too, minus the Box's own
+        paddings. This makes a Column-of-chips inside a Box grow with
+        the Box rather than staying at intrinsic width and being
+        centred in empty space -- so chips keep hugging the Box's left
+        padding when the panel is stretched to match siblings.
+        """
+        if min_w and (self.min_width is None or min_w > self.min_width):
+            self.min_width = float(min_w)
+        if min_h and (self.min_height is None or min_h > self.min_height):
+            self.min_height = float(min_h)
+        if self._label_is_element():
+            # Approximate paddings used by ``_intrinsic``; if a theme is
+            # needed for exact values they'll reconcile on first measure.
+            # We forward a slightly conservative inner rectangle so the
+            # label doesn't over-fill and trigger unwanted reflow.
+            self.label.inflate_to(max(0.0, min_w - 12.0),
+                                  max(0.0, min_h - 12.0))
+
     def _label_is_element(self) -> bool:
         """The label can be either a string or any :class:`Element`
         (e.g. :class:`Math`).  Element labels are measured + rendered
@@ -91,6 +123,9 @@ class Box(Element):
     # "micro" is smaller than "tiny" so these tags read as a subscript
     # even next to a 9-pt "small" main label.
     _SUB_LABEL_SIZE = "micro"
+    # Top-right corner chip: same size family, a hair bolder so it
+    # reads as a tag rather than a subscript.
+    _BADGE_SIZE = "tiny"
 
     def _sub_metrics(self, theme: Theme) -> Tuple[float, float]:
         """Width and height of the sub_label when rendered, or (0, 0)."""
@@ -99,6 +134,13 @@ class Box(Element):
         sub_w = theme.text_width(self.sub_label, self._SUB_LABEL_SIZE)
         sub_h = theme.text_height(self._SUB_LABEL_SIZE)
         return sub_w, sub_h
+
+    def _badge_metrics(self, theme: Theme) -> Tuple[float, float]:
+        if not self.badge:
+            return 0.0, 0.0
+        bw = theme.text_width(self.badge, self._BADGE_SIZE, bold=True)
+        bh = theme.text_height(self._BADGE_SIZE)
+        return bw, bh
 
     def _intrinsic(self, theme: Theme) -> Tuple[float, float]:
         bold = self.text_weight in ("bold", "600", "700")
@@ -117,6 +159,7 @@ class Box(Element):
             label_w = 0.0
             label_h = 0.0
         sub_w, sub_h = self._sub_metrics(theme)
+        badge_w, badge_h = self._badge_metrics(theme)
         if self.vertical_text:
             # rotated label: width <-> height swap
             w = label_h + theme.unit * 1.2
@@ -131,8 +174,13 @@ class Box(Element):
             right_pad = theme.unit * 0.8
             left_pad = theme.unit * 0.8
             reserved_bottom = (sub_h + theme.unit * 0.25) if self.sub_label else 0.0
-            w = label_w + sub_gap + sub_w + left_pad + right_pad
-            h = label_h + reserved_bottom + theme.unit * 0.9
+            # Badge (top-right): reserve a top strip and make sure the
+            # box is at least wide enough for the badge plus padding.
+            reserved_top = (badge_h + theme.unit * 0.3) if self.badge else 0.0
+            badge_min_w = (badge_w + left_pad + right_pad) if self.badge else 0.0
+            w = max(label_w + sub_gap + sub_w + left_pad + right_pad,
+                    badge_min_w)
+            h = label_h + reserved_bottom + reserved_top + theme.unit * 0.9
         return max(w, theme.unit * 6), max(h, theme.unit * 3.2)
 
     def measure(self, theme: Theme) -> BBox:
@@ -168,16 +216,29 @@ class Box(Element):
             rx=r, dasharray=dasharray, opacity=self.opacity,
         )
         _register_implicit_obstacle(x, y, size.w, size.h)
+        if self.badge:
+            # Top-right corner chip. Same bump-in as sub_label on the
+            # bottom so the box feels symmetric.
+            bw, bh = self._badge_metrics(theme)
+            pad = theme.unit * 0.25
+            bsz = theme.size_px(self._BADGE_SIZE)
+            canvas.text(
+                x + size.w - pad, y + pad + bsz * 0.85, self.badge,
+                size=bsz, fill=theme.color_of(self.badge_color),
+                weight="700", anchor="end",
+            )
         if self._label_is_element():
             # Element label: reserve the sub_label strip at the bottom
             # (if any) and centre the element in the remaining area.
             sub_w, sub_h = self._sub_metrics(theme)
             sub_pad = theme.unit * 0.25
             bottom_reserve = (sub_h + sub_pad) if self.sub_label else 0.0
+            _, badge_h = self._badge_metrics(theme)
+            top_reserve = (badge_h + sub_pad) if self.badge else 0.0
             eb = self.label.measure(theme)
-            region_h = size.h - bottom_reserve
+            region_h = size.h - bottom_reserve - top_reserve
             ex = x + (size.w - eb.w) / 2
-            ey = y + max(0.0, (region_h - eb.h) / 2)
+            ey = y + top_reserve + max(0.0, (region_h - eb.h) / 2)
             self.label.render(canvas, ex, ey, theme)
             if self.sub_label:
                 sub_sz = theme.size_px(self._SUB_LABEL_SIZE)
@@ -216,10 +277,12 @@ class Box(Element):
             sub_w, sub_h = self._sub_metrics(theme)
             sub_pad = theme.unit * 0.25
             bottom_reserve = (sub_h + sub_pad) if self.sub_label else 0.0
+            _, badge_h = self._badge_metrics(theme)
+            top_reserve = (badge_h + sub_pad) if self.badge else 0.0
             line_h = sz * 1.15
             block_h = line_h * len(lines)
-            region_h = size.h - bottom_reserve
-            block_top = y + max(0.0, (region_h - block_h) / 2)
+            region_h = size.h - bottom_reserve - top_reserve
+            block_top = y + top_reserve + max(0.0, (region_h - block_h) / 2)
             for i, ln in enumerate(lines):
                 baseline_y = block_top + i * line_h + sz * 0.85
                 canvas.text(

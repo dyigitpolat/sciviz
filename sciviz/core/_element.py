@@ -85,6 +85,23 @@ class Element:
         """
         return None
 
+    def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
+        """Request that this element render at least ``min_w`` x ``min_h``.
+
+        The default is a no-op: most elements have a fixed intrinsic size
+        and silently ignore the request. Containers that *can* honour a
+        minimum (notably :class:`sciviz.elements.Box`) override this to
+        widen/heighten themselves; transparent wrappers (:class:`Anchor`,
+        :class:`FixedSize`) forward the request to their child.
+
+        Used by sibling-aware layouts (:class:`MatchSize` with
+        ``stretch=True``, :class:`Column` / :class:`Row` with
+        ``equal_widths=True``) to make a row of differently-sized boxes
+        actually render at the same size, instead of being centred in
+        identical-but-empty slots.
+        """
+        return None
+
     def iter_primary_anchors(self, theme: Theme) -> "list[tuple[float, float, float, float]]":
         """Yield every primary-anchor sub-region this element exposes.
 

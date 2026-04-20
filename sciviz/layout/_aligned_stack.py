@@ -51,7 +51,8 @@ class AlignedStack(Element):
                  axis: str = "vertical",
                  gap: Union[str, float] = "md",
                  align: str = "center",
-                 column_widths: str = "shared"):
+                 column_widths: str = "shared",
+                 stretch: bool = False):
         if axis not in ("vertical", "horizontal"):
             raise ValueError(
                 f"axis must be 'vertical' or 'horizontal'; got {axis!r}")
@@ -64,6 +65,50 @@ class AlignedStack(Element):
         self.gap = gap
         self.align = align
         self.column_widths = column_widths
+        # ``stretch`` turns the shared-slot behaviour from "centre child
+        # in a wider slot" into "inflate child's width to match slot".
+        # Useful when the shared columns are actual panels (Box /
+        # Anchor(Box)) that should paint at the same outer width.
+        self.stretch = stretch
+
+    # ---- cross-row shape normalisation ------------------------------------
+
+    def _normalize_cross_child_shapes(self, theme: Theme) -> None:
+        """Equalize shape-key elements across *all* children in the stack.
+
+        Within a single :class:`Row`, siblings with the same ``shape_key``
+        are already equalised. But when two Rows are stacked in an
+        ``AlignedStack``, corresponding elements (e.g. output-tile cards
+        in a language row vs. a spatial row) can have different intrinsic
+        sizes. This pass collects every shape-key-bearing descendant from
+        every child and equalises globally, so the cards render at a
+        uniform size across stacked rows.
+        """
+        from ._row import Row  # local import to avoid circular
+        groups: dict = {}
+        for child in self.children:
+            # Check the child itself (for stacked individual elements).
+            peer = Row._find_shape_peer(child)
+            if peer is not None and getattr(peer, "shape_key", ""):
+                groups.setdefault(peer.shape_key, []).append(peer)
+            # Check the child's children (for stacked Rows).
+            for sub in getattr(child, "children", []):
+                peer = Row._find_shape_peer(sub)
+                if peer is not None and getattr(peer, "shape_key", ""):
+                    groups.setdefault(peer.shape_key, []).append(peer)
+        for peers in groups.values():
+            if len(peers) < 2:
+                continue
+            sizes = [p.measure(theme) for p in peers]
+            tw = max(s.w for s in sizes)
+            th = max(s.h for s in sizes)
+            for p in peers:
+                if getattr(p, "width", None) is None:
+                    if getattr(p, "min_width", None) is None or p.min_width < tw:
+                        p.min_width = tw
+                if getattr(p, "height", None) is None:
+                    if getattr(p, "min_height", None) is None or p.min_height < th:
+                        p.min_height = th
 
     # ---- shared-column plumbing ------------------------------------------
 
@@ -100,12 +145,20 @@ class AlignedStack(Element):
                     apply(shared)
                 except Exception:  # pragma: no cover - defensive
                     pass
+            if self.stretch:
+                stretch = getattr(child, "_stretch_visible_to_slots", None)
+                if stretch is not None:
+                    try:
+                        stretch(shared)
+                    except Exception:  # pragma: no cover - defensive
+                        pass
 
     # ---- Element interface -----------------------------------------------
 
     def measure(self, theme: Theme) -> BBox:
         if not self.children:
             return BBox(0, 0)
+        self._normalize_cross_child_shapes(theme)
         self._propagate_shared_widths(theme)
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
@@ -117,33 +170,73 @@ class AlignedStack(Element):
             h = max(s.h for s in sizes)
         return BBox(w, h)
 
-    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+    def _child_offsets(self, theme: Theme):
+        """Per-child ``(ox, oy, size)`` in the stack's local frame.
+
+        Cross-axis positions use the **outer** bbox so that children
+        whose column widths have been equalised by the shared-width
+        pass start at the same coordinate — preserving per-column
+        vertical alignment.  Content-aware alignment is left to the
+        ``content_bbox`` propagation that parents read.
+        """
         if not self.children:
-            return
+            return []
         self._propagate_shared_widths(theme)
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
+        bbox = self.measure(theme)
+        offsets: list = []
         if self.axis == "vertical":
-            W = max(s.w for s in sizes)
-            cy = y
+            W = bbox.w
+            my = 0.0
             for child, size in zip(self.children, sizes):
                 if self.align == "start":
-                    cx = x
+                    ox = 0.0
                 elif self.align == "end":
-                    cx = x + (W - size.w)
+                    ox = W - size.w
                 else:
-                    cx = x + (W - size.w) / 2
-                child.render(canvas, cx, cy, theme)
-                cy += size.h + g
+                    ox = (W - size.w) / 2
+                offsets.append((ox, my, size))
+                my += size.h + g
         else:
-            H = max(s.h for s in sizes)
-            cx = x
+            H = bbox.h
+            mx = 0.0
             for child, size in zip(self.children, sizes):
                 if self.align == "start":
-                    cy = y
+                    oy = 0.0
                 elif self.align == "end":
-                    cy = y + (H - size.h)
+                    oy = H - size.h
                 else:
-                    cy = y + (H - size.h) / 2
-                child.render(canvas, cx, cy, theme)
-                cx += size.w + g
+                    oy = (H - size.h) / 2
+                offsets.append((mx, oy, size))
+                mx += size.w + g
+        return offsets
+
+    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        if not self.children:
+            return
+        for (ox, oy, _size), child in zip(
+                self._child_offsets(theme), self.children):
+            child.render(canvas, x + ox, y + oy, theme)
+
+    def content_bbox(self, theme: Theme):
+        """Union of children's content rectangles in the stack's frame.
+
+        Lets parent containers (:class:`Row`, :class:`Column`) align on
+        the stacked content — not the full extent including floating
+        decorations — mirroring what :class:`Row.content_bbox` does.
+        """
+        if not self.children:
+            b = self.measure(theme)
+            return (0.0, 0.0, b.w, b.h)
+        offsets = self._child_offsets(theme)
+        xs_lo, ys_lo, xs_hi, ys_hi = [], [], [], []
+        for (ox, oy, _size), child in zip(offsets, self.children):
+            cx, cy, cw, ch = child.content_bbox(theme)
+            xs_lo.append(ox + cx)
+            ys_lo.append(oy + cy)
+            xs_hi.append(ox + cx + cw)
+            ys_hi.append(oy + cy + ch)
+        x0, y0 = min(xs_lo), min(ys_lo)
+        x1, y1 = max(xs_hi), max(ys_hi)
+        return (x0, y0, x1 - x0, y1 - y0)

@@ -23,6 +23,7 @@ the full surface so existing intra-package imports
 
 from ._anchor import Anchor, _anchor_stack, _side_point, _side_point_frac
 from ._badge import Badge
+from ._banner import Banner
 from ._brace import Brace
 from ._bus import Bus
 from ._captioned import Captioned
@@ -34,10 +35,11 @@ from ._labeledchain import LabeledChain
 from ._loopicon import LoopIcon
 from ._matchsize import MatchSize
 from ._region import Region
+from ._stackedtiles import StackedTiles
 
 __all__ = [
-    "Inline", "Captioned", "LabeledChain",
+    "Inline", "Banner", "Captioned", "LabeledChain",
     "Badge", "LoopIcon", "Brace",
     "Anchor", "Flow", "Flowed", "Labeled",
-    "MatchSize", "Group", "Region", "Bus",
+    "MatchSize", "Group", "Region", "Bus", "StackedTiles",
 ]

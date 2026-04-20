@@ -37,21 +37,36 @@ class MatchSize(Element):
                  axis: str = "height",
                  arrange: Optional[str] = None,
                  gap: Union[str, float] = "md",
-                 align: str = "center"):
+                 align: str = "center",
+                 stretch: bool = False):
         self.children = list(children)
         self.axis = axis
         self.arrange = arrange
         self.gap = gap
         self.align = align
+        # ``stretch`` swaps the inert FixedSize wrapper for a real
+        # ``inflate_to`` request, so children that *can* grow (Box and
+        # anything that forwards through Anchor) actually paint at the
+        # equalised dimension. Children without an inflate hook still
+        # fall back to centering inside a FixedSize slot.
+        self.stretch = stretch
 
     def _equalised(self, theme: Theme):
         from ..layout import FixedSize, Row, Column
         sizes = [c.measure(theme) for c in self.children]
         if self.axis == "height":
             target = max(s.h for s in sizes) if sizes else 0
+            if self.stretch:
+                for c in self.children:
+                    c.inflate_to(0.0, target)
+                return list(self.children)
             return [FixedSize(c, height=target) for c in self.children]
         else:
             target = max(s.w for s in sizes) if sizes else 0
+            if self.stretch:
+                for c in self.children:
+                    c.inflate_to(target, 0.0)
+                return list(self.children)
             return [FixedSize(c, width=target) for c in self.children]
 
     def _arranged(self, theme: Theme):

@@ -42,6 +42,7 @@ class Icon(Element):
                  size: Union[float, str] = "label",
                  color: str = "dark",
                  stroke_width: float = 1.75,
+                 fill: str = "none",
                  opacity: float = 1.0):
         if name not in LUCIDE_ICONS:
             options = ", ".join(sorted(LUCIDE_ICONS)[:10])
@@ -54,6 +55,10 @@ class Icon(Element):
         self.size = size
         self.color = color
         self.stroke_width = float(stroke_width)
+        # ``"none"`` (default) -- Lucide's pure-stroke look.
+        # ``"match"``          -- fill the shape with ``color`` (solid glyph).
+        # Any colour string    -- explicit fill colour.
+        self.fill = fill
         self.opacity = float(opacity)
 
     def _size_px(self, theme: Theme) -> float:
@@ -67,12 +72,19 @@ class Icon(Element):
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         s = self._size_px(theme)
+        stroke = theme.color_of(self.color)
+        if self.fill == "match":
+            fill = stroke
+        elif self.fill == "none":
+            fill = "none"
+        else:
+            fill = theme.color_of(self.fill)
         canvas.svg_path(
             x, y, s, s,
             paths=LUCIDE_ICONS[self.name],
             viewbox=LUCIDE_VIEWBOX,
-            stroke=theme.color_of(self.color),
+            stroke=stroke,
             stroke_width=self.stroke_width,
-            fill="none",
+            fill=fill,
             opacity=self.opacity,
         )

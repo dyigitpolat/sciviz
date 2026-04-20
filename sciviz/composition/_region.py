@@ -170,6 +170,20 @@ class Region(Element):
         h = b.h + 2 * self.pad_y + top + bot + inner_bottom
         return BBox(w, h)
 
+    def content_bbox(self, theme: Theme):
+        """Report the child's footprint inside the region.
+
+        Sibling containers (:class:`Row` / :class:`Column`) align on
+        ``content_bbox``, so this keeps the decoration (outside label,
+        annotations, bottom padding for the label) from pushing the
+        child off the shared midline of its peers. A ``Region`` that
+        wraps a horizontal pipeline next to a plain LLM box will thus
+        center on the pipeline, not on the region's geometric center.
+        """
+        b = self.child.measure(theme)
+        top, _bot, left, _right, _inner_bottom = self._reserve(theme)
+        return (left, top + self.pad_y, b.w, b.h)
+
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         b = self.child.measure(theme)
         top, bot, left, right, inner_bottom = self._reserve(theme)

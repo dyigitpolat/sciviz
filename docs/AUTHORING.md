@@ -231,6 +231,13 @@ Every `Connect` accepts `color`, `label`, `label_color`, `dashed`,
 `curvature`, `head`. Defaults are picked so a plain `Connect("a", "b")`
 looks right in paper style.
 
+**Auto-routing is on by default.** Every `Connect` — routed, bus, and
+inline — runs through the router by default (`auto_route=True`). Pass
+`auto_route=False` to fall back to a straight segment (routed mode); the
+flag is a no-op for bus/inline since those are axis-aligned by
+construction. An explicit `style=` still wins, so existing calls that
+pin `style="curve"` or `style="straight"` keep working.
+
 ## Anchors
 
 Wrap an element in `Anchor("name", element)` to give the connector

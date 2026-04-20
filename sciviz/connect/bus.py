@@ -23,7 +23,8 @@ class _BusConnect(Element):
                  color,
                  dashed: bool,
                  head,
-                 orientation: str):
+                 orientation: str,
+                 auto_route: bool = True):
         self._bus = Bus(
             sources=sources,
             sinks=sinks,
@@ -32,6 +33,7 @@ class _BusConnect(Element):
             color=color,
             arrow=bool(head) if head is not False else False,
             orientation=orientation,
+            auto_route=auto_route,
         )
 
     def measure(self, theme: Theme) -> BBox:

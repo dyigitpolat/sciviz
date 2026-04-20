@@ -55,7 +55,14 @@ class Captioned(Element):
                  title_color=None,
                  title_size: str = "small",
                  gap: Union[str, float] = "xs",
-                 align: str = "center"):
+                 align: str = "center",
+                 align_on: str = "outer"):
+        """
+        ``align_on``: ``"outer"`` (default, back-compat) reports the full
+        captioned bbox as the content axis. ``"child"`` reports only the
+        wrapped child's bbox so sibling :class:`Row` / :class:`Column`
+        containers align on the child's midline, ignoring the caption.
+        """
         self.child = child
         self.number = number
         self.number_role = number_role
@@ -65,6 +72,10 @@ class Captioned(Element):
         self.title_size = title_size
         self.gap = gap
         self.align = align
+        if align_on not in ("outer", "child"):
+            raise ValueError(
+                f"align_on must be 'outer' or 'child'; got {align_on!r}")
+        self.align_on = align_on
 
     def _decoration(self) -> Optional[Element]:
         if self.number is not None:
@@ -109,5 +120,34 @@ class Captioned(Element):
         c_y = y + d_bb.h + gap_px
         c_x = x + _offset(size.w, c_bb.w)
         self.child.render(canvas, c_x, c_y, theme)
+
+    def content_bbox(self, theme: Theme):
+        """When ``align_on="child"``, report only the wrapped child's
+        bbox so sibling :class:`Row` / :class:`Column` containers align
+        on the child's midline and the caption floats above without
+        affecting cross-sibling alignment.
+        """
+        if self.align_on != "child":
+            b = self.measure(theme)
+            return (0.0, 0.0, b.w, b.h)
+        d = self._decoration()
+        if d is None:
+            return self.child.content_bbox(theme)
+        size = self.measure(theme)
+        d_bb = d.measure(theme)
+        c_bb = self.child.measure(theme)
+        gap_px = theme.gap_px(self.gap)
+        cx, cy, cw, ch = self.child.content_bbox(theme)
+        c_x = _offset_like(self.align, size.w, c_bb.w)
+        c_y = d_bb.h + gap_px
+        return (c_x + cx, c_y + cy, cw, ch)
+
+
+def _offset_like(align: str, outer_w: float, inner_w: float) -> float:
+    if align == "start":
+        return 0.0
+    if align == "end":
+        return outer_w - inner_w
+    return (outer_w - inner_w) / 2
 
 

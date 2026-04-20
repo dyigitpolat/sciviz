@@ -46,8 +46,12 @@ def Connect(
     color: ColorRef | str = "text",
     dashed: bool = False,
     head: bool | str = True,         # True / False / "both" / "src" / "dst"
+    # ---- routing (all modes) -------------------------------------------
+    auto_route: bool = True,         # topological planner on by default
     # ---- routed mode only ----------------------------------------------
-    style: str = "orthogonal",       # "orthogonal" / "curve" / "straight"
+    style: str = <auto>,             # "orthogonal" / "curve" / "straight"
+                                     # unset -> "orthogonal" if auto_route
+                                     # else "straight"; explicit wins.
     curvature: float = 0.5,
     detour: float = 24.0,
     # ---- inline mode only ----------------------------------------------
@@ -145,6 +149,23 @@ Every old call site maps to a `Connect` call:
 Inline mode accepts a `str` or `list[str]` (stacked perpendicular to the axis).
 Routed mode accepts a single `str` placed along the curve.
 Bus mode accepts a single `str` placed on the spine by the geometric placer.
+
+### Auto-routing
+
+Every connector type is auto-routed by default: `auto_route=True` is the
+baseline for routed, bus, *and* inline modes. Authors never have to opt
+in to "route around obstacles" — that is the contract.
+
+- **routed** — `auto_route=True` picks `style="orthogonal"` so the
+  topological planner plans the polyline. `auto_route=False` falls back
+  to `style="straight"` (a direct segment between the two sides).
+- **bus** — the spine + taps geometry is always auto-routed; the flag is
+  accepted for API symmetry and has no effect.
+- **inline** — an inline arrow is axis-aligned by construction; the flag
+  is accepted and has no effect.
+
+An explicit `style=` always wins over `auto_route`, so existing callers
+that pin `style="curve"` / `style="straight"` keep working unchanged.
 
 ## Implementation layout
 

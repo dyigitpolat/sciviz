@@ -1,19 +1,12 @@
 """Fig 01 - Perception Encoder (PE) multi-headed architecture.
 
-Reproduces [`gallery/reference/fig01.png`](reference/fig01.png) -- the
-PE figure: two raw modalities (image/video) feed a contrastive "PE Core"
-backbone, which emits four pretraining outputs; an alignment-tuning
-bridge (\u00a73) branches the shared backbone into a language encoder
-(\u00a74) and a spatial encoder (\u00a75), each with four downstream tasks.
+Reproduces [`gallery/reference/fig01.png`](reference/fig01.png): two raw
+modalities feed a contrastive **PE Core** (§2); an alignment-tuning
+bridge (§3) branches the backbone into a **PE Language** encoder (§4)
+and a **PE Spatial** encoder (§5), each with four downstream tasks.
 
-Demonstrates:
-
-* icon-decorated tiles via :class:`Box` + :class:`Icon`,
-* three-way semantic palette (teal core / blue language / purple spatial),
-* :class:`Anchor` + :class:`Connect` for the image/video bus into the
-  PE Core and the diverging alignment-tuning branches,
-* a compact helper vocabulary keeps the figure description under 200
-  lines of mostly-declarative code.
+The author describes *what* flows into *what*. All layout, sizing,
+padding, radii, and stroke widths come from the library backend.
 """
 from __future__ import annotations
 
@@ -22,244 +15,93 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sciviz import (
-    Anchor,
-    Box,
-    Column,
-    Connect,
-    Diagram,
-    Icon,
-    Row,
-    Spacer,
-    Text,
-)
+from sciviz import (AlignedStack, Anchor, Banner, Box, Column, Connect,
+                    Diagram, Icon, Row, Text)
 
+CORE = ("#274b45", "#e8efed")
+LANG = ("#3f5fa3", "#dbe2f0")
+SPAT = ("#6b3fbf", "#e6dcf4")
+TILE = ("#6a5aa2", "#eae6f3", "#2f2660")
 
-# ---------------------------------------------------------------------------
-# Palette -- three semantic families used by the figure.
-# ---------------------------------------------------------------------------
+def input_tile(name: str, label: str) -> Box:
+    return Box(Column(Icon(name, color=TILE[0]), Text(label, color="muted"),
+                      gap="xs"),
+               fill="#f2f4f7", stroke="#a6b0bd", dashed=True)
 
-CORE_STROKE     = "#234d46"     # teal, "PE Core"
-CORE_FILL       = "#e9f0ee"
-LANG_STROKE     = "#3b5fa0"     # blue, "PE Language"
-LANG_FILL       = "#dbe3f1"
-SPAT_STROKE     = "#6d28d9"     # purple, "PE Spatial"
-SPAT_FILL       = "#e4dcf5"
-TILE_STROKE     = "#6d5fa0"     # muted purple for the output tiles
-TILE_INK        = "#3b2f70"
-INPUT_STROKE    = "#94a3b8"
-INPUT_FILL      = "#f1f5f9"
+def output_tile(header: str, glyph: Icon, caption: str) -> Banner:
+    card = Box(Column(glyph, Text(caption, color=TILE[2], weight="600"), gap="xs"),
+               fill=TILE[1], stroke=TILE[0])
+    return Banner(card, above=Text(header, size="tiny",
+                                    color=TILE[2], weight="600"),
+                  gap="xs")
 
+def pe_panel(subtitle: str, color, badge=None) -> Box:
+    stroke, fill = color
+    title_stack = Column(Text("PE", size="title", color=stroke, weight="700"),
+                         Text(subtitle, size="label", color=stroke,
+                              italic=True),
+                         gap="sm")
+    return Box(title_stack, fill=fill, stroke=stroke,
+               badge=badge, badge_color=stroke,
+               shape_key="pe_panel")
 
-# ---------------------------------------------------------------------------
-# Small helpers built entirely from public primitives.
-# ---------------------------------------------------------------------------
+def header(bold: str, italic: str) -> Column:
+    return Column(Text(bold, size="small", weight="700"),
+                  Text(italic, size="small", italic=True, color="muted"),
+                  gap="xs")
 
-def input_tile(icon_name: str, label: str) -> Box:
-    """Dashed grey rounded tile: icon + caption below."""
-    return Box(
-        Column(
-            Icon(icon_name, size=22, color=LANG_STROKE),
-            Text(label, size="small", color="muted"),
-            gap="xs", align="center",
-        ),
-        width=82, height=66,
-        fill=INPUT_FILL, stroke=INPUT_STROKE, dashed=True,
-    )
+def glyph(name: str, *, filled: bool = False, color: str = TILE[0]) -> Icon:
+    return Icon(name, color=color, fill="match" if filled else "none")
 
+inputs = AlignedStack(Anchor("in_image", input_tile("image", "Image")),
+                      Anchor("in_video", input_tile("video", "Video")),
+                      gap="sm")
 
-def output_tile(header: str, glyph, caption: str) -> Column:
-    """Purple-outlined output tile with a header label above it.
+pretrain_outputs = AlignedStack(
+    Row(output_tile("Classify Images", glyph("hash"),  "Class Idx"),
+        output_tile("Retrieve Images", glyph("image"), "Image"),
+        gap="sm"),
+    Row(output_tile("Classify Videos", glyph("hash"),  "Class Idx"),
+        output_tile("Retrieve Videos", glyph("video"), "Video"),
+        gap="sm"),
+    align="start", gap="sm")
 
-    ``glyph`` may be an :class:`Icon` or any :class:`Element` (e.g. a bold
-    ``Text("#")``) so we can render the paper's hand-drawn glyphs.
-    """
-    body = Box(
-        Column(glyph, Text(caption, size="small", color=TILE_INK),
-               gap="xs", align="center"),
-        width=86, height=66,
-        fill="#f6f4fb", stroke=TILE_STROKE,
-    )
-    return Column(
-        Text(header, size="small", color=TILE_INK, weight="600"),
-        body,
-        gap="xs", align="center",
-    )
+pretrain_body = Row(
+    Banner(Anchor("pe_core", pe_panel("Core", CORE, badge="§2")),
+           above=header("Large-Scale", "Contrastive Pretraining")),
+    pretrain_outputs)
 
+language_body = Row(
+    Banner(Anchor("pe_lang", pe_panel("Language", LANG, badge="§4")),
+           above=header("State-of-the-Art", "Language Encoder")),
+    output_tile("OCR Q&A",    glyph("serif-t"),        "Text"),
+    output_tile("Captioning", glyph("serif-t"),        "Text"),
+    output_tile("Video Q&A",  glyph("serif-t"),        "Text"),
+    output_tile("Grounding",  glyph("frames-stacked"), "Box"),
+    gap="sm")
 
-PE_PANEL_WIDTH = 130
-PE_PANEL_HEIGHT = 110
+spatial_body = Row(
+    Banner(Anchor("pe_spat", pe_panel("Spatial", SPAT, badge="§5")),
+           above=header("State-of-the-Art", "Spatial Encoder")),
+    output_tile("Detect",         glyph("frames-stacked", color=SPAT[0]), "Box"),
+    output_tile("Segment",        glyph("blob", filled=True, color=SPAT[0]), "Mask"),
+    output_tile("Track",          glyph("ovals-stack", filled=True, color=SPAT[0]), "Masklet"),
+    output_tile("Estimate Depth", glyph("peaks", color=SPAT[0]), "Depth Map"),
+    gap="sm")
 
+encoders = AlignedStack(language_body, spatial_body, gap="xs")
 
-def pe_panel(subtitle: str, *, stroke: str, fill: str,
-             section: str = "") -> Box:
-    """The big "PE <subtitle>" rounded panel with an optional `\u00a7N`
-    chip tucked into the top-right corner."""
-    stack = Column(
-        Text("PE", size="title", color=stroke, weight="700"),
-        Text(subtitle, size="label", color=stroke, italic=True),
-        gap="xs", align="center",
-    )
-    if section:
-        chip = Row(
-            Spacer(PE_PANEL_WIDTH - 44, 0),
-            Text(section, size="tiny", color=stroke, weight="700"),
-            gap="none", align="center",
-        )
-        stack = Column(chip, stack, gap="xs", align="center")
-    return Box(stack, width=PE_PANEL_WIDTH, height=PE_PANEL_HEIGHT,
-               fill=fill, stroke=stroke)
-
-
-def group_header(bold: str, italic: str) -> Column:
-    """Bold kicker over an italic subtitle."""
-    return Column(
-        Text(bold, size="label", weight="700"),
-        Text(italic, size="label", italic=True, color="muted"),
-        gap="xs", align="start",
-    )
-
-
-# ---------------------------------------------------------------------------
-# Glyphs used inside the output tiles ("#", "T", boxes, mask, ...).
-# ---------------------------------------------------------------------------
-
-def hash_glyph() -> Text:
-    return Text("#", size=22, color=TILE_STROKE, weight="700")
-
-
-def text_glyph() -> Text:
-    return Text("T", size=22, color=TILE_STROKE, weight="700")
-
-
-def icon_glyph(name: str) -> Icon:
-    return Icon(name, size=22, color=TILE_STROKE)
-
-
-# ---------------------------------------------------------------------------
-# Content trees for the three groups.
-# ---------------------------------------------------------------------------
-
-inputs_column = Column(
-    Anchor("in_image", input_tile("image", "Image")),
-    Anchor("in_video", input_tile("video", "Video")),
-    gap="md", align="center",
-)
-
-pretraining_outputs = Column(
-    Row(output_tile("Classify Images",  hash_glyph(),        "Class Idx"),
-        output_tile("Retrieve Images",  icon_glyph("image"), "Image"),
-        gap="md", align="start"),
-    Row(output_tile("Classify Videos",  hash_glyph(),        "Class Idx"),
-        output_tile("Retrieve Videos",  icon_glyph("video"), "Video"),
-        gap="md", align="start"),
-    gap="md", align="start",
-)
-
-pretraining_block = Column(
-    group_header("Large-Scale", "Contrastive Pretraining"),
-    Row(
-        Anchor("pe_core",
-               pe_panel("Core", stroke=CORE_STROKE, fill=CORE_FILL,
-                        section="\u00a72")),
-        pretraining_outputs,
-        gap="lg", align="center",
-    ),
-    gap="sm", align="start",
-)
-
-# --- alignment-tuning bridge (lock icon + italic label) --------------------
-
-bridge = Column(
-    Text("\u00a73", size="tiny", color="muted", weight="700"),
-    Anchor("lock", Icon("unlock", size=32, color=CORE_STROKE)),
-    Text("Alignment", size="small", color="muted", italic=True),
-    Text("Tuning",    size="small", color="muted", italic=True),
-    gap="xs", align="center",
-)
-
-
-def language_tile(header: str, caption: str, *, use_box: bool = False):
-    glyph = icon_glyph("box") if use_box else text_glyph()
-    return output_tile(header, glyph, caption)
-
-
-def spatial_tile(header: str, icon_name: str, caption: str):
-    return output_tile(header, icon_glyph(icon_name), caption)
-
-
-language_block = Column(
-    group_header("State-of-the-Art", "Language Encoder"),
-    Row(
-        Anchor("pe_lang",
-               pe_panel("Language", stroke=LANG_STROKE, fill=LANG_FILL,
-                        section="\u00a74")),
-        Row(language_tile("OCR Q&A",    "Text"),
-            language_tile("Captioning", "Text"),
-            language_tile("Video Q&A",  "Text"),
-            language_tile("Grounding",  "Box", use_box=True),
-            gap="md", align="start"),
-        gap="lg", align="center",
-    ),
-    gap="sm", align="start",
-)
-
-spatial_block = Column(
-    group_header("State-of-the-Art", "Spatial Encoder"),
-    Row(
-        Anchor("pe_spat",
-               pe_panel("Spatial", stroke=SPAT_STROKE, fill=SPAT_FILL,
-                        section="\u00a75")),
-        Row(spatial_tile("Detect",          "boxes",    "Box"),
-            spatial_tile("Segment",         "scan",     "Mask"),
-            spatial_tile("Track",           "link",     "Masklet"),
-            spatial_tile("Estimate Depth",  "mountain", "Depth Map"),
-            gap="md", align="start"),
-        gap="lg", align="center",
-    ),
-    gap="sm", align="start",
-)
-
-encoders = Column(language_block, spatial_block, gap="xl", align="start")
-
-
-# ---------------------------------------------------------------------------
-# Assemble the whole figure: Anchors live in the body, Connect overlays
-# pull into the PE Core bus and split out of the lock.
-# ---------------------------------------------------------------------------
-
-layout = Row(
-    inputs_column,
-    pretraining_block,
-    bridge,
-    encoders,
-    gap="lg", align="center",
-)
+bridge = Column(Anchor("lock", Icon("unlock", color=CORE[0])),
+                Text("§3", size="tiny", color="muted", weight="700"),
+                Text("Alignment Tuning", size="small", color="muted",
+                     italic=True),
+                gap="xs")
 
 body = Column(
-    layout,
-    # Image + Video curl into the left edge of PE Core (two smooth
-    # curved arcs instead of a bus T-bar).
-    Connect("in_image", "pe_core",
-            src_side="right", dst_side="left",
-            style="curve", curvature=0.6,
-            color=CORE_STROKE, head=False),
-    Connect("in_video", "pe_core",
-            src_side="right", dst_side="left",
-            style="curve", curvature=0.6,
-            color=CORE_STROKE, head=False),
-    # Alignment tuning (\u00a73) fans up to PE Language and down to
-    # PE Spatial from the lock glyph.
-    Connect("lock", "pe_lang",
-            src_side="right", dst_side="left",
-            style="curve", curvature=0.4,
-            color=CORE_STROKE, head=True),
-    Connect("lock", "pe_spat",
-            src_side="right", dst_side="left",
-            style="curve", curvature=0.4,
-            color=CORE_STROKE, head=True),
-)
+    Row(inputs, pretrain_body, bridge, encoders),
+    Connect("in_image", "pe_core", style="curve", head=False, color=CORE[0]),
+    Connect("in_video", "pe_core", style="curve", head=False, color=CORE[0]),
+    Connect("lock", "pe_lang",     style="curve", color=CORE[0]),
+    Connect("lock", "pe_spat",     style="curve", color=CORE[0]))
 
-d = Diagram(title="Perception Encoder (PE) overview", body=body)
-d.save_all(Path(__file__).resolve().parents[1] / "_out" / "fig01")
-print("Rendered:", d.measure())
+Diagram(body=body).save_all(Path(__file__).resolve().parents[1] / "_out" / "fig01")

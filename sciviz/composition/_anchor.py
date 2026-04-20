@@ -54,6 +54,14 @@ class Anchor(Element):
         return BBox(b.w + self.margin_left + self.margin_right,
                     b.h + self.margin_top + self.margin_bottom)
 
+    def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
+        """Forward inflate requests to the wrapped child, accounting for
+        the anchor's own margins. The Anchor's outer bbox grows because
+        the child grows; the registered anchor still tracks the child."""
+        adj_w = max(0.0, min_w - self.margin_left - self.margin_right)
+        adj_h = max(0.0, min_h - self.margin_top - self.margin_bottom)
+        self.child.inflate_to(adj_w, adj_h)
+
     def content_bbox(self, theme: Theme):
         """The inner child bbox, excluding margins.  Layout containers use
         this to align siblings on their *content* box, not on the

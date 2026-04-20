@@ -20,6 +20,8 @@ class Flow:
     never touches pixel coordinates -- routing is computed from bbox sides.
     """
 
+    _STYLE_UNSET = object()
+
     def __init__(self, src: str, dst: str, *,
                  src_side: str = "auto",
                  dst_side: str = "auto",
@@ -29,7 +31,8 @@ class Flow:
                  curvature: float = 0.5,
                  detour: float = 24.0,
                  arrow: bool = True,
-                 style: str = "orthogonal"):
+                 auto_route: bool = True,
+                 style = _STYLE_UNSET):
         """
         ``src_side`` / ``dst_side`` -- which side of each bbox the flow
             attaches to.  Default ``"auto"`` picks the boundary side facing
@@ -39,7 +42,13 @@ class Flow:
         ``curvature`` -- 0..1, how much the curve bows (0 = straight).
         ``detour``    -- pixels the curve bows beyond the larger of src/dst,
                          used when src and dst exit in the same direction.
+        ``auto_route`` -- when True (default), the topological planner
+            routes the wire as axis-aligned segments that dodge siblings.
+            Set to False to fall back to a simple straight/curved segment;
+            an explicit ``style=`` overrides this toggle.
         """
+        if style is Flow._STYLE_UNSET:
+            style = "orthogonal" if auto_route else "straight"
         self.src = src
         self.dst = dst
         self.src_side = src_side
@@ -203,7 +212,9 @@ class Flow:
         # direction (well-defined) and orient="auto" points the arrowhead
         # correctly.  A degenerate Bezier with curvature=0 has zero tangent
         # at endpoints, which makes marker orientation unreliable.
-        if self.curvature == 0:
+        # ``style="straight"`` is equivalent -- the author has asked for a
+        # direct segment, curvature parameter notwithstanding.
+        if self.style == "straight" or self.curvature == 0:
             d = f"M {sx:.2f},{sy:.2f} L {dx:.2f},{dy:.2f}"
             canvas.path(d, stroke=col, fill="none", stroke_width=sw,
                        marker_end=marker, dasharray=dash)

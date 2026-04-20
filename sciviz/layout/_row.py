@@ -45,17 +45,24 @@ class Row(Element):
         # each visible child occupies at least ``forced_slot_w[i]`` px.
         self._forced_slot_w: List[float] | None = None
 
-    def _find_shape_peer(self, elem):
-        """Unwrap one level of ``Anchor`` etc. to find a shape-key-bearing
-        child (e.g. ``Box``) so sibling-normalisation reaches into
-        ``Anchor(Box(...))`` without the author wrapping things differently.
+    @staticmethod
+    def _find_shape_peer(elem):
+        """Unwrap wrappers (``Anchor``, ``Banner``, ``Captioned``, …) to
+        find a shape-key-bearing child (e.g. ``Box``) so sibling-
+        normalisation reaches into ``Banner(Box(…))`` without the
+        author wrapping things differently.
         """
         seen = 0
         cur = elem
-        while cur is not None and seen < 4:
+        while cur is not None and seen < 6:
             if getattr(cur, "shape_key", None):
                 return cur
-            cur = getattr(cur, "child", None)
+            # Try common wrapper attributes: .child (Anchor, Captioned),
+            # .body (Banner), .label (Box with Element label).
+            nxt = getattr(cur, "child", None) or getattr(cur, "body", None)
+            if nxt is None:
+                break
+            cur = nxt
             seen += 1
         return None
 
@@ -121,6 +128,17 @@ class Row(Element):
     def _apply_shared_columns(self, widths: List[float]) -> None:
         self._forced_slot_w = list(widths)
 
+    def _stretch_visible_to_slots(self, widths: List[float]) -> None:
+        """Inflate each visible child so its rendered width matches the
+        slot it sits in. Called by :class:`AlignedStack` (``stretch=True``)
+        after broadcasting shared column widths -- this turns the
+        "centred-in-empty-slot" behaviour into actual same-width painting
+        for Box-like children that implement ``inflate_to``.
+        """
+        for child, w in zip(self._visible_children(), widths):
+            if w > 0:
+                child.inflate_to(w, 0.0)
+
     def measure(self, theme: Theme) -> BBox:
         if not self.children:
             return BBox(0, 0)
@@ -170,6 +188,11 @@ class Row(Element):
         if not self.equal_widths and self._forced_slot_w is not None:
             vis_sizes = [c.measure(theme) for c in self._visible_children()]
             forced_slots = self._slot_widths_for_visible(vis_sizes)
+        # Pre-compute the content-axis centre so that children with
+        # asymmetric decoration margins (e.g. a Banner header above
+        # but nothing below) stay inside the Row's reported bbox.
+        _content_h = max(c[3] for c in content)
+        _max_top = max(c[1] for c in content)
         cx = x
         vis_idx = 0
         for child, size, cb in zip(self.children, sizes, content):
@@ -181,7 +204,7 @@ class Row(Element):
             elif self.align == "end":
                 cy = y + H - (cb_y + cb_h)
             else:
-                row_content_center_y = y + H / 2
+                row_content_center_y = y + _max_top + _content_h / 2
                 cy = row_content_center_y - (cb_y + cb_h / 2)
             if self.equal_widths and not invisible:
                 cb_x = cb[0]
@@ -222,6 +245,8 @@ class Row(Element):
         if not self.equal_widths and self._forced_slot_w is not None:
             vis_sizes = [c.measure(theme) for c in self._visible_children()]
             forced_slots = self._slot_widths_for_visible(vis_sizes)
+        _content_h = max(c[3] for c in content)
+        _max_top = max(c[1] for c in content)
         offs = []
         cx = 0.0
         vis_idx = 0
@@ -234,7 +259,7 @@ class Row(Element):
             elif self.align == "end":
                 oy = H - (cb_y + cb_h)
             else:
-                oy = H / 2 - (cb_y + cb_h / 2)
+                oy = (_max_top + _content_h / 2) - (cb_y + cb_h / 2)
             if self.equal_widths and not invisible:
                 slot_cx = cx + slot / 2
                 ox = slot_cx - (cb[0] + cb[2] / 2)

@@ -38,6 +38,7 @@ class Bus:
                  dashed: bool = False,
                  color = "muted_label",
                  arrow: bool = True,
+                 auto_route: bool = True,
                  orientation: str = "auto"):
         self.sources = [sources] if isinstance(sources, str) else list(sources)
         self.sinks   = [sinks]   if isinstance(sinks,   str) else list(sinks)
@@ -45,6 +46,9 @@ class Bus:
         self.dashed = dashed
         self.color = color
         self.arrow = arrow
+        # Bus geometry (spine + taps) is always auto-routed; the flag is
+        # accepted for API symmetry with ``Connect`` / ``Flow``.
+        self.auto_route = bool(auto_route)
         # ``orientation`` is a hint used by Flowed._apply_flow_margins to
         # decide which anchor faces to inflate for the spine.  "horizontal"
         # inflates the source's right/left edges and the sinks' opposite
@@ -149,7 +153,12 @@ class Bus:
         centres_y = [b[1] + b[3] / 2 for b in all_boxes]
         avg_h = sum(b[3] for b in all_boxes) / len(all_boxes)
         y_spread = max(centres_y) - min(centres_y)
-        if y_spread < avg_h * 0.5:
+        # The shared-row shortcut only applies when no orientation was
+        # explicitly requested AND the endpoints really do lie on one
+        # line -- an explicit ``vertical``/``horizontal`` always gets
+        # the full spine layout below.
+        orientation_explicit = self.orientation != "auto"
+        if not orientation_explicit and y_spread < avg_h * 0.5:
             # Shared-row: line lives in the gaps between consecutive boxes
             # (the boxes themselves "mask" the middle by being rendered on top).
             sorted_boxes = sorted(all_boxes, key=lambda b: b[0])
@@ -182,10 +191,19 @@ class Bus:
         # Otherwise fan-out/fan-in: one-side (sources or sinks) is clustered,
         # other side is spread out.  Build a spine OFFSET from the clustered
         # side toward the spread side, and route taps to each endpoint.
-        # Pick orientation by the dominant geometry.
+        # Orientation precedence: explicit author hint > dominant geometry.
+        # ``orientation`` describes the FLOW (source -> sink) direction:
+        #   "horizontal" flow (src left of sinks)  => spine is VERTICAL
+        #   "vertical"   flow (src above of sinks) => spine is HORIZONTAL
+        # See the symmetric margin inflation in ``Flowed._apply_flow_margins``.
         all_x = [b[0] + b[2] / 2 for b in all_boxes]
         x_spread = max(all_x) - min(all_x)
-        horizontal = x_spread >= y_spread
+        if self.orientation == "horizontal":
+            horizontal = False   # spine perpendicular to horizontal flow
+        elif self.orientation == "vertical":
+            horizontal = True    # spine perpendicular to vertical flow
+        else:
+            horizontal = x_spread >= y_spread
 
         if horizontal:
             # Spine is horizontal, spread is along x.  Decide which cluster
