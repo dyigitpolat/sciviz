@@ -238,8 +238,14 @@ class Canvas:
              weight: str = "normal", italic: bool = False,
              anchor: str = "start", opacity: float = 1.0,
              baseline: str = "alphabetic",
-             font_family: Optional[str] = None) -> None:
-        """Render text. ``y`` is the baseline position."""
+             font_family: Optional[str] = None,
+             rotate: float = 0.0) -> None:
+        """Render text. ``y`` is the baseline position.
+
+        ``rotate`` is degrees clockwise applied around ``(x, y)``; the
+        connector-label placer uses ``rotate=90`` to fit a long label
+        through a narrow horizontal corridor.
+        """
         parts = [f'x="{_fmt(x)}"', f'y="{_fmt(y)}"',
                  f'font-size="{_fmt(size)}"', f'fill="{fill}"']
         if font_family is not None:
@@ -256,6 +262,9 @@ class Canvas:
             parts.append('dominant-baseline="hanging"')
         if opacity < 1.0:
             parts.append(f'opacity="{_fmt(opacity)}"')
+        if rotate:
+            parts.append(f'transform="rotate({_fmt(rotate)} '
+                         f'{_fmt(x)} {_fmt(y)})"')
         inner = _build_text_runs(content)
         self._body.append(f"<text {' '.join(parts)}>{inner}</text>")
         # Conservative text ink estimate. y is the baseline.

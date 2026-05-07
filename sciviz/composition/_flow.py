@@ -13,6 +13,34 @@ from ..elements import Text, TextBlock
 from ..layout import Row, Column, Spacer
 from ._anchor import Anchor, _side_point, _side_point_frac
 
+
+def _draw_placed_label(canvas: Canvas, placed, text: str, size_px: float,
+                       fill: str) -> None:
+    """Render a connector label at the placer's chosen rectangle.
+
+    Honours :attr:`PlacedLabel.rotation` so labels found by the placer
+    to fit better vertically are drawn rotated 90 degrees clockwise --
+    useful in narrow horizontal corridors. Anchored at "middle" by
+    default so the placer's centred ``rect`` lines up correctly.
+    """
+    x0, y0, x1, y1 = placed.rect
+    cx = (x0 + x1) / 2.0
+    cy = (y0 + y1) / 2.0
+    if getattr(placed, "rotation", 0.0):
+        # Rotated text: anchor at the centre of the rotated bbox.
+        canvas.text(cx, cy, text,
+                    size=size_px, fill=fill, italic=True,
+                    anchor="middle", baseline="middle",
+                    rotate=placed.rotation)
+    else:
+        # Horizontal text: anchor with baseline approximated from the
+        # placer's vertical centre (fonts have ~33% descender).
+        baseline_y = cy + size_px * 0.33
+        canvas.text(cx, baseline_y, text,
+                    size=size_px, fill=fill, italic=True,
+                    anchor=placed.anchor)
+
+
 class Flow:
     """A curved arrow specification between two named anchors.
 
@@ -147,13 +175,14 @@ class Flow:
             )
 
             # Retain `anchor_obstacles` for label-placement collision
-            # avoidance below.
-            def _in(name):
-                return name != self.src and name != self.dst
+            # avoidance below.  Critically we include the src and dst
+            # bboxes too: otherwise label placement is allowed to land
+            # the text *inside* the very card it is meant to annotate,
+            # overlapping that card's body content. The router still
+            # has access to its own src/dst geometry separately.
             anchor_obstacles = [b for name, b in registry.items()
                                 if not name.startswith("__region_")
-                                and not name.startswith("__")
-                                and _in(name)]
+                                and not name.startswith("__")]
             # Pick up already-drawn segments from earlier flows in the
             # same Flowed scope so crossings become semicircular jump
             # arcs instead of plain intersections.
@@ -176,16 +205,18 @@ class Flow:
                     continue
                 drawn.append((p1[0], p1[1], p2[0], p2[1]))
             if self.label and len(path) >= 2:
+                # Pick the longest segment regardless of orientation. The
+                # placer rotates the label to read along the wire when
+                # the chosen segment is predominantly vertical.
                 best_seg = None
                 best_len = -1.0
                 for i in range(len(path) - 1):
                     x1, y1 = path[i]
                     x2, y2 = path[i + 1]
-                    if abs(y2 - y1) < 0.5:
-                        L = abs(x2 - x1)
-                        if L > best_len:
-                            best_len = L
-                            best_seg = ((x1, y1), (x2, y2))
+                    L = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+                    if L > best_len:
+                        best_len = L
+                        best_seg = ((x1, y1), (x2, y2))
                 if best_seg is None:
                     best_seg = (path[0], path[1])
                 from ..auto.labels import (
@@ -207,14 +238,10 @@ class Flow:
                     best_seg, lbl,
                     obstacles=all_anchor_obstacles + seg_obs,
                     prefer="above",
-                    gap=theme.unit * 0.4,
+                    gap=theme.unit * 1.0,
                 )
-                x0, y0, x1r, y1r = placed.rect
-                mx = (x0 + x1r) / 2
-                baseline_y = (y0 + y1r) / 2 + lbl.size_px * 0.33
-                canvas.text(mx, baseline_y, self.label,
-                            size=lbl.size_px, fill=col, italic=True,
-                            anchor=placed.anchor)
+                _draw_placed_label(canvas, placed, self.label,
+                                   lbl.size_px, col)
                 register_label_obstacle(registry, placed.rect, self.src)
             return
 
@@ -244,12 +271,10 @@ class Flow:
                 lbl = measure_label(self.label, theme, "small")
                 placed = place_segment_label(
                     ((sx, sy), (dx, dy)), lbl, obstacles,
-                    prefer="above", gap=theme.unit * 0.4,
+                    prefer="above", gap=theme.unit * 1.0,
                 )
-                mx, my = placed.center
-                canvas.text(mx, my + lbl.size_px * 0.33, self.label,
-                            size=lbl.size_px, fill=col, anchor=placed.anchor,
-                            italic=True)
+                _draw_placed_label(canvas, placed, self.label,
+                                   lbl.size_px, col)
                 register_label_obstacle(registry, placed.rect, self.src)
             return
 
@@ -326,12 +351,9 @@ class Flow:
             lbl = measure_label(self.label, theme, "small")
             placed = place_curve_label(
                 [(sx, sy), c1, c2, (dx, dy)], lbl, obstacles,
-                prefer="above", gap=theme.unit * 0.4,
+                prefer="above", gap=theme.unit * 1.0,
             )
-            mx, my = placed.center
-            canvas.text(mx, my + lbl.size_px * 0.33, self.label,
-                        size=lbl.size_px, fill=col, anchor=placed.anchor,
-                        italic=True)
+            _draw_placed_label(canvas, placed, self.label, lbl.size_px, col)
             register_label_obstacle(registry, placed.rect, self.src)
 
 

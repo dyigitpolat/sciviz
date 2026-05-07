@@ -127,6 +127,15 @@ class Theme:
         "#991b1b", "#0e7490", "#be185d", "#44403c",
     ])
 
+    # -- automatic-contrast bg stack ---------------------------------------
+    # Render-time-only state: containers that paint a coloured fill push
+    # their resolved bg hex onto this stack before rendering their body
+    # and pop it after. Text rendering consults the stack and auto-swaps
+    # "white" -> "text" when the current bg is light, so authors writing
+    # ``color="white"`` inside a soft-fill Card no longer end up with
+    # invisible text.
+    _bg_stack: List[str] = field(default_factory=list)
+
     # ---------------- class factories -------------------------------------
 
     @classmethod
@@ -204,6 +213,12 @@ class Theme:
           * named role in :attr:`_ROLE_PALETTE`        (``"blue"``, ``"red"``, ...)
           * direct theme attribute                     (``"highlight_soft"``, ``"bg_panel"``, ...)
           * unknown string -> pass-through
+
+        If the requested colour resolves to white (``text_inverse``) but
+        the current rendering context's background is light, the call
+        auto-corrects to the dark text colour. This silently rescues
+        ``color="white"`` placed inside a soft-fill Card body (or
+        anywhere similar). See :meth:`push_bg` / :meth:`pop_bg`.
         """
         if name is None:
             return "none"
@@ -214,17 +229,93 @@ class Theme:
         if not isinstance(name, str):
             raise TypeError(f"color_of expects str|ColorRef|None, got {type(name).__name__}")
         if name.startswith("#") or name == "none" or name.startswith("rgb"):
-            return name
+            return self._auto_contrast(name)
         attr = self._COLOR_MAP.get(name)
         if attr is not None:
-            return getattr(self, attr)
+            return self._auto_contrast(getattr(self, attr))
         if name in self._ROLE_PALETTE:
-            return self._ROLE_PALETTE[name]
+            return self._auto_contrast(self._ROLE_PALETTE[name])
         if hasattr(self, name):
             val = getattr(self, name)
             if isinstance(val, str):
-                return val
+                return self._auto_contrast(val)
         return name
+
+    # ---------------- automatic contrast helpers --------------------------
+
+    def push_bg(self, color) -> None:
+        """Push the resolved bg colour for the current render container.
+
+        Card / Region / Banner call this just before rendering their
+        body so that text colour resolution can detect a light fill.
+        """
+        if color is None:
+            return
+        try:
+            hex_str = self.color_of(color) if isinstance(color, str) \
+                else self._resolve_for_bg(color)
+        except Exception:  # pragma: no cover -- defensive
+            return
+        if hex_str and hex_str != "none":
+            self._bg_stack.append(hex_str)
+
+    def pop_bg(self) -> None:
+        """Pop the current bg context (no-op if the stack is empty)."""
+        if self._bg_stack:
+            self._bg_stack.pop()
+
+    def current_bg(self) -> str | None:
+        """The top-of-stack rendered background, or ``None`` if unset."""
+        return self._bg_stack[-1] if self._bg_stack else None
+
+    def _resolve_for_bg(self, color) -> str:
+        """Resolve a non-string colour spec for bg-tracking purposes."""
+        from ..palette import ColorRef, resolve_color
+        if isinstance(color, ColorRef):
+            return resolve_color(color, self)
+        return ""
+
+    @staticmethod
+    def _luminance(hex_str: str) -> float:
+        """Approximate relative luminance in [0, 1] of an ``#rrggbb`` str."""
+        if not hex_str.startswith("#") or len(hex_str) not in (4, 7):
+            return 0.5  # unknown -> assume mid-luminance
+        if len(hex_str) == 4:
+            r = int(hex_str[1] * 2, 16)
+            g = int(hex_str[2] * 2, 16)
+            b = int(hex_str[3] * 2, 16)
+        else:
+            r = int(hex_str[1:3], 16)
+            g = int(hex_str[3:5], 16)
+            b = int(hex_str[5:7], 16)
+        return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
+
+    def is_light(self, hex_str: str, *, threshold: float = 0.55) -> bool:
+        """True if the colour is too light to print white text on."""
+        return self._luminance(hex_str) >= threshold
+
+    def contrast_text(self, color) -> str:
+        """Return ``text_inverse`` or ``text`` such that text is readable
+        on the given background colour."""
+        hex_str = self.color_of(color) if isinstance(color, str) \
+            else self._resolve_for_bg(color)
+        return self.text_inverse if not self.is_light(hex_str) else self.text
+
+    def _auto_contrast(self, hex_str: str) -> str:
+        """Swap ``text_inverse`` to dark when the current bg is light.
+
+        Only triggers when the resolved hex matches ``text_inverse``
+        exactly; explicit ``"#fafafa"`` or arbitrary lighter pastels are
+        left alone so authors who deliberately set a near-white colour
+        still get what they asked for.
+        """
+        if not self._bg_stack:
+            return hex_str
+        if hex_str.lower() != self.text_inverse.lower():
+            return hex_str
+        if self.is_light(self.current_bg() or ""):
+            return self.text
+        return hex_str
 
     # role -> coordinated paper-safe shade. Authors say ``color="red"``
     # and the theme picks coordinated fills.

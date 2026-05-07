@@ -134,6 +134,8 @@ from .composition import (
     Inline,
     Banner,
     Card,
+    CardColumn,
+    CardRow,
     Captioned,
     ConditionSpec,
     EqualGrid,
@@ -148,6 +150,7 @@ from .composition import (
     StepCell,
     StackedTiles,
     Stripe,
+    card_header,
 )
 from .grid import Grid
 

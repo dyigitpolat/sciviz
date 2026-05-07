@@ -61,12 +61,12 @@ class Token(Element):
     }
 
     def __init__(self, label: str, *,
-                 role: str = "neutral",
+                 role="neutral",
                  variant: str = "soft",
                  width: Optional[float] = None,
                  height: float = 22.0):
-        # collapse aliases
-        if role in self._ROLE_ALIASES:
+        # collapse string aliases (ColorRef objects pass through unchanged).
+        if isinstance(role, str) and role in self._ROLE_ALIASES:
             role, variant = self._ROLE_ALIASES[role]
         self.label = str(label)
         self.role = role
@@ -81,20 +81,49 @@ class Token(Element):
         w = self.width if self.width is not None else self._intrinsic_w(theme)
         return BBox(max(w, theme.unit * 3), self.height)
 
+    def _resolve_palette(self, theme: Theme):
+        """Pick (fill, stroke, text_col) for this Token's role/variant.
+
+        Robust to ``role`` being a string (``"blue"``, ``"neutral"``,
+        ``"accept"``...) or a :class:`ColorRef` (``Palette.blue`` etc.).
+        Without this, a ColorRef-typed role used to fall through
+        ``theme.role`` and produce a Token whose fill, stroke, and text
+        all resolved to the same saturated colour -- the label became
+        invisible against its own background.
+        """
+        # Late import to avoid a top-level cycle (palette imports core).
+        from ..palette import ColorRef
+        role = self.role
+        if isinstance(role, ColorRef):
+            if self.variant == "fill":
+                fill = theme.color_of(role)
+                stroke = fill
+                text_col = theme.contrast_text(role)
+            else:
+                fill = theme.color_of(role.soft())
+                stroke = theme.color_of(role)
+                text_col = theme.contrast_text(role.soft())
+            return fill, stroke, text_col
+        # String role.
+        if role == "neutral":
+            return (theme.color_of("bg_panel"),
+                    theme.color_of("text"),
+                    theme.color_of("text"))
+        if self.variant == "fill":
+            fill = theme.role(role, "fill")
+            stroke = theme.role(role, "stroke")
+            text_col = theme.text_on(fill) if hasattr(theme, "text_on") \
+                else theme.contrast_text(fill)
+            return fill, stroke, text_col
+        # soft variant: distinct fill/stroke/text so the label stays visible.
+        fill = theme.role(role, "soft")
+        stroke = theme.role(role, "stroke")
+        text_col = theme.role(role, "ink")
+        return fill, stroke, text_col
+
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         size = self.measure(theme)
-        if self.role == "neutral":
-            fill = theme.color_of("bg_panel")
-            stroke = theme.color_of("text")
-            text_col = theme.color_of("text")
-        elif self.variant == "fill":
-            fill = theme.role(self.role, "fill")
-            stroke = theme.role(self.role, "stroke")
-            text_col = theme.text_on(fill)
-        else:
-            fill = theme.role(self.role, "soft")
-            stroke = theme.role(self.role, "stroke")
-            text_col = theme.role(self.role, "ink")
+        fill, stroke, text_col = self._resolve_palette(theme)
         canvas.rect(x, y, size.w, size.h,
                    fill=fill, stroke=stroke,
                    stroke_width=theme.hairline, rx=2)

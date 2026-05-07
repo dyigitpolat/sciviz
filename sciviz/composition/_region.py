@@ -65,6 +65,7 @@ class Region(Element):
                  label_align: str = "start",
                  label_size: str = "label",
                  label_position: str = "top",
+                 balance_label_padding: bool = False,
                  annotations: Optional[Sequence] = None,
                  corner_badge: Optional[Element] = None):
         self.child = child
@@ -82,6 +83,11 @@ class Region(Element):
         self.margin_y = margin_y
         self.label_align = label_align
         self.label_size = label_size
+        # Historic visual-balance padding doubled the label height inside
+        # the bottom of the border, which produced very asymmetric
+        # whitespace in dense paper figures. Default off; opt in via
+        # ``balance_label_padding=True`` for legacy decorative regions.
+        self.balance_label_padding = balance_label_padding
         if label_position not in ("top", "left", "right", "bottom"):
             raise ValueError(
                 "label_position must be 'top', 'left', 'right', or 'bottom'; "
@@ -143,9 +149,11 @@ class Region(Element):
         ann = self._anns_by_side()
         if self.label and self.label_position == "top":
             top += lh
-            # Historic parity: add lh of extra room inside the border
-            # at the bottom so the child appears optically centered.
-            inner_bottom = lh
+            # Optional: pad the inside-bottom by the label height for
+            # the historic visually-balanced look. Off by default so
+            # paper figures don't carry extra dead whitespace.
+            if self.balance_label_padding:
+                inner_bottom = lh
         elif self.label and self.label_position == "bottom":
             bot += lh
         elif self.label and self.label_position == "left":

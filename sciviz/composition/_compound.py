@@ -45,13 +45,29 @@ class ConditionSpec:
 
 
 class Card(Element):
-    """A titled card with a role-coloured header and soft body."""
+    """A titled card with a role-coloured header and soft body.
 
-    def __init__(self, header: Element | str, body: Element, *, role,
+    Accepts a header followed by one or more body children. When more than
+    one body child is provided, they are auto-wrapped in a Column with
+    ``align="stretch"`` and a small gap, so the most common usage --
+    "header plus a stack of rows" -- is non-erroneous.
+    """
+
+    def __init__(self, header: Element | str, *body: Element, role,
                  footer: Optional[Element] = None, padding="sm",
-                 radius: Optional[float] = None, dashed: bool = False):
+                 radius: Optional[float] = None, dashed: bool = False,
+                 body_gap: str = "xs", body_align: str = "stretch"):
+        # ``body`` may be one Element (kept as-is) or many (auto-stacked
+        # in a Column for the caller's convenience).
+        elems = [b for b in body if b is not None]
+        if not elems:
+            raise ValueError("Card requires at least one body element")
+        if len(elems) == 1:
+            body_elem: Element = elems[0]
+        else:
+            body_elem = Column(*elems, gap=body_gap, align=body_align)
         self.header = header if isinstance(header, Element) else Text(str(header), weight="700")
-        self.body = body
+        self.body = body_elem
         self.footer = footer
         self.role = role
         self.padding = padding
@@ -101,7 +117,8 @@ class Card(Element):
         pad = _pad_px(theme, self.padding)
         radius = self.radius if self.radius is not None else theme.panel_radius * 2
         stroke = theme.color_of(self.role)
-        canvas.rect(x, y, size.w, size.h, fill=_soft(theme, self.role),
+        body_bg = _soft(theme, self.role)
+        canvas.rect(x, y, size.w, size.h, fill=body_bg,
                     stroke=stroke, stroke_width=theme.hairline, rx=radius,
                     dasharray="3,2" if self.dashed else None)
         _register_implicit_obstacle(x, y, size.w, size.h)
@@ -110,21 +127,33 @@ class Card(Element):
         canvas.rect(x, y, size.w, header_h, fill=stroke, stroke=stroke,
                     stroke_width=theme.hairline, rx=radius)
         hcbx, hcby, _, hcbh = self.header.content_bbox(theme)
-        self.header.render(
-            canvas,
-            x + pad - hcbx,
-            y + header_h / 2 - (hcby + hcbh / 2),
-            theme,
-        )
+        # Push the saturated header bg so white text in the header
+        # remains white; pop after.
+        theme.push_bg(stroke)
+        try:
+            self.header.render(
+                canvas,
+                x + pad - hcbx,
+                y + header_h / 2 - (hcby + hcbh / 2),
+                theme,
+            )
+        finally:
+            theme.pop_bg()
 
         body_size = self.body.measure(theme)
         body_x = x + (size.w - body_size.w) / 2
         body_y = y + header_h + pad
-        self.body.render(canvas, body_x, body_y, theme)
-        if self.footer:
-            footer = self.footer.measure(theme)
-            self.footer.render(canvas, x + (size.w - footer.w) / 2,
-                               y + size.h - pad - footer.h, theme)
+        # Push the soft body bg so any Text(color="white") inside the
+        # body auto-corrects to a dark, readable colour.
+        theme.push_bg(body_bg)
+        try:
+            self.body.render(canvas, body_x, body_y, theme)
+            if self.footer:
+                footer = self.footer.measure(theme)
+                self.footer.render(canvas, x + (size.w - footer.w) / 2,
+                                   y + size.h - pad - footer.h, theme)
+        finally:
+            theme.pop_bg()
 
 
 class EqualGrid(Element):
@@ -470,3 +499,78 @@ class SoftLegend(Element):
                     rx=theme.panel_radius)
         row = self._row()
         row.render(canvas, x + pad, y + pad, theme)
+
+
+# ---------------------------------------------------------------------
+# Convenience: rows/columns of Cards, equalised by default.
+# ---------------------------------------------------------------------
+
+class CardRow(Element):
+    """A row of Cards (or other Elements) with equal widths by default.
+
+    The single most common figure pattern in this codebase is "a row of
+    same-shape Cards"; CardRow encodes that pattern so the caller cannot
+    accidentally end up with cards of wildly different widths. Pass
+    ``equal_widths=False`` to opt out.
+    """
+
+    def __init__(self, *children: Element, gap: str = "md",
+                 align: str = "start", equal_widths: bool = True):
+        self.children = [c for c in children if c is not None]
+        self.gap = gap
+        self.align = align
+        self.equal_widths = equal_widths
+        self._row = Row(*self.children, gap=gap, align=align,
+                        equal_widths=equal_widths)
+
+    def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
+        self._row.inflate_to(min_w, min_h)
+
+    def measure(self, theme: Theme) -> BBox:
+        return self._row.measure(theme)
+
+    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        self._row.render(canvas, x, y, theme)
+
+
+class CardColumn(Element):
+    """Vertical stack of Cards equalised in width by default."""
+
+    def __init__(self, *children: Element, gap: str = "sm",
+                 align: str = "stretch", equal_widths: bool = True):
+        self.children = [c for c in children if c is not None]
+        self._col = Column(
+            *self.children, gap=gap, align=align,
+            equal_widths=equal_widths,
+        )
+
+    def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
+        self._col.inflate_to(min_w, min_h)
+
+    def measure(self, theme: Theme) -> BBox:
+        return self._col.measure(theme)
+
+    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        self._col.render(canvas, x, y, theme)
+
+
+def card_header(title: str, icon: Optional[str] = None,
+                *, color: str = "white", size: str = "small",
+                weight: str = "700") -> Element:
+    """Standard role-coloured card header: optional icon + title text.
+
+    Returned element is intended to be passed as the first argument of
+    :class:`Card`. Encapsulating this here means callers do not
+    re-implement the same Row(Icon, Text) pattern in every figure.
+    """
+    text = Text(title, color=color, size=size, weight=weight)
+    if icon is None:
+        return text
+    # Local import avoids a top-level circular import with elements.
+    from ..elements import Icon  # noqa: WPS433
+    return Row(
+        Icon(icon, color=color, size=size, stroke_width=2.0),
+        text,
+        gap="xs",
+        align="center",
+    )
