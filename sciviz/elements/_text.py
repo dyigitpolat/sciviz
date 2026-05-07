@@ -71,6 +71,20 @@ def _xml_escape(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _text_ink_y(theme: Theme, size) -> tuple[float, float]:
+    """Return the visual text band inside sciviz's single-line text box.
+
+    The normal text measure includes a small safety gutter. Alignment should
+    follow the actual line band, not that gutter, otherwise icons and text in
+    headers/cards appear optically off-centre.
+    """
+    sz = theme.size_px(size)
+    baseline = sz * 0.88
+    ascent = sz * 0.82
+    descent = sz * 0.22
+    return baseline - ascent, ascent + descent
+
+
 class Text(Element):
     """Single-line text. Semantic size and colour names are preferred.
 
@@ -142,6 +156,13 @@ class Text(Element):
         if self.rotate in (90, -90, 270, -270):
             return BBox(h, w)
         return BBox(w, h)
+
+    def content_bbox(self, theme: Theme) -> tuple[float, float, float, float]:
+        bbox = self.measure(theme)
+        if self.rotate in (90, -90, 270, -270):
+            return (0.0, 0.0, bbox.w, bbox.h)
+        top, h = _text_ink_y(theme, self.size)
+        return (0.0, top, bbox.w, h)
 
     def _render_plain(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         sz = theme.size_px(self.size)
@@ -344,6 +365,42 @@ class TextBlock(Element):
             w = max(w, 0.0)
         h = line_h * len(lines)
         return BBox(w, h)
+
+    def _line_widths(self, theme: Theme) -> list[float]:
+        widths: list[float] = []
+        bold = self.weight in ("bold", "600", "700")
+        for line in self._wrapped_lines(theme):
+            if isinstance(line, str):
+                widths.append(theme.text_width(line, self.size, bold=bold))
+            else:
+                runs = _normalize_runs(line)
+                widths.append(
+                    sum(_run_width(theme, t, self.size, self.weight, s)
+                        for t, s in runs))
+        return widths
+
+    def content_bbox(self, theme: Theme) -> tuple[float, float, float, float]:
+        lines = self._wrapped_lines(theme)
+        if not lines:
+            return (0.0, 0.0, 0.0, 0.0)
+        bbox = self.measure(theme)
+        widths = self._line_widths(theme)
+        line_h = theme.size_px(self.size) * self.line_spacing
+        ink_top, ink_h = _text_ink_y(theme, self.size)
+        x0 = float("inf")
+        x1 = float("-inf")
+        for w in widths:
+            if self.align in ("middle", "center"):
+                lx = (bbox.w - w) / 2
+            elif self.align == "end":
+                lx = bbox.w - w
+            else:
+                lx = 0.0
+            x0 = min(x0, lx)
+            x1 = max(x1, lx + w)
+        y0 = ink_top
+        y1 = (len(lines) - 1) * line_h + ink_top + ink_h
+        return (x0, y0, max(0.0, x1 - x0), max(0.0, y1 - y0))
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         lines = self._wrapped_lines(theme)

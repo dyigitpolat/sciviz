@@ -256,6 +256,10 @@ class Diagram:
             system).  192 gives a 2x-retina render.
         scale : float, optional
             Direct scale multiplier for PNG (overrides ``dpi``).
+        text_mode : {"auto", "live", "outline"}
+            ``auto`` preserves live SVG text so PNG/PDF follow the same font
+            stack as SVG. Use ``outline`` only when a PDF pipeline cannot
+            resolve the needed fonts and glyph-path output is preferred.
         """
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -275,13 +279,13 @@ class Diagram:
             size = self._last_render_size or self.measure()
             if scale is None:
                 scale = dpi / 96.0
-            if text_mode in ("auto", "outline"):
+            if text_mode == "outline":
                 svg_source = outline_svg_text(
                     svg_source,
                     FontRegistry.default(self.theme.font_family),
                     self.theme.font_family,
                 )
-            elif text_mode != "live":
+            elif text_mode not in ("auto", "live"):
                 raise ValueError("text_mode must be 'auto', 'outline', or 'live'")
             data = resvg_py.svg_to_bytes(
                 svg_string=svg_source,
@@ -336,13 +340,13 @@ class Diagram:
                 "Exporting to .pdf requires cairosvg when no font-aware "
                 "external converter is available. Install with: pip install cairosvg"
             ) from e
-        if text_mode in ("auto", "outline"):
+        if text_mode == "outline":
             svg_source = outline_svg_text(
                 svg_source,
                 FontRegistry.default(self.theme.font_family),
                 self.theme.font_family,
             )
-        elif text_mode != "live":
+        elif text_mode not in ("auto", "live"):
             raise ValueError("text_mode must be 'auto', 'outline', or 'live'")
         cairosvg.svg2pdf(bytestring=svg_source.encode("utf-8"),
                          write_to=str(out))

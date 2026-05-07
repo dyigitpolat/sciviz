@@ -73,6 +73,113 @@ class Icon(Element):
         return BBox(s, s)
 
     @staticmethod
+    def _path_points(path: str) -> list[tuple[float, float]]:
+        tokens = re.findall(r"[AaCcHhLlMmQqSsTtVvZz]|[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?", path)
+        points: list[tuple[float, float]] = []
+        i = 0
+        cmd = ""
+        x = y = 0.0
+        start_x = start_y = 0.0
+
+        def is_cmd(tok: str) -> bool:
+            return len(tok) == 1 and tok.isalpha()
+
+        def need(n: int) -> bool:
+            return i + n <= len(tokens) and all(not is_cmd(t) for t in tokens[i:i + n])
+
+        def num() -> float:
+            nonlocal i
+            v = float(tokens[i])
+            i += 1
+            return v
+
+        while i < len(tokens):
+            if is_cmd(tokens[i]):
+                cmd = tokens[i]
+                i += 1
+            if not cmd:
+                break
+            rel = cmd.islower()
+            c = cmd.upper()
+
+            if c == "M":
+                first = True
+                while need(2):
+                    nx, ny = num(), num()
+                    x = x + nx if rel else nx
+                    y = y + ny if rel else ny
+                    points.append((x, y))
+                    if first:
+                        start_x, start_y = x, y
+                        first = False
+                continue
+            if c == "L":
+                while need(2):
+                    nx, ny = num(), num()
+                    x = x + nx if rel else nx
+                    y = y + ny if rel else ny
+                    points.append((x, y))
+                continue
+            if c == "H":
+                while need(1):
+                    nx = num()
+                    x = x + nx if rel else nx
+                    points.append((x, y))
+                continue
+            if c == "V":
+                while need(1):
+                    ny = num()
+                    y = y + ny if rel else ny
+                    points.append((x, y))
+                continue
+            if c == "C":
+                while need(6):
+                    vals = [num() for _ in range(6)]
+                    pts = [(vals[0], vals[1]), (vals[2], vals[3]), (vals[4], vals[5])]
+                    abs_pts = [(x + px, y + py) if rel else (px, py) for px, py in pts]
+                    points.extend(abs_pts)
+                    x, y = abs_pts[-1]
+                continue
+            if c == "S" or c == "Q":
+                n = 4
+                while need(n):
+                    vals = [num() for _ in range(n)]
+                    pts = [(vals[0], vals[1]), (vals[2], vals[3])]
+                    abs_pts = [(x + px, y + py) if rel else (px, py) for px, py in pts]
+                    points.extend(abs_pts)
+                    x, y = abs_pts[-1]
+                continue
+            if c == "T":
+                while need(2):
+                    nx, ny = num(), num()
+                    x = x + nx if rel else nx
+                    y = y + ny if rel else ny
+                    points.append((x, y))
+                continue
+            if c == "A":
+                while need(7):
+                    rx, ry, _rot, _large, _sweep = (num(), num(), num(), num(), num())
+                    sx, sy = x, y
+                    nx, ny = num(), num()
+                    ex = x + nx if rel else nx
+                    ey = y + ny if rel else ny
+                    for px, py in ((sx, sy), (ex, ey)):
+                        points.extend([
+                            (px - rx, py - ry),
+                            (px + rx, py + ry),
+                        ])
+                    x, y = ex, ey
+                    points.append((x, y))
+                continue
+            if c == "Z":
+                x, y = start_x, start_y
+                points.append((x, y))
+                continue
+            # Unknown or malformed command: stop rather than inventing bounds.
+            break
+        return points
+
+    @staticmethod
     @lru_cache(maxsize=256)
     def _viewbox_bounds(name: str) -> tuple[float, float, float, float]:
         """Approximate the visible path bounds in Lucide viewBox units.
@@ -81,13 +188,13 @@ class Icon(Element):
         centered inside that square. Row/Column alignment should follow the
         visible glyph, not the full transparent viewBox.
         """
-        nums: list[float] = []
+        points: list[tuple[float, float]] = []
         for path in LUCIDE_ICONS[name]:
-            nums.extend(float(v) for v in re.findall(r"[-+]?[0-9]*\.?[0-9]+", path))
-        if len(nums) < 2:
+            points.extend(Icon._path_points(path))
+        if not points:
             return LUCIDE_VIEWBOX
-        xs = nums[0::2]
-        ys = nums[1::2]
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
         vx, vy, vw, vh = LUCIDE_VIEWBOX
         pad = 1.0
         x0 = max(vx, min(xs) - pad)

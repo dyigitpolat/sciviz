@@ -47,6 +47,13 @@ class FontAsset:
             return "font/otf"
         return "font/ttf"
 
+    @property
+    def embeddable(self) -> bool:
+        """Whether this face is suitable for SVG ``@font-face`` embedding."""
+        if self.woff2_path is not None:
+            return True
+        return self.ttf_path.suffix.lower() in {".ttf", ".otf"}
+
 
 class FontRegistry:
     """Registry of fonts used by SVG/PDF exporters."""
@@ -63,9 +70,12 @@ class FontRegistry:
         Resolve the theme's family stack first so older figures keep their
         intended typography. Fall back to matplotlib's bundled DejaVu Sans.
         """
-        font_path = cls._resolve_family(font_family)
-        if font_path is None or not font_path.is_file():
+        resolved = cls._resolve_family(font_family)
+        if resolved is None:
             font_path = cls._dejavu_path()
+            css_family = "DejaVu Sans"
+        else:
+            font_path, css_family = resolved
         if font_path is None or not font_path.is_file():
             raise RuntimeError(
                 "Could not locate a usable font. sciviz PDF-safe export "
@@ -75,7 +85,7 @@ class FontRegistry:
         return cls([
             FontAsset(
                 name=name,
-                css_family=f"sciviz-{font_path.stem}",
+                css_family=css_family,
                 ttf_path=font_path,
             )
         ])
@@ -93,7 +103,7 @@ class FontRegistry:
         return out
 
     @classmethod
-    def _resolve_family(cls, font_family: Optional[str]) -> Optional[Path]:
+    def _resolve_family(cls, font_family: Optional[str]) -> Optional[tuple[Path, str]]:
         if not font_family:
             return None
         try:
@@ -104,8 +114,8 @@ class FontRegistry:
                     family,
                     fallback_to_default=False,
                 ))
-                if path.is_file() and path.suffix.lower() in {".ttf", ".otf"}:
-                    return path
+                if path.is_file() and path.suffix.lower() in {".ttf", ".otf", ".ttc"}:
+                    return path, family
         except Exception:
             return None
         return None
@@ -145,6 +155,8 @@ class FontRegistry:
     def css(self) -> str:
         rules = []
         for font in self.fonts:
+            if not font.embeddable:
+                continue
             data = base64.b64encode(font.svg_path.read_bytes()).decode("ascii")
             rules.append(
                 "@font-face { "

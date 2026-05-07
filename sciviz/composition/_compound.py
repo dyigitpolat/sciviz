@@ -21,6 +21,21 @@ def _soft(theme: Theme, role) -> str:
     return theme.color_of(role.soft()) if hasattr(role, "soft") else theme.role(str(role), "soft")
 
 
+def _align_x_in_slot(child: Element, slot_x: float, slot_w: float,
+                     theme: Theme, align: str) -> float:
+    cbx, _, cbw, _ = child.content_bbox(theme)
+    if align in ("middle", "center"):
+        return slot_x + slot_w / 2 - (cbx + cbw / 2)
+    if align == "end":
+        return slot_x + slot_w - (cbx + cbw)
+    return slot_x - cbx
+
+
+def _center_y_on_content(child: Element, center_y: float, theme: Theme) -> float:
+    _, cby, _, cbh = child.content_bbox(theme)
+    return center_y - (cby + cbh / 2)
+
+
 @dataclass(frozen=True)
 class ConditionSpec:
     """Legend-aware conditional marker."""
@@ -44,6 +59,7 @@ class Card(Element):
         self.dashed = dashed
         self._min_w = 0.0
         self._min_h = 0.0
+        self._header_h: Optional[float] = None
 
     def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
         self._min_w = max(self._min_w, float(min_w))
@@ -53,12 +69,28 @@ class Card(Element):
         inner_h = max(0.0, self._min_h - 3 * pad)
         self.body.inflate_to(inner_w, inner_h)
 
+    def _intrinsic_header_height(self, theme: Theme) -> float:
+        pad = _pad_px(theme, self.padding)
+        header = self.header.measure(theme)
+        design_min = theme.text_height("small") + pad * 1.2
+        return max(header.h + pad * 1.2, design_min)
+
+    def _header_height(self, theme: Theme) -> float:
+        intrinsic = self._intrinsic_header_height(theme)
+        return max(intrinsic, self._header_h or 0.0)
+
+    def _shared_header_height(self, theme: Theme) -> float:
+        return self._intrinsic_header_height(theme)
+
+    def _apply_shared_header_height(self, height: float) -> None:
+        self._header_h = max(self._header_h or 0.0, float(height))
+
     def measure(self, theme: Theme) -> BBox:
         pad = _pad_px(theme, self.padding)
         header = self.header.measure(theme)
         body = self.body.measure(theme)
         footer = self.footer.measure(theme) if self.footer else BBox(0, 0)
-        header_h = header.h + pad * 1.2
+        header_h = self._header_height(theme)
         footer_h = (footer.h + pad) if self.footer else 0.0
         w = max(header.w, body.w, footer.w) + 2 * pad
         h = header_h + body.h + footer_h + 2 * pad
@@ -74,11 +106,16 @@ class Card(Element):
                     dasharray="3,2" if self.dashed else None)
         _register_implicit_obstacle(x, y, size.w, size.h)
 
-        header_size = self.header.measure(theme)
-        header_h = header_size.h + pad * 1.2
+        header_h = self._header_height(theme)
         canvas.rect(x, y, size.w, header_h, fill=stroke, stroke=stroke,
                     stroke_width=theme.hairline, rx=radius)
-        self.header.render(canvas, x + pad, y + (header_h - header_size.h) / 2, theme)
+        hcbx, hcby, _, hcbh = self.header.content_bbox(theme)
+        self.header.render(
+            canvas,
+            x + pad - hcbx,
+            y + header_h / 2 - (hcby + hcbh / 2),
+            theme,
+        )
 
         body_size = self.body.measure(theme)
         body_x = x + (size.w - body_size.w) / 2
@@ -110,12 +147,27 @@ class EqualGrid(Element):
     def _normalise(self, theme: Theme) -> list[BBox]:
         if not self.children:
             return []
+        self._normalise_header_bands(theme)
         sizes = [c.measure(theme) for c in self.children]
         target_w = max(s.w for s in sizes) if self.equal in ("both", "width") else 0.0
         target_h = max(s.h for s in sizes) if self.equal in ("both", "height") else 0.0
         for child in self.children:
             child.inflate_to(target_w, target_h)
         return [c.measure(theme) for c in self.children]
+
+    def _normalise_header_bands(self, theme: Theme) -> None:
+        heights: list[float] = []
+        for child in self.children:
+            fn = getattr(child, "_shared_header_height", None)
+            if fn is not None:
+                heights.append(float(fn(theme)))
+        if len(heights) < 2:
+            return
+        target = max(heights)
+        for child in self.children:
+            apply = getattr(child, "_apply_shared_header_height", None)
+            if apply is not None:
+                apply(target)
 
     def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
         if not self.children:
@@ -254,15 +306,18 @@ class StepCell(Element):
     """A full-name pipeline step card with a thumbnail and condition glyph."""
 
     def __init__(self, name: str, visual: Element, *, role, index: Optional[int] = None,
-                 optional: bool = False, condition: Optional[ConditionSpec] = None):
+                 optional: bool = False, condition: Optional[ConditionSpec] = None,
+                 label_align: str = "center"):
         self.name = name
         self.visual = visual
         self.role = role
         self.index = index
         self.optional = optional or condition is not None
         self.condition = condition
+        self.label_align = label_align
         self._min_w = 0.0
         self._min_h = 0.0
+        self._forced_slot_w: Optional[list[float]] = None
 
     def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
         self._min_w = max(self._min_w, float(min_w))
@@ -277,7 +332,7 @@ class StepCell(Element):
 
     def _label(self, theme: Theme) -> TextBlock:
         return TextBlock(self.name, size="tiny", color="text", weight="700",
-                         align="center", line_spacing=1.12,
+                         align=self.label_align, line_spacing=1.12,
                          max_width=self._label_width(theme))
 
     def _index_badge_size(self, theme: Theme) -> BBox:
@@ -288,13 +343,49 @@ class StepCell(Element):
         w = max(h, theme.text_width(text, "micro", bold=True) + theme.unit * 0.9)
         return BBox(w, h)
 
+    def _left_guard(self, theme: Theme) -> float:
+        pad = theme.unit * 0.55
+        if self.index is None:
+            return pad
+        badge = self._index_badge_size(theme)
+        return max(pad * 3.2, badge.w + pad * 1.9)
+
+    def _right_guard(self, theme: Theme) -> float:
+        pad = theme.unit * 0.55
+        if self.condition is None:
+            return pad
+        glyph = ConditionGlyph(self.condition.kind, color=self.role).measure(theme)
+        return max(pad * 2.0, glyph.w + pad * 1.7)
+
+    def _intrinsic_slot_widths(self, theme: Theme) -> list[float]:
+        return [
+            self._left_guard(theme),
+            self.visual.measure(theme).w,
+            self._label(theme).measure(theme).w,
+            self._right_guard(theme),
+        ]
+
+    def _slot_widths(self, theme: Theme) -> list[float]:
+        slots = self._intrinsic_slot_widths(theme)
+        if self._forced_slot_w is not None:
+            slots = [
+                max(slots[i], self._forced_slot_w[i] if i < len(self._forced_slot_w) else 0.0)
+                for i in range(len(slots))
+            ]
+        return slots
+
+    def _shared_column_widths(self, theme: Theme) -> list[float]:
+        return self._intrinsic_slot_widths(theme)
+
+    def _apply_shared_columns(self, widths: list[float]) -> None:
+        self._forced_slot_w = list(widths)
+
     def measure(self, theme: Theme) -> BBox:
         pad = theme.unit * 0.55
         visual = self.visual.measure(theme)
         label = self._label(theme).measure(theme)
-        left_guard = pad * (3.6 if self.index is not None else 1.0)
-        right_guard = pad * (2.0 if self.condition is not None else 1.0)
-        w = visual.w + label.w + left_guard + right_guard + pad
+        left_guard, visual_slot, label_slot, right_guard = self._slot_widths(theme)
+        w = left_guard + visual_slot + pad + label_slot + right_guard
         h = max(visual.h, label.h, theme.unit * 4.6) + 2 * pad
         return BBox(max(w, self._min_w), max(h, self._min_h))
 
@@ -323,27 +414,21 @@ class StepCell(Element):
             glyph = ConditionGlyph(self.condition.kind, color=self.role)
             gs = glyph.measure(theme)
             glyph.render(canvas, x + size.w - pad - gs.w, y + pad, theme)
-        visual = self.visual.measure(theme)
         label = self._label(theme)
-        label_size = label.measure(theme)
-        content_w = visual.w + pad + label_size.w
-        left_guard = pad * (3.6 if self.index is not None else 1.0)
-        right_guard = pad * (2.0 if self.condition is not None else 1.0)
-        usable_w = max(0.0, size.w - left_guard - right_guard)
-        start_x = x + left_guard + max(0.0, (usable_w - content_w) / 2)
+        left_guard, visual_slot, label_slot, _ = self._slot_widths(theme)
+        visual_slot_x = x + left_guard
+        label_slot_x = visual_slot_x + visual_slot + pad
         center_y = y + size.h / 2
-        vcb = self.visual.content_bbox(theme)
-        lcb = label.content_bbox(theme)
         self.visual.render(
             canvas,
-            start_x,
-            center_y - (vcb[1] + vcb[3] / 2),
+            _align_x_in_slot(self.visual, visual_slot_x, visual_slot, theme, "center"),
+            _center_y_on_content(self.visual, center_y, theme),
             theme,
         )
         label.render(
             canvas,
-            start_x + visual.w + pad,
-            center_y - (lcb[1] + lcb[3] / 2),
+            _align_x_in_slot(label, label_slot_x, label_slot, theme, self.label_align),
+            _center_y_on_content(label, center_y, theme),
             theme,
         )
 

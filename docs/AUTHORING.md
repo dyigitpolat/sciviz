@@ -51,8 +51,9 @@ d = Diagram.for_paper(Text("Captioned body"))
 ```
 
 This removes title/subtitle/footer chrome and uses a tighter content
-margin. SVG output embeds a known font; PDF and PNG output use the same
-outlined text path by default so print and raster previews have font parity.
+margin. SVG, PDF, and PNG preserve the theme's live font stack by default.
+Use `text_mode="outline"` only when a PDF toolchain cannot resolve the
+required fonts and glyph-path output is preferable.
 
 ## Layout primitives
 

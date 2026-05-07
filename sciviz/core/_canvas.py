@@ -374,8 +374,9 @@ class Canvas:
                 font_registry = None
         styles = list(self._styles)
         if embed_fonts and font_registry is not None:
-            styles.insert(0, font_registry.css())
-            font_family = font_registry.root_font_family
+            css = font_registry.css()
+            if css:
+                styles.insert(0, css)
         style_block = ""
         if styles:
             style_block = "<style>\n" + "\n".join(styles) + "\n</style>"

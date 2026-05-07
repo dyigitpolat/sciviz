@@ -43,9 +43,9 @@ aligned stacks, structured text runs, and the rest of the vocabulary.
 5. **Semantic colour.**  `color=Palette.alert`, `color=Palette.blue`,
    `color=Palette.next("worker_0")` — never hex. Concrete hex still
    works as an escape hatch via `Palette.literal("#abc")`.
-6. **Export-safe typography.**  SVG export embeds a known font; PDF and PNG
-   export use the same outlined text path by default, so missing glyph boxes
-   and PDF/PNG font drift are not accepted output.
+6. **Export-safe typography.**  SVG, PNG, and PDF export preserve the theme's
+   live font stack by default. An explicit outlined-text mode is available for
+   PDF toolchains that cannot resolve the required fonts.
 7. **Vector math.**  `Math(r"$...$")` renders LaTeX through matplotlib's
    `mathtext` as SVG paths — no raster, no font dependency.
 
