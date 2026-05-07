@@ -35,7 +35,9 @@ class Box(Element):
                  dashed: bool = False,
                  opacity: float = 1.0,
                  vertical_text: bool = False,
-                 shape_key: Optional[str] = None):
+                 shape_key: Optional[str] = None,
+                 wrap: bool = False,
+                 max_width: Optional[float] = None):
         self.label = label
         self.width = width
         self.height = height
@@ -69,6 +71,9 @@ class Box(Element):
         self.dashed = dashed
         self.opacity = opacity
         self.vertical_text = vertical_text
+        self.wrap = bool(wrap)
+        self.max_width = max_width
+        self._wrap_cache = {}
         # ``shape_key`` groups semantically-equivalent boxes (e.g. several
         # RMSNorms in one Row) so a sibling-aware layout container can
         # equalise their heights without the author specifying widths.
@@ -114,10 +119,40 @@ class Box(Element):
         as a unit, centred inside the box."""
         return self.label is not None and isinstance(self.label, Element)
 
-    def _label_lines(self):
+    def _label_lines(self, theme: Optional[Theme] = None):
         if not self.label or self._label_is_element():
             return []
-        return self.label.split("\n")
+        raw = self.label.split("\n")
+        if not self.wrap or theme is None:
+            return raw
+        key = (self.label, self.text_size, self.text_weight, self.max_width)
+        if key in self._wrap_cache:
+            return self._wrap_cache[key]
+        bold = self.text_weight in ("bold", "600", "700")
+        out = []
+        for line in raw:
+            words = line.split(" ")
+            if len(words) <= 1:
+                out.append(line)
+                continue
+            longest = max(theme.text_width(w, self.text_size, bold=bold) for w in words)
+            total = theme.text_width(line, self.text_size, bold=bold)
+            if self.max_width is not None:
+                target = float(self.max_width)
+            else:
+                target = max(longest, min(total, theme.unit * 16.0))
+            cur = ""
+            for word in words:
+                trial = (cur + " " + word).strip()
+                if not cur or theme.text_width(trial, self.text_size, bold=bold) <= target:
+                    cur = trial
+                else:
+                    out.append(cur)
+                    cur = word
+            if cur:
+                out.append(cur)
+        self._wrap_cache[key] = out
+        return out
 
     # Size token used for bottom-right precision/metadata subscripts.
     # "micro" is smaller than "tiny" so these tags read as a subscript
@@ -144,7 +179,7 @@ class Box(Element):
 
     def _intrinsic(self, theme: Theme) -> Tuple[float, float]:
         bold = self.text_weight in ("bold", "600", "700")
-        lines = self._label_lines()
+        lines = self._label_lines(theme)
         line_h = theme.text_height(self.text_size)
         if self._label_is_element():
             # Element label: measure as a single opaque block; the
@@ -249,7 +284,7 @@ class Box(Element):
                     weight="normal", italic=True, anchor="end",
                 )
             return
-        lines = self._label_lines()
+        lines = self._label_lines(theme)
         if not lines:
             return
         text_fill = self._resolved_text_color(theme)

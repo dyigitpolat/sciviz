@@ -29,7 +29,7 @@ include = ["sciviz*"]
 
 [tool.setuptools.package-data]
 "sciviz.auto" = ["_debug_template.html"]
-"sciviz._assets" = ["*.py"]
+"sciviz._assets" = ["*.py", "fonts/*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "sciviz.__version__" }

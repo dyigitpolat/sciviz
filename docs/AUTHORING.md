@@ -42,6 +42,18 @@ d = Diagram(
 and drives `.save("figure.svg" | ".pdf" | ".png")` and
 `.save_all("figure")`.
 
+For paper figures that already have a LaTeX caption, use:
+
+```python
+from sciviz import Diagram, Text
+
+d = Diagram.for_paper(Text("Captioned body"))
+```
+
+This removes title/subtitle/footer chrome and uses a tighter content
+margin. SVG output embeds a known font; PDF and PNG output use the same
+outlined text path by default so print and raster previews have font parity.
+
 ## Layout primitives
 
 Signatures at call sites:
@@ -55,6 +67,10 @@ AlignedStack(*children, axis="vertical", gap="md")
 Spacer(w, h)
 FixedSize(child, width=..., height=...)
 Separator(length=..., orientation="horizontal", style="solid")
+EqualGrid(*children, columns=3, equal="both")
+Card(header, body, role=Palette.blue)
+Stripe(*items, role=Palette.blue)
+StepCell("Activation Quantization", visual, role=Palette.red)
 ```
 
 `Row` / `Column` filter out `None` children silently, so optional
@@ -89,6 +105,30 @@ per-column width, broadcasts the max back, and tells each child to
 re-measure with the shared widths. Participants are `Table`, `Row`,
 and the named-row `Grid`. Children that don't expose column widths
 simply stack normally.
+
+### Semantic cards and step cells
+
+For compact pipeline or architecture diagrams, prefer the compound
+primitives over hand-sized boxes:
+
+```python
+from sciviz import Card, EqualGrid, MiniMatrix, Palette, StepCell, Stripe
+
+phase = Card(
+    "Quantization",
+    Stripe(
+        StepCell("Activation Quantization", MiniMatrix(role=Palette.red), role=Palette.red),
+        StepCell("Weight Quantization", MiniMatrix(role=Palette.red), role=Palette.red),
+        role=Palette.red,
+    ),
+    role=Palette.red,
+)
+body = EqualGrid(phase, columns=1, equal="both")
+```
+
+`StepCell` wraps full names, reserves room for a thumbnail, and displays
+conditional structure with a `ConditionGlyph` rather than code-like text
+such as `if act_q`.
 
 ### Separator
 

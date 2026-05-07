@@ -32,6 +32,7 @@ class Flow:
                  detour: float = 24.0,
                  arrow: bool = True,
                  auto_route: bool = True,
+                 route_around_labels: bool = False,
                  style = _STYLE_UNSET):
         """
         ``src_side`` / ``dst_side`` -- which side of each bbox the flow
@@ -60,6 +61,7 @@ class Flow:
         self.detour = detour
         self.arrow = arrow
         self.style = style
+        self.route_around_labels = route_around_labels
 
     @staticmethod
     def _auto_side(self_bbox, other_bbox):
@@ -117,6 +119,10 @@ class Flow:
                     bx, by, bw, bh = b
                     all_regions.append(_rt.Box(x=bx, y=by, w=bw, h=bh,
                                                name=name, kind="region"))
+                elif name.startswith("__label_") and self.route_around_labels:
+                    bx, by, bw, bh = b
+                    all_anchors.append(_rt.Box(x=bx, y=by, w=bw, h=bh,
+                                               name=name, kind="anchor"))
                 elif name.startswith("__"):
                     continue
                 else:
@@ -182,30 +188,34 @@ class Flow:
                             best_seg = ((x1, y1), (x2, y2))
                 if best_seg is None:
                     best_seg = (path[0], path[1])
-                from .._labelplacer import place_label
+                from ..auto.labels import (
+                    measure_label, place_segment_label,
+                    register_label_obstacle, registry_label_obstacles,
+                )
                 sz_tok = "small"
-                sz = theme.size_px(sz_tok)
-                lbl_w = theme.text_width(self.label, sz_tok, bold=False)
-                lbl_h = theme.text_height(sz_tok)
+                lbl = measure_label(self.label, theme, sz_tok)
                 all_anchor_obstacles = [
                     (ox, oy, ox + ow, oy + oh)
                     for ox, oy, ow, oh in anchor_obstacles
                 ]
+                all_anchor_obstacles.extend(registry_label_obstacles(registry))
                 spine_mid_y = (best_seg[0][1] + best_seg[1][1]) / 2
                 seg_obs = [r for r in seg_rects
                            if not (r[1] <= spine_mid_y <= r[3]
                                    and abs(r[3] - r[1]) < 2 * sw + 1)]
-                rect, anchor = place_label(
-                    segment=best_seg, label_w=lbl_w, label_h=lbl_h,
+                placed = place_segment_label(
+                    best_seg, lbl,
                     obstacles=all_anchor_obstacles + seg_obs,
                     prefer="above",
                     gap=theme.unit * 0.4,
                 )
-                x0, y0, x1r, y1r = rect
+                x0, y0, x1r, y1r = placed.rect
                 mx = (x0 + x1r) / 2
-                baseline_y = (y0 + y1r) / 2 + sz * 0.33
+                baseline_y = (y0 + y1r) / 2 + lbl.size_px * 0.33
                 canvas.text(mx, baseline_y, self.label,
-                            size=sz, fill=col, italic=True, anchor=anchor)
+                            size=lbl.size_px, fill=col, italic=True,
+                            anchor=placed.anchor)
+                register_label_obstacle(registry, placed.rect, self.src)
             return
 
         # Explicit straight line: render as M/L so the tangent is the line
@@ -219,11 +229,28 @@ class Flow:
             canvas.path(d, stroke=col, fill="none", stroke_width=sw,
                        marker_end=marker, dasharray=dash)
             if self.label:
-                mx = (sx + dx) / 2
-                my = (sy + dy) / 2
-                canvas.text(mx, my - 4, self.label,
-                           size=theme.size_px("small"),
-                           fill=col, anchor="middle", italic=True)
+                from ..auto.labels import (
+                    measure_label, place_segment_label,
+                    register_label_obstacle, registry_label_obstacles,
+                )
+                obstacles = []
+                for name, b in registry.items():
+                    if name.startswith("__") or name in (self.src, self.dst):
+                        continue
+                    if isinstance(b, tuple) and len(b) == 4:
+                        ox, oy, ow, oh = b
+                        obstacles.append((ox, oy, ox + ow, oy + oh))
+                obstacles += registry_label_obstacles(registry)
+                lbl = measure_label(self.label, theme, "small")
+                placed = place_segment_label(
+                    ((sx, sy), (dx, dy)), lbl, obstacles,
+                    prefer="above", gap=theme.unit * 0.4,
+                )
+                mx, my = placed.center
+                canvas.text(mx, my + lbl.size_px * 0.33, self.label,
+                            size=lbl.size_px, fill=col, anchor=placed.anchor,
+                            italic=True)
+                register_label_obstacle(registry, placed.rect, self.src)
             return
 
         dist = ((dx - sx) ** 2 + (dy - sy) ** 2) ** 0.5
@@ -284,11 +311,28 @@ class Flow:
                    marker_end=marker, dasharray=dash)
 
         if self.label:
-            mx = (sx + dx) / 2
-            my = (sy + dy) / 2
-            canvas.text(mx, my - 4, self.label,
-                       size=theme.size_px("small"),
-                       fill=col, anchor="middle", italic=True)
+            from ..auto.labels import (
+                measure_label, place_curve_label,
+                register_label_obstacle, registry_label_obstacles,
+            )
+            obstacles = []
+            for name, b in registry.items():
+                if name.startswith("__") or name in (self.src, self.dst):
+                    continue
+                if isinstance(b, tuple) and len(b) == 4:
+                    ox, oy, ow, oh = b
+                    obstacles.append((ox, oy, ox + ow, oy + oh))
+            obstacles += registry_label_obstacles(registry)
+            lbl = measure_label(self.label, theme, "small")
+            placed = place_curve_label(
+                [(sx, sy), c1, c2, (dx, dy)], lbl, obstacles,
+                prefer="above", gap=theme.unit * 0.4,
+            )
+            mx, my = placed.center
+            canvas.text(mx, my + lbl.size_px * 0.33, self.label,
+                        size=lbl.size_px, fill=col, anchor=placed.anchor,
+                        italic=True)
+            register_label_obstacle(registry, placed.rect, self.src)
 
 
 class Labeled(Element):

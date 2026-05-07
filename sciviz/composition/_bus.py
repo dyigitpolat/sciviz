@@ -65,6 +65,7 @@ class Bus:
                            segment, obstacles, *, color: str,
                            size_token: str = "tiny",
                            prefer: str = "above",
+                           registry: Optional[dict] = None,
                            mask_bg: bool = False) -> None:
         """Place ``self.label`` on ``segment`` avoiding ``obstacles``.
 
@@ -75,15 +76,19 @@ class Bus:
         """
         if not self.label:
             return
-        from .._labelplacer import place_label
-        sz = theme.size_px(size_token)
-        lbl_w = theme.text_width(self.label, size_token, bold=False)
-        lbl_h = theme.text_height(size_token)
-        rect, anchor = place_label(
-            segment=segment, label_w=lbl_w, label_h=lbl_h,
-            obstacles=list(obstacles), prefer=prefer,
+        from ..auto.labels import (
+            measure_label, place_segment_label,
+            register_label_obstacle, registry_label_obstacles,
+        )
+        lbl = measure_label(self.label, theme, size_token)
+        all_obstacles = list(obstacles)
+        if registry is not None:
+            all_obstacles += registry_label_obstacles(registry)
+        placed = place_segment_label(
+            segment, lbl, obstacles=all_obstacles, prefer=prefer,
             gap=theme.unit * 0.35,
         )
+        rect, anchor = placed.rect, placed.anchor
         x0, y0, x1, y1 = rect
         if mask_bg:
             bg_pad = theme.unit * 0.25
@@ -92,9 +97,11 @@ class Bus:
                         (y1 - y0) + 2 * bg_pad,
                         fill=theme.color_of("bg"), stroke="none")
         mx = (x0 + x1) / 2
-        baseline_y = (y0 + y1) / 2 + sz * 0.33
-        canvas.text(mx, baseline_y, self.label, size=sz, fill=color,
+        baseline_y = (y0 + y1) / 2 + lbl.size_px * 0.33
+        canvas.text(mx, baseline_y, self.label, size=lbl.size_px, fill=color,
                     italic=True, anchor=anchor)
+        if registry is not None:
+            register_label_obstacle(registry, placed.rect, "bus")
 
     def _render(self, canvas: Canvas, theme: Theme, registry: dict) -> None:
         src_boxes = [registry[n] for n in self.sources if n in registry]
@@ -184,6 +191,7 @@ class Bus:
                         color=col,
                         size_token="tiny",
                         prefer="above",
+                        registry=registry,
                         mask_bg=True,
                     )
             return
@@ -278,6 +286,7 @@ class Bus:
                         color=col,
                         size_token="micro",
                         prefer=prefer,
+                        registry=registry,
                         mask_bg=False,
                     )
             else:
@@ -309,6 +318,7 @@ class Bus:
                         color=col,
                         size_token="tiny",
                         prefer=prefer,
+                        registry=registry,
                         mask_bg=False,
                     )
         else:
@@ -365,6 +375,7 @@ class Bus:
                     color=col,
                     size_token="tiny",
                     prefer=prefer,
+                    registry=registry,
                     mask_bg=False,
                 )
 

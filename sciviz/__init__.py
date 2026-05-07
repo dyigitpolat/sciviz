@@ -76,6 +76,8 @@ from .core import (
     BBox,
     Canvas,
     Element,
+    FontAsset,
+    FontRegistry,
 )
 
 # ----- layout primitives ---------------------------------------------------
@@ -98,6 +100,7 @@ from .elements import (
     Legend,
     LegendItem,
     Caption,
+    ConditionGlyph,
     TokenRow,
     Icon,
     Image,
@@ -113,7 +116,8 @@ from .charts import Table, AlignedColumns, BarChart
 # ----- specialized ---------------------------------------------------------
 from .specialized import (
     Annotate, BarGroup, BarSeries, GroupedBarChart, LineChart, Pyramid,
-    Scatter, Series, Timeline,
+    MiniGraph, MiniMatrix, MiniRaster, MiniTimeline, Scatter, Series,
+    SparkLine, Sparkline, Timeline,
 )
 
 # ----- structures (high-level layout primitives) --------------------------
@@ -129,7 +133,10 @@ from .palette import Palette, ColorRef
 from .composition import (
     Inline,
     Banner,
+    Card,
     Captioned,
+    ConditionSpec,
+    EqualGrid,
     LabeledChain,
     Badge,
     LoopIcon,
@@ -137,7 +144,10 @@ from .composition import (
     MatchSize,
     Group,
     Region,
+    SoftLegend,
+    StepCell,
     StackedTiles,
+    Stripe,
 )
 from .grid import Grid
 
@@ -160,11 +170,12 @@ from .diagram import Diagram
 __all__ = [
     # core
     "Theme", "DEFAULT_THEME", "BBox", "Canvas", "Element",
+    "FontAsset", "FontRegistry",
     # layout
     "Spacer", "FixedSize", "Row", "Column", "Grid", "Panel", "AlignedStack",
     # elements
     "Text", "TextBlock", "Span", "Box",
-    "Matrix", "Legend", "LegendItem", "Caption", "TokenRow",
+    "Matrix", "Legend", "LegendItem", "Caption", "ConditionGlyph", "TokenRow",
     "Icon", "Image", "Separator",
     # math
     "Math",
@@ -172,7 +183,8 @@ __all__ = [
     "Table", "AlignedColumns", "BarChart",
     # specialized
     "Pyramid", "Timeline", "Scatter", "LineChart", "Series", "Annotate",
-    "GroupedBarChart", "BarGroup", "BarSeries",
+    "GroupedBarChart", "BarGroup", "BarSeries", "SparkLine", "Sparkline",
+    "MiniMatrix", "MiniGraph", "MiniTimeline", "MiniRaster",
     # structures
     "Section", "BlockGroup",
     # primitives
@@ -180,9 +192,11 @@ __all__ = [
     # color
     "Palette", "ColorRef",
     # composition
-    "Inline", "Banner", "Captioned", "LabeledChain",
+    "Inline", "Banner", "Card", "Captioned", "ConditionSpec",
+    "EqualGrid", "LabeledChain",
     "Badge", "LoopIcon", "Brace",
-    "MatchSize", "Group", "Region", "StackedTiles",
+    "MatchSize", "Group", "Region", "SoftLegend", "StepCell",
+    "StackedTiles", "Stripe",
     # unified connector
     "Connect", "Anchor",
     # graphs

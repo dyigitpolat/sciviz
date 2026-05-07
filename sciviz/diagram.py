@@ -14,10 +14,16 @@ authors spend most of their time composing; everything else is structural.
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional, Union
 
-from .core import Element, BBox, Canvas, Theme, DEFAULT_THEME
+from .core import (
+    Element, BBox, Canvas, Theme, DEFAULT_THEME,
+    FontRegistry, outline_svg_text,
+)
 
 
 class Diagram:
@@ -56,13 +62,28 @@ class Diagram:
                  subtitle: Optional[str] = None,
                  footer: Optional[Element] = None,
                  theme: Theme = DEFAULT_THEME,
-                 background: Optional[str] = None):
+                 background: Optional[str] = None,
+                 chrome: str = "full",
+                 auto_fit: bool = True,
+                 max_fit_passes: int = 2):
         self.body = body
-        self.title = title
-        self.subtitle = subtitle
-        self.footer = footer
+        if chrome not in ("full", "none", "footer-only"):
+            raise ValueError("chrome must be 'full', 'none', or 'footer-only'")
+        self.chrome = chrome
+        self.title = None if chrome in ("none", "footer-only") else title
+        self.subtitle = None if chrome in ("none", "footer-only") else subtitle
+        self.footer = None if chrome == "none" else footer
         self.theme = theme
         self.background = background
+        self.auto_fit = auto_fit
+        self.max_fit_passes = max(1, int(max_fit_passes))
+        self._last_render_size: Optional[BBox] = None
+
+    @classmethod
+    def for_paper(cls, body: Element, **kwargs) -> "Diagram":
+        """Construct a caption-friendly paper figure with no title chrome."""
+        kwargs.setdefault("chrome", "none")
+        return cls(body, **kwargs)
 
     # ------------------------------------------------------------------
     # layout helpers
@@ -80,7 +101,7 @@ class Diagram:
 
     def measure(self) -> BBox:
         """Measure total diagram size (including margins, title, footer)."""
-        m = self.theme.diagram_margin
+        m = self._margin()
         body_sz = self._body_for_render().measure(self.theme)
         footer_sz = self.footer.measure(self.theme) if self.footer else BBox(0, 0)
         content_w = max(body_sz.w, footer_sz.w)
@@ -97,6 +118,11 @@ class Diagram:
                    + body_gap + footer_sz.h
                    + 2 * m)
         return BBox(total_w, total_h)
+
+    def _margin(self) -> float:
+        if self.chrome == "none":
+            return self.theme.unit * 0.5
+        return self.theme.diagram_margin
 
     def _body_for_render(self) -> Element:
         """Wrap the body in a _FlowResolver so any ``Connect`` placeholders
@@ -119,11 +145,10 @@ class Diagram:
             self._resolver_cache = cached
         return cached
 
-    def render(self) -> str:
-        """Produce SVG source for the diagram."""
-        size = self.measure()
+    def _render_canvas(self, size: BBox, *, offset_x: float = 0.0,
+                       offset_y: float = 0.0) -> Canvas:
         canvas = Canvas()
-        m = self.theme.diagram_margin
+        m = self._margin()
         # paper: title left-aligned at content origin
         body_for_render = self._body_for_render()
         body_sz = body_for_render.measure(self.theme)
@@ -132,7 +157,8 @@ class Diagram:
         if content_x < m:
             content_x = m
 
-        y = m
+        y = m + offset_y
+        content_x += offset_x
         if self.title:
             baseline = y + self.theme.font_title * 0.85
             canvas.text(
@@ -156,26 +182,62 @@ class Diagram:
             y += self.theme.unit * 1.2
 
         # body: center horizontally within available width
-        body_x = (size.w - body_sz.w) / 2
+        body_x = (size.w - body_sz.w) / 2 + offset_x
         body_for_render.render(canvas, body_x, y, self.theme)
         y += body_sz.h
 
         if self.footer:
             y += self.theme.unit * 2.0
             footer_sz = self.footer.measure(self.theme)
-            footer_x = (size.w - footer_sz.w) / 2
+            footer_x = (size.w - footer_sz.w) / 2 + offset_x
             self.footer.render(canvas, footer_x, y, self.theme)
+        return canvas
 
+    def _svg_from_canvas(self, canvas: Canvas, size: BBox, *,
+                         embed_fonts: bool = True) -> str:
         bg = self.background or self.theme.bg
+        registry = FontRegistry.default(self.theme.font_family) if embed_fonts else None
         return canvas.to_svg(size.w, size.h, bg=bg,
-                            font_family=self.theme.font_family)
+                             font_family=self.theme.font_family,
+                             embed_fonts=embed_fonts,
+                             font_registry=registry)
+
+    def render(self, *, embed_fonts: bool = True) -> str:
+        """Produce SVG source for the diagram."""
+        size = self.measure()
+        offset_x = 0.0
+        offset_y = 0.0
+        canvas = self._render_canvas(size)
+        if self.auto_fit:
+            for _ in range(self.max_fit_passes - 1):
+                ink = canvas.ink_bbox
+                if ink is None:
+                    break
+                x0, y0, x1, y1 = ink
+                grow_l = max(0.0, -x0)
+                grow_t = max(0.0, -y0)
+                grow_r = max(0.0, x1 - size.w)
+                grow_b = max(0.0, y1 - size.h)
+                if max(grow_l, grow_t, grow_r, grow_b) <= 0.5:
+                    break
+                offset_x += grow_l
+                offset_y += grow_t
+                size = BBox(size.w + grow_l + grow_r,
+                            size.h + grow_t + grow_b)
+                canvas = self._render_canvas(size, offset_x=offset_x,
+                                             offset_y=offset_y)
+        self._last_render_size = size
+        return self._svg_from_canvas(canvas, size, embed_fonts=embed_fonts)
 
     # ------------------------------------------------------------------
     # export
     # ------------------------------------------------------------------
 
     def save(self, path: Union[str, os.PathLike], *,
-             dpi: float = 192.0, scale: Optional[float] = None) -> Path:
+             dpi: float = 192.0, scale: Optional[float] = None,
+             embed_fonts: bool = True,
+             pdf_backend: str = "auto",
+             text_mode: str = "auto") -> Path:
         """Save the diagram to a file.
 
         The file type is inferred from the extension.  Supported:
@@ -197,7 +259,7 @@ class Diagram:
         """
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
-        svg_source = self.render()
+        svg_source = self.render(embed_fonts=embed_fonts)
         ext = out.suffix.lower()
         if ext == ".svg":
             out.write_text(svg_source, encoding="utf-8")
@@ -210,9 +272,17 @@ class Diagram:
                     "Exporting to .png requires resvg-py. "
                     "Install with: pip install resvg-py"
                 ) from e
-            size = self.measure()
+            size = self._last_render_size or self.measure()
             if scale is None:
                 scale = dpi / 96.0
+            if text_mode in ("auto", "outline"):
+                svg_source = outline_svg_text(
+                    svg_source,
+                    FontRegistry.default(self.theme.font_family),
+                    self.theme.font_family,
+                )
+            elif text_mode != "live":
+                raise ValueError("text_mode must be 'auto', 'outline', or 'live'")
             data = resvg_py.svg_to_bytes(
                 svg_string=svg_source,
                 width=int(size.w * scale),
@@ -222,30 +292,88 @@ class Diagram:
                 fh.write(bytes(data))
             return out
         if ext == ".pdf":
-            try:
-                import cairosvg  # type: ignore
-            except ImportError as e:
-                raise RuntimeError(
-                    "Exporting to .pdf requires cairosvg. "
-                    "Install with: pip install cairosvg"
-                ) from e
-            svg_bytes = svg_source.encode("utf-8")
-            cairosvg.svg2pdf(bytestring=svg_bytes, write_to=str(out))
+            self._save_pdf(svg_source, out, backend=pdf_backend,
+                           text_mode=text_mode)
             return out
         raise ValueError(
             f"Unsupported output extension {ext!r}. Use .svg, .pdf, or .png."
         )
 
     def save_all(self, base_path: Union[str, os.PathLike], *,
-                 formats=("svg", "pdf", "png"), dpi: float = 192.0):
+                 formats=("svg", "pdf", "png"), dpi: float = 192.0,
+                 **save_kwargs):
         """Save the diagram to multiple formats sharing a base path (no ext)."""
         base = Path(base_path)
         if base.suffix:
             base = base.with_suffix("")
         out_paths = []
         for fmt in formats:
-            out_paths.append(self.save(f"{base}.{fmt}", dpi=dpi))
+            out_paths.append(self.save(f"{base}.{fmt}", dpi=dpi, **save_kwargs))
         return out_paths
+
+    def _save_pdf(self, svg_source: str, out: Path, *, backend: str,
+                  text_mode: str) -> None:
+        chosen = backend
+        if backend == "auto":
+            chosen = self._probe_pdf_backend()
+        if chosen in ("rsvg-convert", "inkscape"):
+            try:
+                self._save_pdf_external(svg_source, out, chosen)
+                return
+            except Exception:
+                if backend != "auto":
+                    raise
+                chosen = "cairosvg"
+                text_mode = "outline"
+        if chosen != "cairosvg":
+            raise ValueError(
+                "pdf_backend must be 'auto', 'cairosvg', 'rsvg-convert', or 'inkscape'"
+            )
+        try:
+            import cairosvg  # type: ignore
+        except ImportError as e:
+            raise RuntimeError(
+                "Exporting to .pdf requires cairosvg when no font-aware "
+                "external converter is available. Install with: pip install cairosvg"
+            ) from e
+        if text_mode in ("auto", "outline"):
+            svg_source = outline_svg_text(
+                svg_source,
+                FontRegistry.default(self.theme.font_family),
+                self.theme.font_family,
+            )
+        elif text_mode != "live":
+            raise ValueError("text_mode must be 'auto', 'outline', or 'live'")
+        cairosvg.svg2pdf(bytestring=svg_source.encode("utf-8"),
+                         write_to=str(out))
+
+    @staticmethod
+    def _probe_pdf_backend() -> str:
+        if shutil.which("rsvg-convert"):
+            return "rsvg-convert"
+        if shutil.which("inkscape"):
+            return "inkscape"
+        return "cairosvg"
+
+    @staticmethod
+    def _save_pdf_external(svg_source: str, out: Path, backend: str) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            svg_path = Path(tmp) / "figure.svg"
+            svg_path.write_text(svg_source, encoding="utf-8")
+            if backend == "rsvg-convert":
+                subprocess.run(
+                    ["rsvg-convert", "-f", "pdf", "-o", str(out), str(svg_path)],
+                    check=True,
+                )
+                return
+            if backend == "inkscape":
+                subprocess.run(
+                    ["inkscape", str(svg_path), "--export-type=pdf",
+                     f"--export-filename={out}"],
+                    check=True,
+                )
+                return
+        raise ValueError(f"Unknown PDF backend {backend!r}")
 
     def save_debug(self, path: Union[str, os.PathLike]) -> Path:
         """Render the diagram while recording every automatic-layout

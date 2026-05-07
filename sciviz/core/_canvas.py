@@ -52,9 +52,24 @@ class Canvas:
 
     def __init__(self):
         self._defs: List[str] = []
+        self._styles: List[str] = []
         self._body: List[str] = []
         self._marker_ids: dict = {}
         self._next_id: int = 0
+        self._ink_bbox: Optional[tuple[float, float, float, float]] = None
+
+    @property
+    def ink_bbox(self) -> Optional[tuple[float, float, float, float]]:
+        """Bounding rectangle of emitted ink in canvas coordinates."""
+        return self._ink_bbox
+
+    def _mark_ink(self, x0: float, y0: float, x1: float, y1: float) -> None:
+        if self._ink_bbox is None:
+            self._ink_bbox = (x0, y0, x1, y1)
+            return
+        ox0, oy0, ox1, oy1 = self._ink_bbox
+        self._ink_bbox = (min(ox0, x0), min(oy0, y0),
+                          max(ox1, x1), max(oy1, y1))
 
     # ------------ defs & markers ------------
 
@@ -106,6 +121,10 @@ class Canvas:
     def raw_def(self, svg: str) -> None:
         self._defs.append(svg)
 
+    def raw_style(self, css: str) -> None:
+        if css:
+            self._styles.append(css)
+
     def raw(self, svg: str) -> None:
         self._body.append(svg)
 
@@ -137,6 +156,8 @@ class Canvas:
         if opacity < 1.0:
             parts.append(f'opacity="{_fmt(opacity)}"')
         self._body.append(f"<rect {' '.join(parts)}/>")
+        pad = stroke_width / 2 if stroke != "none" else 0.0
+        self._mark_ink(x - pad, y - pad, x + w + pad, y + h + pad)
 
     def circle(self, cx: float, cy: float, r: float, *,
                fill: str = "none", stroke: str = "none",
@@ -148,6 +169,8 @@ class Canvas:
         if opacity < 1.0:
             parts.append(f'opacity="{_fmt(opacity)}"')
         self._body.append(f"<circle {' '.join(parts)}/>")
+        pad = stroke_width / 2 if stroke != "none" else 0.0
+        self._mark_ink(cx - r - pad, cy - r - pad, cx + r + pad, cy + r + pad)
 
     def line(self, x1: float, y1: float, x2: float, y2: float, *,
              stroke: str = "#0f172a", stroke_width: float = 1.0,
@@ -167,6 +190,9 @@ class Canvas:
         if opacity < 1.0:
             parts.append(f'opacity="{_fmt(opacity)}"')
         self._body.append(f"<line {' '.join(parts)}/>")
+        pad = stroke_width / 2
+        self._mark_ink(min(x1, x2) - pad, min(y1, y2) - pad,
+                       max(x1, x2) + pad, max(y1, y2) + pad)
 
     def path(self, d: str, *, fill: str = "none", stroke: str = "none",
              stroke_width: float = 1.0, dasharray: Optional[str] = None,
@@ -181,6 +207,14 @@ class Canvas:
         if marker_end:
             parts.append(f'marker-end="url(#{marker_end})"')
         self._body.append(f"<path {' '.join(parts)}/>")
+        nums = [float(v) for v in
+                __import__("re").findall(r"[-+]?[0-9]*\.?[0-9]+", d)]
+        if len(nums) >= 2:
+            xs = nums[0::2]
+            ys = nums[1::2]
+            pad = stroke_width / 2 if stroke != "none" else 0.0
+            self._mark_ink(min(xs) - pad, min(ys) - pad,
+                           max(xs) + pad, max(ys) + pad)
 
     def polygon(self, points: List[tuple], *, fill: str = "none",
                 stroke: str = "none", stroke_width: float = 1.0,
@@ -192,6 +226,12 @@ class Canvas:
         if opacity < 1.0:
             parts.append(f'opacity="{_fmt(opacity)}"')
         self._body.append(f"<polygon {' '.join(parts)}/>")
+        if points:
+            xs = [p[0] for p in points]
+            ys = [p[1] for p in points]
+            pad = stroke_width / 2 if stroke != "none" else 0.0
+            self._mark_ink(min(xs) - pad, min(ys) - pad,
+                           max(xs) + pad, max(ys) + pad)
 
     def text(self, x: float, y: float, content: str, *,
              size: float = 11.0, fill: str = "#0f172a",
@@ -218,6 +258,15 @@ class Canvas:
             parts.append(f'opacity="{_fmt(opacity)}"')
         inner = _build_text_runs(content)
         self._body.append(f"<text {' '.join(parts)}>{inner}</text>")
+        # Conservative text ink estimate. y is the baseline.
+        width = len(content) * size * 0.62
+        if anchor == "middle":
+            x0, x1 = x - width / 2, x + width / 2
+        elif anchor == "end":
+            x0, x1 = x - width, x
+        else:
+            x0, x1 = x, x + width
+        self._mark_ink(x0, y - size, x1, y + size * 0.35)
 
     def text_with_sub(self, x: float, y: float, base: str, sub: str, *,
                       size: float = 11.0, fill: str = "#0f172a",
@@ -234,6 +283,14 @@ class Canvas:
             f'<tspan font-size="{_fmt(size*0.72)}" baseline-shift="sub">'
             f'{_build_text_runs(sub)}</tspan></text>'
         )
+        width = (len(base) + len(sub) * 0.72) * size * 0.62
+        if anchor == "middle":
+            x0, x1 = x - width / 2, x + width / 2
+        elif anchor == "end":
+            x0, x1 = x - width, x
+        else:
+            x0, x1 = x, x + width
+        self._mark_ink(x0, y - size, x1, y + size * 0.45)
 
     def svg_path(self, x: float, y: float, w: float, h: float, *,
                  paths: List[str],
@@ -266,6 +323,7 @@ class Canvas:
             attrs.append(f'opacity="{_fmt(opacity)}"')
         inner = "".join(f'<path d="{d}"/>' for d in paths)
         self._body.append(f"<svg {' '.join(attrs)}>{inner}</svg>")
+        self._mark_ink(x, y, x + w, y + h)
 
     def image(self, x: float, y: float, w: float, h: float, *,
               href: str,
@@ -286,6 +344,7 @@ class Canvas:
         if opacity < 1.0:
             parts.append(f'opacity="{_fmt(opacity)}"')
         self._body.append(f"<image {' '.join(parts)}/>")
+        self._mark_ink(x, y, x + w, y + h)
 
     def group_open(self, *, transform: Optional[str] = None,
                    opacity: float = 1.0, clip: Optional[str] = None) -> None:
@@ -304,14 +363,31 @@ class Canvas:
     # ------------ serialisation ------------
 
     def to_svg(self, width: float, height: float, *, bg: str = "#ffffff",
-               font_family: str = "Inter, 'Helvetica Neue', Arial, sans-serif") -> str:
-        defs = "\n  ".join(self._defs) if self._defs else ""
+               font_family: str = "Inter, 'Helvetica Neue', Arial, sans-serif",
+               embed_fonts: bool = True,
+               font_registry=None) -> str:
+        if embed_fonts and font_registry is None:
+            try:
+                from ._fonts import FontRegistry
+                font_registry = FontRegistry.default(font_family)
+            except Exception:
+                font_registry = None
+        styles = list(self._styles)
+        if embed_fonts and font_registry is not None:
+            styles.insert(0, font_registry.css())
+            font_family = font_registry.root_font_family
+        style_block = ""
+        if styles:
+            style_block = "<style>\n" + "\n".join(styles) + "\n</style>"
+        defs_parts = [p for p in [style_block, *self._defs] if p]
+        defs = "\n  ".join(defs_parts) if defs_parts else ""
         body = "\n".join(self._body)
+        font_attr = _xml_escape(font_family).replace('"', "&quot;")
         return (
             f'<svg xmlns="http://www.w3.org/2000/svg" '
             f'xmlns:xlink="http://www.w3.org/1999/xlink" '
             f'viewBox="0 0 {_fmt(width)} {_fmt(height)}" '
-            f'font-family="{font_family}">\n'
+            f'font-family="{font_attr}">\n'
             f'<defs>\n  {defs}\n</defs>\n'
             f'<rect width="{_fmt(width)}" height="{_fmt(height)}" fill="{bg}"/>\n'
             f'{body}\n'

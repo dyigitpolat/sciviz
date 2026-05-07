@@ -10,6 +10,8 @@ self-diagnosing at measure time.
 
 from __future__ import annotations
 
+import re
+from functools import lru_cache
 from typing import Union
 
 from .._assets import LUCIDE_ICONS, LUCIDE_VIEWBOX
@@ -69,6 +71,38 @@ class Icon(Element):
     def measure(self, theme: Theme) -> BBox:
         s = self._size_px(theme)
         return BBox(s, s)
+
+    @staticmethod
+    @lru_cache(maxsize=256)
+    def _viewbox_bounds(name: str) -> tuple[float, float, float, float]:
+        """Approximate the visible path bounds in Lucide viewBox units.
+
+        Lucide icons share a 24x24 viewBox but not every glyph is optically
+        centered inside that square. Row/Column alignment should follow the
+        visible glyph, not the full transparent viewBox.
+        """
+        nums: list[float] = []
+        for path in LUCIDE_ICONS[name]:
+            nums.extend(float(v) for v in re.findall(r"[-+]?[0-9]*\.?[0-9]+", path))
+        if len(nums) < 2:
+            return LUCIDE_VIEWBOX
+        xs = nums[0::2]
+        ys = nums[1::2]
+        vx, vy, vw, vh = LUCIDE_VIEWBOX
+        pad = 1.0
+        x0 = max(vx, min(xs) - pad)
+        y0 = max(vy, min(ys) - pad)
+        x1 = min(vx + vw, max(xs) + pad)
+        y1 = min(vy + vh, max(ys) + pad)
+        return (x0, y0, max(0.0, x1 - x0), max(0.0, y1 - y0))
+
+    def content_bbox(self, theme: Theme) -> tuple[float, float, float, float]:
+        s = self._size_px(theme)
+        vx, vy, vw, vh = LUCIDE_VIEWBOX
+        bx, by, bw, bh = self._viewbox_bounds(self.name)
+        sx = s / vw
+        sy = s / vh
+        return ((bx - vx) * sx, (by - vy) * sy, bw * sx, bh * sy)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         s = self._size_px(theme)

@@ -15,6 +15,10 @@ Element`` keep working.
 from ._bbox import BBox
 from ._canvas import Canvas, _build_text_runs, _fmt, _xml_escape
 from ._element import Element
+from ._fonts import FontAsset, FontRegistry, outline_svg_text
 from ._theme import DEFAULT_THEME, Theme
 
-__all__ = ["BBox", "Canvas", "Element", "Theme", "DEFAULT_THEME"]
+__all__ = [
+    "BBox", "Canvas", "Element", "Theme", "DEFAULT_THEME",
+    "FontAsset", "FontRegistry", "outline_svg_text",
+]

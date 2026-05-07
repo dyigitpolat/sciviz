@@ -27,6 +27,7 @@ from ._banner import Banner
 from ._brace import Brace
 from ._bus import Bus
 from ._captioned import Captioned
+from ._compound import Card, ConditionSpec, EqualGrid, SoftLegend, StepCell, Stripe
 from ._flow import Flow, Labeled
 from ._flowed import Flowed
 from ._group import Group
@@ -38,7 +39,8 @@ from ._region import Region
 from ._stackedtiles import StackedTiles
 
 __all__ = [
-    "Inline", "Banner", "Captioned", "LabeledChain",
+    "Inline", "Banner", "Captioned", "Card", "ConditionSpec",
+    "EqualGrid", "SoftLegend", "StepCell", "Stripe", "LabeledChain",
     "Badge", "LoopIcon", "Brace",
     "Anchor", "Flow", "Flowed", "Labeled",
     "MatchSize", "Group", "Region", "Bus", "StackedTiles",

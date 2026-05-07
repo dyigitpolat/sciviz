@@ -43,7 +43,10 @@ aligned stacks, structured text runs, and the rest of the vocabulary.
 5. **Semantic colour.**  `color=Palette.alert`, `color=Palette.blue`,
    `color=Palette.next("worker_0")` — never hex. Concrete hex still
    works as an escape hatch via `Palette.literal("#abc")`.
-6. **Vector math.**  `Math(r"$...$")` renders LaTeX through matplotlib's
+6. **Export-safe typography.**  SVG export embeds a known font; PDF and PNG
+   export use the same outlined text path by default, so missing glyph boxes
+   and PDF/PNG font drift are not accepted output.
+7. **Vector math.**  `Math(r"$...$")` renders LaTeX through matplotlib's
    `mathtext` as SVG paths — no raster, no font dependency.
 
 ## Package layout
@@ -55,13 +58,15 @@ sciviz/
   elements/       Text, TextBlock, Span, Box, Matrix, Legend, Caption,
                   TokenRow, Icon, Image, Separator
   composition/    Inline, Captioned, Badge, Brace (+ Brace.spanning),
+                  Card, EqualGrid, Stripe, StepCell, SoftLegend,
                   Group, Region (label_position/annotations/corner_badge),
                   LabeledChain, MatchSize, LoopIcon
   connect/        Connect, Anchor       -- the only public connector API
   grid/           Grid                  -- per-column alignment
   charts/         Table, AlignedColumns, BarChart
   primitives/     Heatmap, Histogram, MeshArray, VectorTiles, StackedBoxes
-  specialized/    Pyramid, Timeline, Scatter, LineChart, Series, Annotate
+  specialized/    Pyramid, Timeline, Scatter, LineChart, Series, Annotate,
+                  Sparkline, MiniGraph, MiniMatrix, MiniTimeline, MiniRaster
   structures/     Section, BlockGroup
   graphs/         Tree, TreeNode, NodeTree, Token, Tokens, Sequence
   math/           Math                  -- LaTeX via matplotlib mathtext
@@ -111,6 +116,18 @@ Connect.labeled(Anchor("op", Box("f")), Math(r"$y = f(x)$"))
 `Connect(src, dst, ...)` auto-detects its mode (inline, routed, or bus)
 from the shape of `src` / `dst`. Colour, head shape, curvature, and
 dashing all have sensible defaults derived from the theme.
+Connector labels are placed through the same obstacle-aware label placer
+used by buses and routed wires; placed labels become obstacles for later
+labels, and `Diagram(auto_fit=True)` expands the canvas if ink falls just
+outside the measured body.
+
+## Paper figures
+
+For paper figures whose captions already carry the title, use
+`Diagram.for_paper(body)`. It suppresses title/subtitle/footer chrome and
+uses a tighter content margin. Pipeline and architecture diagrams should
+prefer `Card`, `EqualGrid`, `Stripe`, `StepCell`, `ConditionGlyph`, and
+`SoftLegend` over fixed-size boxes and spacer shims.
 
 ## Colour system
 
@@ -189,8 +206,10 @@ pip install -U pip
 pip install -e ".[pdf]"      # omit [pdf] for SVG-only
 ```
 
-Runtime: **matplotlib** (required for `Math` and layouts).
-**resvg** is used for PDF/PNG export; SVG export is pure-Python.
+Runtime: **matplotlib** (required for `Math`, bundled font assets, and
+text-outlining fallback). **resvg-py** is used for PNG export. PDF export
+uses `rsvg-convert` or Inkscape when available, otherwise CairoSVG with
+outlined text.
 
 ## Theme
 
