@@ -126,14 +126,27 @@ class _FlowResolver(Element):
         anchors: dict = {}
         _collect_anchors(self.child, anchors)
         m = self.min_flow_space
+        # Auto-sided flows don't know which face will be chosen until
+        # render-time -- by then layout is frozen. Reserve a lighter
+        # margin on every face so the router always has at least a few
+        # pixels of breathing room, regardless of the picked side.
+        auto_m = m * 0.5
         for spec in self._specs_from_tree():
             if isinstance(spec, Flow):
                 src = anchors.get(spec.src)
                 dst = anchors.get(spec.dst)
-                if src is not None and spec.src_side != "auto":
-                    src._bump_margin(spec.src_side, m)
-                if dst is not None and spec.dst_side != "auto":
-                    dst._bump_margin(spec.dst_side, m)
+                if src is not None:
+                    if spec.src_side != "auto":
+                        src._bump_margin(spec.src_side, m)
+                    else:
+                        for side in ("top", "bottom", "left", "right"):
+                            src._bump_margin(side, auto_m)
+                if dst is not None:
+                    if spec.dst_side != "auto":
+                        dst._bump_margin(spec.dst_side, m)
+                    else:
+                        for side in ("top", "bottom", "left", "right"):
+                            dst._bump_margin(side, auto_m)
             elif isinstance(spec, Bus):
                 label_mul = 1.6 if spec.label else 1.0
                 bump = m * label_mul

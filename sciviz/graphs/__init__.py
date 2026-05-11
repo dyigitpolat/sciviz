@@ -385,28 +385,106 @@ class Sequence(Element):
         return self.actors.index(a)
 
     def _max_t(self) -> int:
+        # Always defend against rows being shorter than the latest t: if
+        # the author asks for fewer rows than messages need, expand so
+        # message arrows still have a row of their own.
+        message_max = max((m[0] for m in self.messages), default=0)
         if self.rows is not None:
-            return self.rows - 1
-        return max((m[0] for m in self.messages), default=0)
+            return max(self.rows - 1, message_max)
+        return message_max
+
+    def _min_col_w(self, theme: Theme) -> float:
+        """Width per actor column needed to contain (a) the widest actor
+        label, and (b) every interaction label scaled to its message span.
+
+        The arrow segment between actors ``i`` and ``j`` is
+        ``|j - i| * col_w`` wide. A message label centred on that
+        segment fits when ``label_w + 2 * unit <= |j - i| * col_w``,
+        i.e. ``col_w >= (label_w + 2 * unit) / |j - i|``.
+        Self-loops measure separately (they live in the gutter to the
+        right of the originating column).
+        """
+        if not self.actors:
+            return 0.0
+        # Actor floor: every column must contain its actor box.
+        actor_floor = max(
+            theme.text_width(name, "label", bold=True) + theme.unit * 2.4
+            for name in self.actors
+        )
+        # Self-loop label floor: a loop label sits at ``cx + 22`` and
+        # needs label width on top, so the column must contain its label
+        # plus the offset within the column gutter.
+        loop_floor = 0.0
+        for m in self.messages:
+            t, src, dst, label = m[0], m[1], m[2], m[3]
+            si = self._resolve_actor(src)
+            di = self._resolve_actor(dst)
+            if si != di:
+                continue
+            label_w = theme.text_width(str(label), "small", bold=False)
+            loop_floor = max(loop_floor, label_w + theme.unit * 3.0)
+        # Span floor: for each cross-column message, col_w must be wide
+        # enough that the centred label fits between the two columns.
+        span_floor = 0.0
+        for m in self.messages:
+            t, src, dst, label = m[0], m[1], m[2], m[3]
+            si = self._resolve_actor(src)
+            di = self._resolve_actor(dst)
+            if si == di:
+                continue
+            span = abs(di - si)
+            if span <= 0:
+                continue
+            label_w = theme.text_width(str(label), "small", bold=False)
+            span_floor = max(span_floor, (label_w + theme.unit * 2.0) / span)
+        return max(actor_floor, loop_floor, span_floor, theme.unit * 8.0)
+
+    def _resolved_width(self, theme: Theme) -> float:
+        """Final rendered width: user-supplied floor, grown if needed
+        to contain actor labels and message labels.
+        """
+        n = max(len(self.actors), 1)
+        min_w = self._min_col_w(theme) * n
+        return max(float(self.width), min_w)
+
+    def _label_band_h(self, theme: Theme) -> float:
+        """Extra vertical space we need above the first row to keep the
+        topmost message label inside the measured bbox. Labels currently
+        sit ``3 px`` above the line; the line lives at
+        ``actor_h + (t+1) * row_h``, so for ``t = 0`` the label baseline
+        is at ``actor_h + row_h - 3 - text_h``. With ``row_h`` typically
+        ``28``, there is room, but tiny ``row_h`` would clip -- this
+        helper returns the additional headroom required (0 in the common
+        case).
+        """
+        line_h = theme.size_px("small") * 1.1
+        # The first message row sits at row_h above actor_h. Reserve
+        # enough headroom so the label band (above the arrow) does not
+        # collide with the actor strip.
+        return max(0.0, line_h + 4.0 - self.row_h)
 
     def measure(self, theme: Theme) -> BBox:
         max_t = self._max_t()
-        H = self.actor_h + (max_t + 2) * self.row_h
-        return BBox(self.width, H)
+        H = self.actor_h + (max_t + 2) * self.row_h + self._label_band_h(theme)
+        return BBox(self._resolved_width(theme), H)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         n = len(self.actors)
         if n == 0:
             return
-        col_w = self.width / n
+        W = self._resolved_width(theme)
+        col_w = W / n
         col_centres = [x + (i + 0.5) * col_w for i in range(n)]
         max_t = self._max_t()
-        # actor boxes at the top
+        # actor boxes at the top: each box hugs its label width but is
+        # clamped to the column slot so neighbours never overlap.
         for i, name in enumerate(self.actors):
             cx = col_centres[i]
-            box_w = min(col_w - 12,
-                        theme.text_width(name, "label", bold=True) + theme.unit * 2.4)
+            label_w = theme.text_width(name, "label", bold=True) + theme.unit * 2.4
+            box_w = min(col_w - 12, label_w)
             box_w = max(box_w, theme.unit * 8)
+            # Final guarantee: the box stays inside the column slot.
+            box_w = min(box_w, col_w - 4)
             canvas.rect(cx - box_w / 2, y, box_w, self.actor_h,
                        fill=theme.color_of("bg_subtle"),
                        stroke=theme.color_of("text"),

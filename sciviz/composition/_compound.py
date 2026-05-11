@@ -78,11 +78,26 @@ class Card(Element):
         self._header_h: Optional[float] = None
 
     def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
+        # Record the outer floor; the body inflation defers to
+        # ``_apply_body_inflation`` so the pad math runs with the
+        # theme-aware padding that ``measure``/``render`` will use.
         self._min_w = max(self._min_w, float(min_w))
         self._min_h = max(self._min_h, float(min_h))
-        pad = 12.0
+
+    def _apply_body_inflation(self, theme: Theme) -> None:
+        """Forward the recorded outer floor to the body using
+        theme-aware padding so card boundary and content arithmetic
+        agree at render time.
+        """
+        if self._min_w <= 0.0 and self._min_h <= 0.0:
+            return
+        pad = _pad_px(theme, self.padding)
+        header_h = self._header_height(theme)
+        footer_h = (self.footer.measure(theme).h + pad) if self.footer else 0.0
         inner_w = max(0.0, self._min_w - 2 * pad)
-        inner_h = max(0.0, self._min_h - 3 * pad)
+        # Subtract the actual top+bottom pads, the header band, and any
+        # footer band so the body fills the requested floor exactly.
+        inner_h = max(0.0, self._min_h - 2 * pad - header_h - footer_h)
         self.body.inflate_to(inner_w, inner_h)
 
     def _intrinsic_header_height(self, theme: Theme) -> float:
@@ -102,6 +117,7 @@ class Card(Element):
         self._header_h = max(self._header_h or 0.0, float(height))
 
     def measure(self, theme: Theme) -> BBox:
+        self._apply_body_inflation(theme)
         pad = _pad_px(theme, self.padding)
         header = self.header.measure(theme)
         body = self.body.measure(theme)
@@ -113,6 +129,7 @@ class Card(Element):
         return BBox(max(w, self._min_w), max(h, self._min_h))
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        self._apply_body_inflation(theme)
         size = self.measure(theme)
         pad = _pad_px(theme, self.padding)
         radius = self.radius if self.radius is not None else theme.panel_radius * 2
@@ -268,13 +285,20 @@ class EqualGrid(Element):
             row = idx // cols
             col = idx % cols
             child_size = child.measure(theme)
-            cx = x + x_offsets[col] + (widths[col] - child_size.w) / 2
+            # Use content_bbox-aware centering so children whose outer
+            # ink is asymmetric (Region with an outside label, Card
+            # with a header strip, etc.) align on their content axis
+            # rather than the silhouette midpoint.
+            cbx, cby, cbw, cbh = child.content_bbox(theme)
+            slot_cx = x + x_offsets[col] + widths[col] / 2
+            cx = slot_cx - (cbx + cbw / 2)
             if self.align == "start":
-                cy = y + y_offsets[row]
+                cy = y + y_offsets[row] - cby
             elif self.align == "end":
-                cy = y + y_offsets[row] + heights[row] - child_size.h
+                cy = y + y_offsets[row] + heights[row] - (cby + cbh)
             else:
-                cy = y + y_offsets[row] + (heights[row] - child_size.h) / 2
+                slot_cy = y + y_offsets[row] + heights[row] / 2
+                cy = slot_cy - (cby + cbh / 2)
             child.render(canvas, cx, cy, theme)
 
 

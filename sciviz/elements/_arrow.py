@@ -12,9 +12,20 @@ class Arrow(Element):
     """A simple directed arrow with optional label(s) running along it.
 
     When used inside a :class:`Row` or :class:`Column` the arrow occupies a
-    fixed axis length; labels stack perpendicular to the arrow so they fit in
-    the gap between neighbours.
+    compact axis length even when labels are long; labels stack perpendicular
+    to the arrow and the measured bbox grows in the cross direction to
+    contain label ink, but the shaft itself stays short so neighbouring
+    cards do not get pushed apart by verbose connector text.
     """
+
+    # Default visible shaft length when ``length`` is not supplied. Kept
+    # deliberately compact: arrows are visual hints, not stretchers.
+    _DEFAULT_SHAFT_PX: float = 48.0
+
+    # Inline ``Connect`` wrappers mark themselves so that
+    # ``Row(equal_widths=True)`` does not stretch the connector into a
+    # card-sized slot.
+    is_inline_connector: bool = True
 
     def __init__(self, label: Optional[Union[str, List[str]]] = None, *,
                  direction: str = "right",
@@ -40,15 +51,31 @@ class Arrow(Element):
 
     # ------------- layout helpers -------------
 
-    def _axis_len(self, theme: Theme) -> float:
+    def _shaft_len(self, theme: Theme) -> float:
+        """Length of the visible drawn shaft in pixels.
+
+        Decoupled from label width: an explicit ``length=`` always wins,
+        otherwise a compact default keeps the arrow short. Labels live in
+        a separate cross/axis band; they may extend past the shaft, but
+        the bbox is what controls layout neighbours, not the shaft.
+        """
         if self.length is not None:
             return float(self.length)
-        # Default: enough room for the longest label, clamped
-        sz = self.size
-        bold = False
-        longest = max((theme.text_width(l, sz, bold=bold) for l in self.labels),
-                      default=0.0)
-        return max(48.0, longest + theme.unit * 2)
+        return max(self._DEFAULT_SHAFT_PX, theme.unit * 4)
+
+    def _longest_label_width(self, theme: Theme) -> float:
+        return max((theme.text_width(l, self.size, bold=False)
+                    for l in self.labels), default=0.0)
+
+    def _axis_len(self, theme: Theme) -> float:
+        """Backwards-compatible measurement axis: now equals shaft length.
+
+        Subclasses (and a handful of unit tests) treat this as the arrow's
+        primary extent. With shaft/label decoupling, the *axis* is the
+        shaft. The bbox may still grow to contain a wider label, but that
+        is reported on the cross-axis-aware ``measure`` only.
+        """
+        return self._shaft_len(theme)
 
     def _label_band(self, theme: Theme) -> float:
         if not self.labels:
@@ -59,11 +86,20 @@ class Arrow(Element):
     # ------------- measure & render -------------
 
     def measure(self, theme: Theme) -> BBox:
-        axis = self._axis_len(theme)
+        shaft = self._shaft_len(theme)
         band = self._label_band(theme)
+        # Labels may protrude past the shaft along the arrow's axis; we
+        # report only a *small* axis-side cushion (a fraction of the
+        # label) so the row does not gain a card-sized arrow slot. The
+        # remaining label ink is allowed to overlap the gap on either
+        # side -- containers reserve their own gap on top of this bbox.
+        label_w = self._longest_label_width(theme)
+        axis_pad = min(label_w * 0.35, theme.unit * 1.5)
+        axis_with_label = shaft + axis_pad
+        cross = max(band * 2 + theme.unit, theme.unit * 3)
         if self.direction in ("right", "left"):
-            return BBox(axis, max(band * 2 + theme.unit, theme.unit * 3))
-        return BBox(max(band * 2 + theme.unit, theme.unit * 3), axis)
+            return BBox(axis_with_label, cross)
+        return BBox(cross, axis_with_label)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         size = self.measure(theme)
@@ -72,23 +108,32 @@ class Arrow(Element):
                       color=color, stroke_width=theme.connector,
                       arrow_size=getattr(theme, "arrow_size", None))
                   if self.head else None)
+        shaft = self._shaft_len(theme)
 
         if self.direction in ("right", "left"):
             axis_y = y + size.h / 2
+            # Centre the visible shaft within the measured bbox so the
+            # label and the shaft share a midpoint.
+            mid_x = x + size.w / 2
+            shaft_lo = mid_x - shaft / 2
+            shaft_hi = mid_x + shaft / 2
             if self.direction == "right":
-                x1, x2 = x, x + size.w
+                x1, x2 = shaft_lo, shaft_hi
             else:
-                x1, x2 = x + size.w, x
+                x1, x2 = shaft_hi, shaft_lo
             canvas.line(x1, axis_y, x2, axis_y,
                        stroke=color, stroke_width=theme.connector,
                        marker_end=marker)
             self._draw_labels_horizontal(canvas, x, y, size, axis_y, theme)
         else:
             axis_x = x + size.w / 2
+            mid_y = y + size.h / 2
+            shaft_lo = mid_y - shaft / 2
+            shaft_hi = mid_y + shaft / 2
             if self.direction == "down":
-                y1, y2 = y, y + size.h
+                y1, y2 = shaft_lo, shaft_hi
             else:
-                y1, y2 = y + size.h, y
+                y1, y2 = shaft_hi, shaft_lo
             canvas.line(axis_x, y1, axis_x, y2,
                        stroke=color, stroke_width=theme.connector,
                        marker_end=marker)

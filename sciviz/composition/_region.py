@@ -110,6 +110,49 @@ class Region(Element):
             raise TypeError(
                 f"corner_badge must be an Element; got {type(corner_badge)}")
         self.corner_badge = corner_badge
+        # Width / height floors forwarded to the inner child via
+        # ``_apply_inflate``. Used when a parent (Column with
+        # ``equal_widths=True``, EqualGrid, AlignedStack, …) wants the
+        # Region to fill a larger slot so the bordered area expands
+        # together with the content rather than centring narrow content
+        # inside an unchanged box.
+        self._min_w: float = 0.0
+        self._min_h: float = 0.0
+        self._inflated_with: tuple[float, float] | None = None
+
+    def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
+        """Record an outer width / height floor.
+
+        The actual propagation to the child runs in ``_apply_inflate``
+        (called from ``measure`` / ``render`` once we know the theme),
+        so the inner padding and reservations can be subtracted with
+        the same arithmetic the renderer uses.
+        """
+        if min_w > self._min_w:
+            self._min_w = float(min_w)
+            self._inflated_with = None
+        if min_h > self._min_h:
+            self._min_h = float(min_h)
+            self._inflated_with = None
+
+    def _apply_inflate(self, theme: Theme) -> None:
+        """Forward the outer-width/height floor to the child, subtracting
+        the same reservations ``measure`` uses to size the border.
+        Idempotent until ``inflate_to`` raises the floor again.
+        """
+        if self._min_w <= 0.0 and self._min_h <= 0.0:
+            return
+        key = (self._min_w, self._min_h)
+        if self._inflated_with == key:
+            return
+        self._inflated_with = key
+        top, bot, left, right, inner_bottom = self._reserve(theme)
+        inner_w = max(0.0, self._min_w - 2 * self.pad_x - left - right)
+        inner_h = max(
+            0.0,
+            self._min_h - 2 * self.pad_y - top - bot - inner_bottom,
+        )
+        self.child.inflate_to(inner_w, inner_h)
 
     def _label_h(self, theme: Theme) -> float:
         if not self.label:
@@ -139,6 +182,11 @@ class Region(Element):
         ``inner_bottom_pad`` is extra padding inside the border on the
         bottom edge -- preserved for the default ``label_position="top"``
         to keep the historic visually-balanced layout.
+
+        Note that ``left`` / ``right`` here are *outer* reservations for
+        side labels/annotations -- the border's inner padding
+        (``pad_x``) is added by ``measure``/``render`` directly so the
+        border ink always stays inside the measured bbox.
         """
         top = self.margin_y
         bot = self.margin_y
@@ -172,11 +220,18 @@ class Region(Element):
         return top, bot, left, right, inner_bottom
 
     def measure(self, theme: Theme) -> BBox:
+        self._apply_inflate(theme)
         b = self.child.measure(theme)
         top, bot, left, right, inner_bottom = self._reserve(theme)
-        w = b.w + self.pad_x + right + left
+        # The border lives inside the measured bbox on BOTH sides: this
+        # keeps the rendered ink contained in the bbox even when Region
+        # sits inside a tight Card or Row gap. The historic
+        # "encroach into the parent's gap" behaviour was a footgun
+        # because the rendered footprint was bigger than the reported
+        # extent, so sibling layout could collide with the border.
+        w = b.w + 2 * self.pad_x + right + left
         h = b.h + 2 * self.pad_y + top + bot + inner_bottom
-        return BBox(w, h)
+        return BBox(max(w, self._min_w), max(h, self._min_h))
 
     def content_bbox(self, theme: Theme):
         """Report the child's footprint inside the region.
@@ -190,17 +245,19 @@ class Region(Element):
         """
         b = self.child.measure(theme)
         top, _bot, left, _right, _inner_bottom = self._reserve(theme)
-        return (left, top + self.pad_y, b.w, b.h)
+        # The child renders at ``left + pad_x`` from the bbox origin.
+        return (left + self.pad_x, top + self.pad_y, b.w, b.h)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        self._apply_inflate(theme)
         b = self.child.measure(theme)
         top, bot, left, right, inner_bottom = self._reserve(theme)
         col = theme.color_of(self.color)
         fill_col = theme.color_of(self.fill) if self.fill is not None else "none"
 
-        left_encroach = self.pad_x if left == 0 else 0.0
-        border_x = x + left - left_encroach
-        border_w = b.w + left_encroach + self.pad_x
+        # Border ink lives entirely inside the measured bbox now.
+        border_x = x + left
+        border_w = b.w + 2 * self.pad_x
         border_top = y + top
         border_h = b.h + 2 * self.pad_y + inner_bottom
         canvas.rect(
@@ -233,7 +290,8 @@ class Region(Element):
         self._render_corner_badge(canvas, border_x, border_top, border_w,
                                    theme)
 
-        self.child.render(canvas, x + left, border_top + self.pad_y, theme)
+        self.child.render(canvas, x + left + self.pad_x,
+                          border_top + self.pad_y, theme)
 
     def _render_label(self, canvas: Canvas, bx: float, by: float,
                        bw: float, bh: float, theme: Theme, col: str) -> None:

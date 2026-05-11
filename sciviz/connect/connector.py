@@ -156,6 +156,15 @@ class Connect(Element):
     def is_layout_invisible(self) -> bool:
         return getattr(self._impl, "is_layout_invisible", False)
 
+    @property
+    def is_inline_connector(self) -> bool:
+        """Mark inline-mode connectors so :class:`Row(equal_widths=True)`
+        does not inflate them into card-sized slots. Routed and bus
+        connectors register as layout-invisible already, so the flag is
+        only meaningful for the inline path.
+        """
+        return getattr(self._impl, "is_inline_connector", False)
+
     def measure(self, theme: Theme) -> BBox:
         return self._impl.measure(theme)
 

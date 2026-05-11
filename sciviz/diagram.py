@@ -65,7 +65,8 @@ class Diagram:
                  background: Optional[str] = None,
                  chrome: str = "full",
                  auto_fit: bool = True,
-                 max_fit_passes: int = 2):
+                 max_fit_passes: int = 2,
+                 auto_trim: bool = False):
         self.body = body
         if chrome not in ("full", "none", "footer-only"):
             raise ValueError("chrome must be 'full', 'none', or 'footer-only'")
@@ -77,12 +78,20 @@ class Diagram:
         self.background = background
         self.auto_fit = auto_fit
         self.max_fit_passes = max(1, int(max_fit_passes))
+        # ``auto_trim`` complements ``auto_fit``: after any growth pass,
+        # check the ink bbox against the canvas and shrink the canvas so
+        # the final figure does not carry oversized blank margins on
+        # any edge. Default off to keep backwards-compatible behaviour;
+        # ``for_paper`` opts in because tight paper figures suffer most
+        # from accidental whitespace.
+        self.auto_trim = auto_trim
         self._last_render_size: Optional[BBox] = None
 
     @classmethod
     def for_paper(cls, body: Element, **kwargs) -> "Diagram":
         """Construct a caption-friendly paper figure with no title chrome."""
         kwargs.setdefault("chrome", "none")
+        kwargs.setdefault("auto_trim", True)
         return cls(body, **kwargs)
 
     # ------------------------------------------------------------------
@@ -226,8 +235,59 @@ class Diagram:
                             size.h + grow_t + grow_b)
                 canvas = self._render_canvas(size, offset_x=offset_x,
                                              offset_y=offset_y)
+        if self.auto_trim:
+            size, offset_x, offset_y, canvas = self._auto_trim_render(
+                size, offset_x, offset_y, canvas)
         self._last_render_size = size
         return self._svg_from_canvas(canvas, size, embed_fonts=embed_fonts)
+
+    def _auto_trim_render(self, size: BBox, offset_x: float, offset_y: float,
+                          canvas: Canvas):
+        """Shrink the rendered canvas if any edge has > ``margin`` blank.
+
+        ``auto_fit`` already grows the canvas to contain overflowing ink,
+        but it never shrinks it when the body measured larger than the
+        ink actually painted (a common outcome of recent measurement
+        upgrades). This method preserves at least ``_margin()`` of blank
+        space on every edge but removes any extra blank that exceeds
+        twice the margin -- keeping the trim conservative so authors
+        who *want* whitespace can still place spacers in the body.
+
+        The shrink also rebalances the body's centering offset: when
+        the canvas width changes, ``_render_canvas`` already shifts the
+        body by ``(new_w - body_w)/2``; we layer an additional offset
+        only for the asymmetric excess so the ink ends up flush with
+        the desired margin on the trimmed side without crossing the
+        opposite side.
+        """
+        ink = canvas.ink_bbox
+        if ink is None:
+            return size, offset_x, offset_y, canvas
+        x0, y0, x1, y1 = ink
+        margin = self._margin()
+        # Allow a small extra cushion before trimming kicks in, so we
+        # never tighten so aggressively that paint near the edge looks
+        # cropped at common viewport zoom levels.
+        cushion = margin
+        excess_l = max(0.0, x0 - margin - cushion)
+        excess_t = max(0.0, y0 - margin - cushion)
+        excess_r = max(0.0, (size.w - x1) - margin - cushion)
+        excess_b = max(0.0, (size.h - y1) - margin - cushion)
+        if max(excess_l, excess_t, excess_r, excess_b) <= 0.5:
+            return size, offset_x, offset_y, canvas
+        new_w = max(margin * 2 + (x1 - x0), size.w - excess_l - excess_r)
+        new_h = max(margin * 2 + (y1 - y0), size.h - excess_t - excess_b)
+        # ``_render_canvas`` centers the body on the new size, which
+        # already absorbs ``(excess_l + excess_r) / 2`` of the trim
+        # symmetrically. Only the asymmetric part needs an explicit
+        # offset; otherwise we would shift the body left twice and
+        # clip its ink off the new left edge.
+        offset_x += (excess_r - excess_l) / 2.0
+        offset_y += (excess_b - excess_t) / 2.0
+        new_size = BBox(new_w, new_h)
+        canvas = self._render_canvas(new_size, offset_x=offset_x,
+                                     offset_y=offset_y)
+        return new_size, offset_x, offset_y, canvas
 
     # ------------------------------------------------------------------
     # export

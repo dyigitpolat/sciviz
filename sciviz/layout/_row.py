@@ -41,9 +41,29 @@ class Row(Element):
         self.align = align
         self.equal_widths = equal_widths
         self._shape_normalized = False
+        # Tracks whether ``_maybe_equalise_widths`` has already fired for
+        # this Row so we never inflate twice (which would compound the
+        # widths and make later measures drift).
+        self._equalised = False
+        # Optional row-width floor set by ``inflate_to`` so the Row
+        # rendered width can grow to match a sibling slot width.
+        self._min_width: float = 0.0
         # Per-child widths forced by a containing AlignedStack. When set,
         # each visible child occupies at least ``forced_slot_w[i]`` px.
         self._forced_slot_w: List[float] | None = None
+
+    def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
+        """Grow the Row's outer width when a parent (Card / Region /
+        AlignedStack) inflates a sibling to a larger slot. The width
+        floor is honoured by ``measure`` and propagated to children via
+        ``_maybe_equalise_widths`` when ``equal_widths=True``.
+
+        ``min_h`` is currently ignored -- Rows derive their height from
+        the tallest child, not a floor.
+        """
+        if min_w > self._min_width:
+            self._min_width = float(min_w)
+            self._equalised = False
 
     @staticmethod
     def _find_shape_peer(elem):
@@ -101,6 +121,14 @@ class Row(Element):
         return [c for c in self.children
                 if not getattr(c, "is_layout_invisible", False)]
 
+    @staticmethod
+    def _is_inline_connector(child) -> bool:
+        """An inline ``Connect``/``Arrow`` opts out of equal-width slot
+        stretching so cards equalise while the connector keeps its
+        intrinsic compact width.
+        """
+        return bool(getattr(child, "is_inline_connector", False))
+
     def _stretch_children(self):
         """Children that want to fill the main axis (:class:`Separator` et al.)."""
         return [c for c in self.children
@@ -139,18 +167,86 @@ class Row(Element):
             if w > 0:
                 child.inflate_to(w, 0.0)
 
+    def _equal_slot_width(self, theme: Theme) -> float:
+        """Compute the equal-width slot value: the widest non-connector
+        child's intrinsic width. Connectors keep their compact size and
+        do NOT contribute to the slot. Returns 0 if no eligible children
+        exist (the layout is degenerate).
+        """
+        visible = self._visible_children()
+        if not visible:
+            return 0.0
+        vis_sizes = [c.measure(theme) for c in visible]
+        eligible = [s.w for c, s in zip(visible, vis_sizes)
+                    if not self._is_inline_connector(c)]
+        if eligible:
+            return max(eligible)
+        return max((s.w for s in vis_sizes), default=0.0)
+
+    def _maybe_equalise_widths(self, theme: Theme) -> None:
+        """Inflate non-connector visible children so they all reach the
+        widest peer's width. Idempotent per Row instance: only fires
+        once unless a later ``inflate_to`` raises the floor.
+
+        Without this step, ``equal_widths=True`` only allocates equal
+        *slots* and centres children within them -- so cards of unequal
+        intrinsic width leave uneven visible gaps even though the slots
+        are uniform. Inflating peers to a common slot width is what
+        Column has always done; Row now does the same so the two
+        containers behave symmetrically.
+        """
+        if not self.equal_widths or self._equalised or not self.children:
+            return
+        self._equalised = True
+        slot = self._equal_slot_width(theme)
+        # If a parent has raised our floor (``inflate_to``) above the
+        # natural slot, distribute the surplus to the non-connector
+        # children so the Row actually fills the requested width.
+        if self._min_width > 0:
+            visible = self._visible_children()
+            connectors_w = sum(c.measure(theme).w for c in visible
+                               if self._is_inline_connector(c))
+            n_eligible = sum(1 for c in visible
+                             if not self._is_inline_connector(c))
+            if n_eligible > 0:
+                g = theme.gap_px(self.gap)
+                gaps = g * max(0, len(visible) - 1)
+                available = max(0.0,
+                                self._min_width - connectors_w - gaps)
+                wide_slot = available / n_eligible
+                slot = max(slot, wide_slot)
+        if slot <= 0.0:
+            return
+        for c in self._visible_children():
+            if self._is_inline_connector(c):
+                continue
+            c.inflate_to(slot, 0.0)
+
     def measure(self, theme: Theme) -> BBox:
         if not self.children:
             return BBox(0, 0)
         self._normalize_shape_peers(theme)
+        self._maybe_equalise_widths(theme)
         visible = self._visible_children()
         vis_sizes = [c.measure(theme) for c in visible]
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
         n_vis = max(len(visible), 1)
         if self.equal_widths and visible:
-            slot = max(s.w for s in vis_sizes)
-            w = slot * len(visible) + g * (len(visible) - 1)
+            # Inline connectors keep their intrinsic width while card-like
+            # siblings equalise. The slot is taken from non-connector
+            # children only; if every child is a connector, fall back to
+            # the widest visible child so the row is still well-defined.
+            eligible_sizes = [s for c, s in zip(visible, vis_sizes)
+                              if not self._is_inline_connector(c)]
+            if eligible_sizes:
+                slot = max(s.w for s in eligible_sizes)
+            else:
+                slot = max(s.w for s in vis_sizes)
+            w = 0.0
+            for c, s in zip(visible, vis_sizes):
+                w += s.w if self._is_inline_connector(c) else slot
+            w += g * (len(visible) - 1)
         elif self._forced_slot_w is not None:
             slots = self._slot_widths_for_visible(vis_sizes)
             w = sum(slots) + g * (len(slots) - 1)
@@ -164,12 +260,15 @@ class Row(Element):
         max_top = max(cb[1] for cb in content)
         max_bot = max(s.h - cb[1] - cb[3] for s, cb in zip(sizes, content))
         h = max(content_h + max_top + max_bot, max(s.h for s in sizes))
+        if self._min_width > w:
+            w = self._min_width
         return BBox(w, h)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         if not self.children:
             return
         self._normalize_shape_peers(theme)
+        self._maybe_equalise_widths(theme)
         # Resolve cross-axis stretchers (vertical separators etc.) to Row height
         # BEFORE taking measurements, so their measured height fits the row.
         H = self.measure(theme).h
@@ -181,8 +280,14 @@ class Row(Element):
         content = [c.content_bbox(theme) for c in self.children]
         slot = None
         if self.equal_widths:
-            vis_sizes = [c.measure(theme) for c in self._visible_children()]
-            slot = max(s.w for s in vis_sizes) if vis_sizes else 0.0
+            vis_children = self._visible_children()
+            vis_sizes = [c.measure(theme) for c in vis_children]
+            eligible = [s for c, s in zip(vis_children, vis_sizes)
+                        if not self._is_inline_connector(c)]
+            if eligible:
+                slot = max(s.w for s in eligible)
+            else:
+                slot = max((s.w for s in vis_sizes), default=0.0)
         # AlignedStack-forced per-slot widths (visible children only).
         forced_slots = None
         if not self.equal_widths and self._forced_slot_w is not None:
@@ -209,9 +314,13 @@ class Row(Element):
             if self.equal_widths and not invisible:
                 cb_x = cb[0]
                 cb_w = cb[2]
-                slot_cx = cx + slot / 2
-                child.render(canvas, slot_cx - (cb_x + cb_w / 2), cy, theme)
-                cx += slot + g
+                if self._is_inline_connector(child):
+                    child.render(canvas, cx, cy, theme)
+                    cx += size.w + g
+                else:
+                    slot_cx = cx + slot / 2
+                    child.render(canvas, slot_cx - (cb_x + cb_w / 2), cy, theme)
+                    cx += slot + g
             elif forced_slots is not None and not invisible:
                 slot_w = forced_slots[vis_idx]
                 cb_x = cb[0]
@@ -233,14 +342,21 @@ class Row(Element):
         if not self.children:
             return []
         self._normalize_shape_peers(theme)
+        self._maybe_equalise_widths(theme)
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
         content = [c.content_bbox(theme) for c in self.children]
         H = self.measure(theme).h
         slot = None
         if self.equal_widths:
-            vis_sizes = [c.measure(theme) for c in self._visible_children()]
-            slot = max(s.w for s in vis_sizes) if vis_sizes else 0.0
+            vis_children = self._visible_children()
+            vis_sizes = [c.measure(theme) for c in vis_children]
+            eligible = [s for c, s in zip(vis_children, vis_sizes)
+                        if not self._is_inline_connector(c)]
+            if eligible:
+                slot = max(s.w for s in eligible)
+            else:
+                slot = max((s.w for s in vis_sizes), default=0.0)
         forced_slots = None
         if not self.equal_widths and self._forced_slot_w is not None:
             vis_sizes = [c.measure(theme) for c in self._visible_children()]
@@ -261,10 +377,14 @@ class Row(Element):
             else:
                 oy = (_max_top + _content_h / 2) - (cb_y + cb_h / 2)
             if self.equal_widths and not invisible:
-                slot_cx = cx + slot / 2
-                ox = slot_cx - (cb[0] + cb[2] / 2)
-                offs.append((ox, oy, size))
-                cx += slot + g
+                if self._is_inline_connector(child):
+                    offs.append((cx, oy, size))
+                    cx += size.w + g
+                else:
+                    slot_cx = cx + slot / 2
+                    ox = slot_cx - (cb[0] + cb[2] / 2)
+                    offs.append((ox, oy, size))
+                    cx += slot + g
             elif forced_slots is not None and not invisible:
                 slot_w = forced_slots[vis_idx]
                 slot_cx = cx + slot_w / 2

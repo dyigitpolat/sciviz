@@ -323,3 +323,254 @@ def test_card_headers_share_band_height_and_center_content():
     header_center = a._header_height(theme) / 2
     content_center = short_header.render_y + short_header.h * 0.25 + short_header.h * 0.25
     assert content_center == pytest.approx(header_center)
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the layout-engine fix plan.
+# ---------------------------------------------------------------------------
+
+def test_inline_arrow_label_does_not_force_long_shaft():
+    """Long labels expand the bbox modestly but never blow the shaft up
+    to label-width. Previously a 12-word label produced a 200+ px shaft
+    that pushed neighbouring cards far apart."""
+    from sciviz import Connect
+    theme = Theme()
+    label = "forward + inputs / observations bus"
+    short = Connect(direction="right")
+    labelled = Connect(label=label, direction="right")
+    short_bbox = short.measure(theme)
+    labelled_bbox = labelled.measure(theme)
+    label_w = theme.text_width(label, "small")
+    # The labelled arrow may be slightly wider (a small label cushion)
+    # but never anywhere near the label's text width.
+    assert labelled_bbox.w < label_w * 0.75, (
+        f"labelled arrow w={labelled_bbox.w} should be much smaller than "
+        f"label width {label_w}"
+    )
+    # Both arrows should keep at least the compact default shaft.
+    assert short_bbox.w >= 48.0 - 0.5
+
+
+def test_row_equal_widths_skips_inline_connectors():
+    """An equal-width row of cards interspersed with inline arrows must
+    equalise *only* the cards. Connectors keep their compact width so
+    cards don't get pushed apart by their connector neighbours."""
+    from sciviz import Connect, Row
+    theme = Theme()
+    short_card = Box("A", width=60, height=24)
+    long_card = Box("Much Longer Label", height=24)
+    arrow = Connect(label="next", direction="right")
+    row = Row(short_card, arrow, long_card, gap=0, equal_widths=True)
+    short_bbox = short_card.measure(theme)
+    long_bbox = long_card.measure(theme)
+    arrow_bbox = arrow.measure(theme)
+    expected = long_bbox.w * 2 + arrow_bbox.w
+    assert row.measure(theme).w == pytest.approx(expected, abs=0.5)
+
+
+def test_sequence_widens_for_long_actor_labels():
+    """Sequence must reserve enough column width to render its actor
+    labels readably; previously a small default ``width=`` truncated
+    them with a hard min-clamp."""
+    from sciviz import Sequence
+    theme = Theme()
+    seq = Sequence(
+        ["UserPlanner", "ToolHarness", "OrchestratorBackend"],
+        [(0, 0, 1, "send plan"), (1, 1, 2, "dispatch")],
+        width=120,
+    )
+    bbox = seq.measure(theme)
+    longest = max(
+        theme.text_width(name, "label", bold=True) + theme.unit * 2.4
+        for name in seq.actors
+    )
+    # Each column must contain the longest actor label, so the total
+    # width is at least 3 * longest.
+    assert bbox.w >= longest * len(seq.actors) - 0.5
+
+
+def test_sequence_widens_for_long_interaction_labels():
+    """An interaction label longer than the column gap must widen the
+    sequence so the label sits inside its arrow segment."""
+    from sciviz import Sequence
+    theme = Theme()
+    long_label = "typed Plan / observations payload"
+    short = Sequence(
+        ["A", "B"], [(0, 0, 1, "hi")], width=100,
+    )
+    wide = Sequence(
+        ["A", "B"], [(0, 0, 1, long_label)], width=100,
+    )
+    assert wide.measure(theme).w > short.measure(theme).w + 20
+
+
+def test_region_border_stays_inside_measured_bbox():
+    """The Region border ink must lie inside the reported measure
+    bbox. Previously the border encroached ``pad_x`` to the left of
+    the bbox, so a Region inside a tight Card painted its border on
+    top of the Card's left edge."""
+    from sciviz import Box, Region
+    theme = Theme()
+    region = Region(Box("inner", width=80, height=30), label="R", pad_x=12)
+    bbox = region.measure(theme)
+    canvas = Canvas()
+    region.render(canvas, 0, 0, theme)
+    ink = canvas.ink_bbox
+    assert ink is not None
+    x0, _y0, x1, _y1 = ink
+    # The ink may legitimately extend slightly past the reported bbox
+    # because of stroke widths and text antialiasing, but the LEFT edge
+    # must not encroach more than the stroke width.
+    assert x0 >= -theme.hairline - 0.5
+    assert x1 <= bbox.w + theme.hairline + 0.5
+
+
+def test_card_inflate_to_uses_theme_padding():
+    """Card.inflate_to should defer body inflation so it matches the
+    theme padding that measure/render use."""
+    from sciviz import Card, Text
+    from sciviz.palette import Palette as PaletteCls
+    theme = Theme()
+    pad = theme.gap_px("sm")  # default Card padding token
+    body = Box("inner", width=40, height=20)
+    card = Card("Title", body, role=PaletteCls.blue, padding="sm")
+    base_bbox = card.measure(theme)
+    target_w = base_bbox.w + 80
+    card.inflate_to(target_w, 0)
+    # measure should now report at least the requested target width.
+    grown = card.measure(theme)
+    assert grown.w >= target_w - 0.5
+    # The body width should grow to (target - 2 * pad) so the card
+    # boundary and body interior agree at render time.
+    body_bbox = body.measure(theme)
+    assert body_bbox.w >= target_w - 2 * pad - 0.5
+
+
+def test_row_equal_widths_inflates_children_to_slot():
+    """A Row with ``equal_widths=True`` must inflate every non-connector
+    child so its rendered width equals the widest peer's slot. Without
+    this, equal slots merely centred children with leftover whitespace
+    on both sides, producing uneven visible gaps in the rendered SVG."""
+    from sciviz import Row
+    theme = Theme()
+    short_card = Box("A", width=60, height=24)
+    long_card = Box("Much Longer Label", height=24)
+    long_w = long_card.measure(theme).w
+    row = Row(short_card, long_card, gap=0, equal_widths=True)
+    row.measure(theme)
+    # Both children should now report the same outer width as the
+    # widest peer, NOT their intrinsic 60 px width.
+    assert short_card.measure(theme).w == pytest.approx(long_w, abs=0.5)
+    assert long_card.measure(theme).w == pytest.approx(long_w, abs=0.5)
+
+
+def test_row_inflate_to_lifts_min_width_and_propagates():
+    """A Row floor (``inflate_to``) lifts its measured width and -- when
+    ``equal_widths=True`` -- the surplus distributes evenly across the
+    non-connector children so the Row actually fills the parent slot."""
+    from sciviz import Row
+    theme = Theme()
+    a = Box("A", width=40, height=20)
+    b = Box("B", width=40, height=20)
+    row = Row(a, b, gap=0, equal_widths=True)
+    row.inflate_to(200, 0)
+    bbox = row.measure(theme)
+    assert bbox.w >= 200 - 0.5
+    # Each card receives 100 px of the 200 px row width.
+    assert a.measure(theme).w == pytest.approx(100, abs=0.5)
+    assert b.measure(theme).w == pytest.approx(100, abs=0.5)
+
+
+def test_region_inflate_propagates_to_child():
+    """When a parent inflates a Region (e.g. Column.equal_widths=True),
+    the Region must forward the surplus width to its child so the
+    decorated border and the inner content grow together instead of
+    centring narrow ink inside a stretched box."""
+    from sciviz import Region
+    theme = Theme()
+    inner = Box("inner", width=40, height=30)
+    region = Region(inner, label="R", pad_x=10)
+    base = region.measure(theme)
+    target_w = base.w + 120
+    region.inflate_to(target_w, 0)
+    grown = region.measure(theme)
+    assert grown.w >= target_w - 0.5
+    # The child should grow by roughly the same amount the region grew
+    # (modulo padding/margins that ``_reserve`` accounts for).
+    new_inner_w = inner.measure(theme).w
+    assert new_inner_w > 40 + 50, (
+        f"inner width {new_inner_w} did not grow with region width "
+        f"{grown.w}"
+    )
+
+
+def test_orthogonal_router_keeps_axis_aligned_for_near_aligned_endpoints():
+    """Two anchors on opposite faces with a small parallel-axis
+    misalignment must still produce a strictly orthogonal route -- the
+    historical diagonal shortcut violated the axis-aligned contract,
+    so the planner now emits a tight Z (one perpendicular arm of
+    length ``abs(sy - dy)``) instead."""
+    from sciviz.auto.router import Box as RBox, Endpoint, plan_path
+    src = RBox(x=0, y=0, w=40, h=30, name="src")
+    dst = RBox(x=200, y=3, w=40, h=30, name="dst")  # slight y misalignment
+    plan = plan_path(
+        Endpoint(src, side="right", tap=8.0),
+        Endpoint(dst, side="left", tap=8.0),
+        anchors=[src, dst],
+    )
+    # Every segment must be either purely horizontal or purely
+    # vertical (no diagonal travel).
+    for (x1, y1), (x2, y2) in zip(plan.waypoints[:-1], plan.waypoints[1:]):
+        assert abs(x1 - x2) < 0.5 or abs(y1 - y2) < 0.5, (
+            f"diagonal segment {(x1, y1)} -> {(x2, y2)} in plan {plan.waypoints}"
+        )
+    # The route should not have been emitted as "direct" any more.
+    assert plan.style_hint != "direct"
+
+
+def test_orthogonal_router_keeps_minimum_visible_tap():
+    """``policy.min_tap`` should be respected so wrap-back routes have
+    a visible stub instead of dropping straight into the obstacle."""
+    from sciviz.auto.router import (
+        Box as RBox, Endpoint, plan_path, DEFAULT_POLICY,
+    )
+    src = RBox(x=0, y=0, w=40, h=30, name="src")
+    dst = RBox(x=0, y=80, w=40, h=30, name="dst")  # exactly below src
+    plan = plan_path(
+        Endpoint(src, side="right", tap=20.0),
+        Endpoint(dst, side="right", tap=20.0),
+        anchors=[src, dst],
+    )
+    # First leg should be a visible stub of at least min_tap pixels.
+    p0 = plan.waypoints[0]
+    p1 = plan.waypoints[1]
+    stub_len = max(abs(p1[0] - p0[0]), abs(p1[1] - p0[1]))
+    assert stub_len >= DEFAULT_POLICY.min_tap - 0.5
+
+
+def test_for_paper_trims_blank_margins():
+    """Diagram.for_paper(auto_trim=True) trims accidental whitespace so
+    a narrow body does not leave a large blank stripe to either side
+    of the ink."""
+    class BlankPaddedBody(Element):
+        """Reports 400x40 but only paints in the centre 60 px."""
+
+        def measure(self, theme: Theme):
+            return BBox(400.0, 40.0)
+
+        def render(self, canvas: Canvas, x: float, y: float,
+                   theme: Theme) -> None:
+            mid_x = x + 200.0
+            canvas.rect(mid_x - 30, y + 5, 60, 30,
+                        fill="#1f6feb", stroke="none")
+
+    body = BlankPaddedBody()
+    d = Diagram.for_paper(body)
+    svg = d.render()
+    final = d._last_render_size
+    # The ink only covers ~60 px wide; with chrome=none margin ~4 px and
+    # cushion ~4 px, the final canvas should be much narrower than 400.
+    assert final.w < 200.0, (
+        f"auto_trim failed to remove blank margins; size={final.w}"
+    )
+    assert "<svg" in svg

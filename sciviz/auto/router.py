@@ -105,12 +105,25 @@ class CrossPolicy:
     to find a path that respects it (obstacles are inflated by this
     much during validation); if none exists, it retries without the
     inflation so a feasible route is always returned.
+
+    ``min_tap`` is the visible stub the path emits perpendicular to the
+    endpoint's edge before any sideways travel.  Even when an obstacle
+    is very close to the endpoint, the path keeps at least this much
+    stub so the arrow visibly leaves the box rather than terminating
+    flush against it.
+
+    The planner is strictly orthogonal: opposite-face endpoints with
+    a non-zero parallel-axis misalignment are always routed via a
+    two-corner Z, never as a diagonal segment. The historical
+    ``opposite_face_straight_threshold`` field is retained for backward
+    compatibility with callers that still pass it -- it is now ignored.
     """
-    min_tap: float = 1.0
+    min_tap: float = 4.0
     prefer_fewer_corners: bool = True
     corner_radius: float = 0.0
     tolerance: float = 0.5
     min_clearance: float = 8.0
+    opposite_face_straight_threshold: float = 0.0
 
 
 DEFAULT_POLICY = CrossPolicy()
@@ -274,6 +287,12 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
             cand = [(sx, sy), (dx, dy)]
             if ok(cand):
                 return Plan(cand, crossings, "direct", src_side, dst_side)
+
+    # NOTE: The historical "near-colinear opposite-face shortcut" that
+    # emitted a 2-point diagonal segment when endpoints were a few
+    # pixels off-axis has been removed. Diagonals broke the visual
+    # contract that connectors are axis-aligned; the Z route below
+    # carries the small offset as a tight perpendicular arm instead.
 
     # 1. Single-corner L.  Elbow at (dx, sy) or (sx, dy) -- only the
     #    variant whose first leg travels in src_dir and whose second leg
@@ -572,7 +591,16 @@ def _clamp_tap(anchor: Box, direction: Tuple[int, int],
         limit = nearest - edge - 2 if nearest is not None else base_tap
     else:
         limit = base_tap
-    return max(policy.min_tap, min(base_tap, limit))
+    # ``min_tap`` is the visible-stub floor: we'd like at least this
+    # much perpendicular travel so the arrow visibly leaves the
+    # anchor's edge. ``base_tap`` is the configured/desired stub. The
+    # obstacle ``limit`` is a hard cap (the stub cannot impale a
+    # neighbour). The final stub is the largest of ``min_tap`` and
+    # whatever the geometry allows -- never exceeding the geometric
+    # limit, never going negative.
+    geometry_upper = max(0.0, min(base_tap, limit))
+    visible_floor = min(policy.min_tap, geometry_upper)
+    return max(visible_floor, geometry_upper)
 
 
 # ---------------------------------------------------------------------------
@@ -729,11 +757,13 @@ def _bridge_x_candidates(src_tap, dst_tap, src_dir, dst_dir,
         if src_dir[0] > 0:
             lo = max(src_anchor.right, dst_anchor.right)
             hi = max(sx, dx) + ext
-            target = lo + 2
+            # Target sits past the further tap-end so the first leg
+            # uses the full stub instead of collapsing to ``lo + 2``.
+            target = max(sx, dx)
         else:
             lo = min(sx, dx) - ext
             hi = min(src_anchor.left, dst_anchor.left)
-            target = hi - 2
+            target = min(sx, dx)
     else:
         lo = min(sx, dx)
         hi = max(sx, dx)

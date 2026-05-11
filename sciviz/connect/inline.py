@@ -16,6 +16,11 @@ from ..elements import Arrow
 class _InlineConnect(Element):
     """Thin wrapper around :class:`Arrow` for inline ``Connect`` mode."""
 
+    # Inline connectors opt out of equal-width slot stretching in
+    # ``Row(equal_widths=True)`` so they retain their intrinsic compact
+    # width while sibling cards equalise.
+    is_inline_connector: bool = True
+
     def __init__(self, *,
                  labels: List[str],
                  direction: str,
