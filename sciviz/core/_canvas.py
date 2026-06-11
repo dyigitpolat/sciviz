@@ -12,6 +12,8 @@ pair is only emitted once.
 
 from __future__ import annotations
 
+import math
+import re
 from typing import List, Optional
 
 
@@ -57,11 +59,28 @@ class Canvas:
         self._marker_ids: dict = {}
         self._next_id: int = 0
         self._ink_bbox: Optional[tuple[float, float, float, float]] = None
+        self._min_text_size: Optional[float] = None
 
     @property
     def ink_bbox(self) -> Optional[tuple[float, float, float, float]]:
         """Bounding rectangle of emitted ink in canvas coordinates."""
         return self._ink_bbox
+
+    @property
+    def min_text_size(self) -> Optional[float]:
+        """Smallest ``font-size`` emitted on this canvas, or ``None``.
+
+        :class:`sciviz.diagram.Diagram` uses this to check that a figure
+        targeting a physical print width keeps its smallest text above
+        the legibility floor.
+        """
+        return self._min_text_size
+
+    def _mark_text_size(self, size: float) -> None:
+        if size <= 0:
+            return
+        if self._min_text_size is None or size < self._min_text_size:
+            self._min_text_size = float(size)
 
     def _mark_ink(self, x0: float, y0: float, x1: float, y1: float) -> None:
         if self._ink_bbox is None:
@@ -127,6 +146,11 @@ class Canvas:
 
     def raw(self, svg: str) -> None:
         self._body.append(svg)
+        # Raw-emitted <text> (rotated labels, structured runs) must still
+        # feed the smallest-text tracker that legibility checks rely on.
+        if "<text" in svg:
+            for m in re.finditer(r'font-size="([0-9.]+)"', svg):
+                self._mark_text_size(float(m.group(1)))
 
     def gen_id(self, prefix: str = "id") -> str:
         self._next_id += 1
@@ -267,6 +291,7 @@ class Canvas:
                          f'{_fmt(x)} {_fmt(y)})"')
         inner = _build_text_runs(content)
         self._body.append(f"<text {' '.join(parts)}>{inner}</text>")
+        self._mark_text_size(size)
         # Conservative text ink estimate. y is the baseline.
         width = len(content) * size * 0.62
         if anchor == "middle":
@@ -275,7 +300,22 @@ class Canvas:
             x0, x1 = x - width, x
         else:
             x0, x1 = x, x + width
-        self._mark_ink(x0, y - size, x1, y + size * 0.35)
+        y0, y1 = y - size, y + size * 0.35
+        if rotate:
+            # Rotated text inks the rotated rectangle, not the
+            # horizontal one -- a 90-degree connector label is tall and
+            # narrow, and accounting it as wide ink would inflate the
+            # canvas around every rotated label.
+            a = math.radians(rotate)
+            ca, sa = math.cos(a), math.sin(a)
+            xs, ys = [], []
+            for px, py in ((x0, y0), (x0, y1), (x1, y0), (x1, y1)):
+                dx, dy = px - x, py - y
+                xs.append(x + dx * ca - dy * sa)
+                ys.append(y + dx * sa + dy * ca)
+            self._mark_ink(min(xs), min(ys), max(xs), max(ys))
+        else:
+            self._mark_ink(x0, y0, x1, y1)
 
     def text_with_sub(self, x: float, y: float, base: str, sub: str, *,
                       size: float = 11.0, fill: str = "#0f172a",
@@ -292,6 +332,7 @@ class Canvas:
             f'<tspan font-size="{_fmt(size*0.72)}" baseline-shift="sub">'
             f'{_build_text_runs(sub)}</tspan></text>'
         )
+        self._mark_text_size(size * 0.72)
         width = (len(base) + len(sub) * 0.72) * size * 0.62
         if anchor == "middle":
             x0, x1 = x - width / 2, x + width / 2
@@ -374,7 +415,19 @@ class Canvas:
     def to_svg(self, width: float, height: float, *, bg: str = "#ffffff",
                font_family: str = "Inter, 'Helvetica Neue', Arial, sans-serif",
                embed_fonts: bool = True,
-               font_registry=None) -> str:
+               font_registry=None,
+               physical_unit: Optional[str] = None) -> str:
+        """Serialise the canvas to SVG source.
+
+        ``physical_unit`` pins the document to a physical size: when set
+        (e.g. ``"pt"``), the root ``<svg>`` carries ``width``/``height``
+        attributes in that unit so one canvas user-unit exports as one
+        physical unit. PDF backends then produce a page of exactly
+        ``width x height`` points, which is how
+        ``Diagram(target_width_pt=...)`` guarantees fonts print at their
+        authored point sizes. Default ``None`` keeps the legacy
+        viewBox-only document (renderer decides the physical mapping).
+        """
         if embed_fonts and font_registry is None:
             try:
                 from ._fonts import FontRegistry
@@ -393,9 +446,14 @@ class Canvas:
         defs = "\n  ".join(defs_parts) if defs_parts else ""
         body = "\n".join(self._body)
         font_attr = _xml_escape(font_family).replace('"', "&quot;")
+        size_attrs = ""
+        if physical_unit:
+            size_attrs = (f'width="{_fmt(width)}{physical_unit}" '
+                          f'height="{_fmt(height)}{physical_unit}" ')
         return (
             f'<svg xmlns="http://www.w3.org/2000/svg" '
             f'xmlns:xlink="http://www.w3.org/1999/xlink" '
+            f'{size_attrs}'
             f'viewBox="0 0 {_fmt(width)} {_fmt(height)}" '
             f'font-family="{font_attr}">\n'
             f'<defs>\n  {defs}\n</defs>\n'

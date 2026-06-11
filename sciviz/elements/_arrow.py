@@ -18,9 +18,13 @@ class Arrow(Element):
     cards do not get pushed apart by verbose connector text.
     """
 
-    # Default visible shaft length when ``length`` is not supplied. Kept
-    # deliberately compact: arrows are visual hints, not stretchers.
-    _DEFAULT_SHAFT_PX: float = 48.0
+    # Default visible shaft length when ``length`` is not supplied,
+    # expressed in theme units so it tracks the theme's spacing density.
+    # Kept deliberately compact: arrows are visual hints, not stretchers.
+    # 8 units equals the historical 48px at the default ``unit=6.0``, and
+    # compresses with the layout when a Diagram fits ``target_width_pt``
+    # by deriving a lower-density theme.
+    _DEFAULT_SHAFT_UNITS: float = 8.0
 
     # Inline ``Connect`` wrappers mark themselves so that
     # ``Row(equal_widths=True)`` does not stretch the connector into a
@@ -61,7 +65,7 @@ class Arrow(Element):
         """
         if self.length is not None:
             return float(self.length)
-        return max(self._DEFAULT_SHAFT_PX, theme.unit * 4)
+        return theme.unit * self._DEFAULT_SHAFT_UNITS
 
     def _longest_label_width(self, theme: Theme) -> float:
         return max((theme.text_width(l, self.size, bold=False)

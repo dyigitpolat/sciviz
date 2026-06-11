@@ -225,8 +225,13 @@ class Row(Element):
     def measure(self, theme: Theme) -> BBox:
         if not self.children:
             return BBox(0, 0)
-        self._normalize_shape_peers(theme)
+        # Width equalisation runs FIRST so that wrap-aware children
+        # (e.g. ``Box(wrap=True)``) re-flow their labels to the shared
+        # slot width before shape peers lock in a common min_height;
+        # otherwise heights would be pinned at the taller, narrow-wrap
+        # measurements.
         self._maybe_equalise_widths(theme)
+        self._normalize_shape_peers(theme)
         visible = self._visible_children()
         vis_sizes = [c.measure(theme) for c in visible]
         sizes = [c.measure(theme) for c in self.children]
@@ -267,8 +272,13 @@ class Row(Element):
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         if not self.children:
             return
-        self._normalize_shape_peers(theme)
+        # Width equalisation runs FIRST so that wrap-aware children
+        # (e.g. ``Box(wrap=True)``) re-flow their labels to the shared
+        # slot width before shape peers lock in a common min_height;
+        # otherwise heights would be pinned at the taller, narrow-wrap
+        # measurements.
         self._maybe_equalise_widths(theme)
+        self._normalize_shape_peers(theme)
         # Resolve cross-axis stretchers (vertical separators etc.) to Row height
         # BEFORE taking measurements, so their measured height fits the row.
         H = self.measure(theme).h
@@ -341,8 +351,13 @@ class Row(Element):
         """
         if not self.children:
             return []
-        self._normalize_shape_peers(theme)
+        # Width equalisation runs FIRST so that wrap-aware children
+        # (e.g. ``Box(wrap=True)``) re-flow their labels to the shared
+        # slot width before shape peers lock in a common min_height;
+        # otherwise heights would be pinned at the taller, narrow-wrap
+        # measurements.
         self._maybe_equalise_widths(theme)
+        self._normalize_shape_peers(theme)
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
         content = [c.content_bbox(theme) for c in self.children]

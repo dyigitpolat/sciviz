@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 from ..core import Theme
 from .._labelplacer import place_label
@@ -100,6 +100,96 @@ def place_segment_label(segment: Tuple[Point, Point], label: LabelBox,
         segment, label.height, label.width, obstacles, prefer, gap,
     )
     return PlacedLabel(rect=rect_v, anchor=anchor_v, rotation=90.0)
+
+
+def segment_rects(points: Sequence[Point], pad: float = 0.0) -> list[Rect]:
+    """Bounding rectangles (one per polyline segment), inflated by ``pad``.
+
+    Used to register drawn wires as obstacles for label placement so a
+    connector label never sits on top of another connector's line.
+    """
+    out: list[Rect] = []
+    for i in range(len(points) - 1):
+        (x1, y1), (x2, y2) = points[i], points[i + 1]
+        if abs(x1 - x2) < 0.25 and abs(y1 - y2) < 0.25:
+            continue
+        out.append((min(x1, x2) - pad, min(y1, y2) - pad,
+                    max(x1, x2) + pad, max(y1, y2) + pad))
+    return out
+
+
+def place_polyline_label(points: Sequence[Point], label: LabelBox,
+                         obstacles: Sequence[Rect], *,
+                         prefer: str = "above",
+                         gap: float = 6.0,
+                         allow_rotation: bool = True,
+                         wire_width: float = 0.0) -> PlacedLabel:
+    """Place a connector label along the best segment of a polyline.
+
+    Generalises :func:`place_segment_label` from "the longest segment"
+    to "whichever segment admits a collision-free offset placement":
+    segments are tried longest-first and the first placement that
+    overlaps no obstacle wins, so labels nudge themselves onto another
+    leg of the wire when the longest leg is hemmed in by cards, other
+    labels, or other wires. When every candidate overlaps something,
+    the minimum-overlap candidate (ties: longer segment) is returned.
+
+    The polyline's *other* segments are treated as obstacles for each
+    candidate (inflated by ``wire_width``), so a label never sits on a
+    perpendicular leg of its own wire.
+
+    Orientation follows the wire: horizontal legs take horizontal
+    labels; vertical legs prefer a 90-degree rotated label that reads
+    along the wire, but when the rotated label cannot find a
+    collision-free slot (typically a short vertical hop between two
+    stacked cards) a horizontal label beside the leg is tried as a
+    fallback and the lower-overlap orientation wins.
+    """
+    if len(points) < 2:
+        raise ValueError("place_polyline_label requires at least two points")
+    own_rects = []
+    seg_indices = []
+    for i in range(len(points) - 1):
+        (x1, y1), (x2, y2) = points[i], points[i + 1]
+        length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+        pad = max(0.5, wire_width)
+        own_rects.append((min(x1, x2) - pad, min(y1, y2) - pad,
+                          max(x1, x2) + pad, max(y1, y2) + pad))
+        if length > 1.0:
+            seg_indices.append((length, i))
+    if not seg_indices:
+        seg_indices = [(0.0, 0)]
+    seg_indices.sort(key=lambda t: -t[0])
+
+    best: Optional[Tuple[float, int, float, PlacedLabel]] = None
+    for length, i in seg_indices:
+        seg = (points[i], points[i + 1])
+        others = [r for j, r in enumerate(own_rects) if j != i]
+        cand_obstacles = list(obstacles) + others
+        p1, p2 = seg
+        is_horizontal = abs(p2[0] - p1[0]) >= abs(p2[1] - p1[1])
+        attempts: list[Tuple[int, float]] = [(0, 0.0)]  # (pref_pen, rotation)
+        if not is_horizontal and allow_rotation:
+            attempts = [(0, 90.0), (1, 0.0)]
+        for pref_pen, rotation in attempts:
+            if rotation:
+                rect, anchor, overlap = _try_place(
+                    seg, label.height, label.width, cand_obstacles,
+                    prefer, gap)
+            else:
+                rect, anchor, overlap = _try_place(
+                    seg, label.width, label.height, cand_obstacles,
+                    prefer, gap)
+            placed = PlacedLabel(rect=rect, anchor=anchor, rotation=rotation)
+            if overlap <= 0.0 and pref_pen == 0:
+                return placed
+            score = (overlap, pref_pen, -length)
+            if best is None or score < (best[0], best[1], -best[2]):
+                best = (overlap, pref_pen, length, placed)
+            if overlap <= 0.0:
+                break
+    assert best is not None
+    return best[3]
 
 
 def place_curve_label(points: Sequence[Point], label: LabelBox,

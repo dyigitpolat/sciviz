@@ -132,6 +132,7 @@ from .palette import Palette, ColorRef
 # ----- composition ---------------------------------------------------------
 from .composition import (
     Inline,
+    BalancedColumns,
     Banner,
     Card,
     CardColumn,
@@ -195,8 +196,8 @@ __all__ = [
     # color
     "Palette", "ColorRef",
     # composition
-    "Inline", "Banner", "Card", "Captioned", "ConditionSpec",
-    "EqualGrid", "LabeledChain",
+    "Inline", "BalancedColumns", "Banner", "Card", "Captioned",
+    "ConditionSpec", "EqualGrid", "LabeledChain",
     "Badge", "LoopIcon", "Brace",
     "MatchSize", "Group", "Region", "SoftLegend", "StepCell",
     "StackedTiles", "Stripe",

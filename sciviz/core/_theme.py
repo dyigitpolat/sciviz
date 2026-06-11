@@ -89,6 +89,12 @@ class Theme:
     panel_padding: float = 12.0
     panel_radius: float = 1.5
     diagram_margin: float = 16.0
+    # Default word-wrap budget for wrap-enabled labels (``Box(wrap=True)``)
+    # in multiples of :attr:`unit`. The diagram width-fitter may compress
+    # this token independently once the spacing-density floor is reached:
+    # re-wrapping labels onto more lines narrows the figure without
+    # touching font sizes or paddings.
+    wrap_budget: float = 16.0
 
     # -- stroke weights (all diagrams default to hairlines) ---------------
     hairline: float = 0.6
@@ -422,6 +428,10 @@ class Theme:
         if isinstance(gap, (int, float)):
             return float(gap)
         return self._GAP_MAP.get(gap, 2.0) * self.unit
+
+    def wrap_budget_px(self) -> float:
+        """Pixel budget for one wrapped label line (see :attr:`wrap_budget`)."""
+        return self.unit * self.wrap_budget
 
     _WIDE = set("MWm%&@—")
     _NARROW = set(".,;:'!|il1[](){}")

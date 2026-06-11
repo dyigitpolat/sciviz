@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, Optional, Sequence, Union
 
 from ..core import BBox, Canvas, Element, Theme
 from ..elements import ConditionGlyph, Text, TextBlock
@@ -174,20 +174,48 @@ class Card(Element):
 
 
 class EqualGrid(Element):
-    """Grid that broadcasts the widest/tallest child cell to all children."""
+    """Grid that broadcasts the widest/tallest child cell to all children.
 
-    def __init__(self, *children: Element, columns: Optional[int] = None,
+    ``columns`` accepts an int (fixed), ``None`` (square-ish default,
+    ``ceil(sqrt(n))``), or ``"auto"``: same square-ish default on its
+    own, but when the enclosing :class:`~sciviz.Diagram` declares both
+    ``target_width_pt`` and ``target_aspect`` the diagram fitter may
+    reflow the grid -- redistributing the same children over a
+    different column count -- to land the figure inside the requested
+    physical aspect range. Authors declare *what* flows together; the
+    fitter owns *how many columns* it takes.
+    """
+
+    def __init__(self, *children: Element,
+                 columns: Union[int, str, None] = None,
                  gap="md", equal: str = "both", align: str = "center"):
         self.children = [c for c in children if c is not None]
+        if isinstance(columns, str) and columns != "auto":
+            raise ValueError("columns must be an int, None, or 'auto'")
         self.columns = columns
         self.gap = gap
         self.equal = equal
         self.align = align
         self._cell: Optional[BBox] = None
+        self._fitted_columns: Optional[int] = None
+
+    # -- reflow protocol (consumed by Diagram's target fitter) ------------
+
+    def _reflow_options(self) -> list[int]:
+        """Column counts the diagram fitter may choose between."""
+        if self.columns == "auto" and len(self.children) > 1:
+            return list(range(1, len(self.children) + 1))
+        return []
+
+    def _apply_reflow(self, columns: int) -> None:
+        self._fitted_columns = max(1, int(columns))
+        self._cell = None
 
     def _columns(self) -> int:
-        if self.columns is not None:
-            return max(1, int(self.columns))
+        if isinstance(self.columns, int):
+            return max(1, self.columns)
+        if self._fitted_columns is not None:
+            return self._fitted_columns
         return max(1, int(len(self.children) ** 0.5 + 0.999))
 
     def _normalise(self, theme: Theme) -> list[BBox]:
@@ -528,6 +556,154 @@ class SoftLegend(Element):
 # ---------------------------------------------------------------------
 # Convenience: rows/columns of Cards, equalised by default.
 # ---------------------------------------------------------------------
+
+class BalancedColumns(Element):
+    """Order-preserving column packer for unequal-height children.
+
+    The complement of :class:`EqualGrid`: instead of broadcasting one
+    uniform cell, children keep their natural sizes and flow
+    top-to-bottom into ``columns`` side-by-side stacks. The container
+    owns the one layout decision authors otherwise hand-tune -- *where
+    the column breaks fall* -- by choosing the contiguous split that
+    minimises the tallest column (classic linear partition). Authors
+    therefore declare only reading order and adjacency; the library
+    balances the area.
+
+    ``columns`` accepts an int (fixed count), ``None``/``"auto"``
+    (square-ish default, ``ceil(sqrt(n))``).  ``"auto"`` additionally
+    opts the container into the :class:`~sciviz.Diagram` target
+    fitter's reflow search: when the diagram declares
+    ``target_width_pt`` and ``target_aspect``, the fitter may pick a
+    different column count to land the figure in the requested
+    physical aspect range.
+
+    ``gap`` is the vertical rhythm inside a column; ``column_gap``
+    (default: one step looser than ``gap``) separates the columns and
+    doubles as the routing corridor for connectors between them.
+    """
+
+    _COLUMN_GAP_DEFAULT = {"none": "xs", "xs": "sm", "sm": "md",
+                           "md": "lg", "lg": "xl", "xl": "2xl",
+                           "2xl": "3xl", "3xl": "3xl"}
+
+    def __init__(self, *children: Element,
+                 columns: Union[int, str, None] = "auto",
+                 gap="md", column_gap=None, align: str = "center"):
+        self.children = [c for c in children if c is not None]
+        if isinstance(columns, str) and columns != "auto":
+            raise ValueError("columns must be an int, None, or 'auto'")
+        self.columns = columns
+        self.gap = gap
+        if column_gap is None and isinstance(gap, str):
+            column_gap = self._COLUMN_GAP_DEFAULT.get(gap, gap)
+        self.column_gap = gap if column_gap is None else column_gap
+        self.align = align
+        self._fitted_columns: Optional[int] = None
+        self._min_w = 0.0
+        self._min_h = 0.0
+
+    # -- reflow protocol (consumed by Diagram's target fitter) ------------
+
+    def _reflow_options(self) -> list[int]:
+        if self.columns == "auto" and len(self.children) > 1:
+            return list(range(1, len(self.children) + 1))
+        return []
+
+    def _apply_reflow(self, columns: int) -> None:
+        self._fitted_columns = max(1, int(columns))
+
+    def _columns_count(self) -> int:
+        if isinstance(self.columns, int):
+            n = max(1, self.columns)
+        elif self._fitted_columns is not None:
+            n = self._fitted_columns
+        else:
+            n = max(1, int(len(self.children) ** 0.5 + 0.999))
+        return min(n, max(1, len(self.children)))
+
+    # -- balanced contiguous split ----------------------------------------
+
+    def _split(self, theme: Theme) -> list[list[Element]]:
+        """Split children into ``k`` contiguous runs minimising the
+        tallest stacked column (heights include the intra-column gap)."""
+        kids = self.children
+        if not kids:
+            return []
+        k = self._columns_count()
+        gap = theme.gap_px(self.gap)
+        heights = [c.measure(theme).h for c in kids]
+        n = len(kids)
+
+        def run_h(i: int, j: int) -> float:
+            return sum(heights[i:j]) + gap * max(0, j - i - 1)
+
+        INF = float("inf")
+        # dp[c][j] = minimal max-column-height splitting kids[:j] into c runs
+        dp = [[INF] * (n + 1) for _ in range(k + 1)]
+        cut = [[0] * (n + 1) for _ in range(k + 1)]
+        dp[0][0] = 0.0
+        for c in range(1, k + 1):
+            for j in range(c, n + 1):
+                for i in range(c - 1, j):
+                    cand = max(dp[c - 1][i], run_h(i, j))
+                    if cand < dp[c][j]:
+                        dp[c][j] = cand
+                        cut[c][j] = i
+        runs: list[list[Element]] = []
+        j = n
+        for c in range(k, 0, -1):
+            i = cut[c][j]
+            runs.append(kids[i:j])
+            j = i
+        runs.reverse()
+        return [r for r in runs if r]
+
+    # -- Element protocol ---------------------------------------------------
+
+    def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
+        self._min_w = max(self._min_w, float(min_w))
+        self._min_h = max(self._min_h, float(min_h))
+
+    def _geometry(self, theme: Theme):
+        runs = self._split(theme)
+        gap = theme.gap_px(self.gap)
+        col_gap = theme.gap_px(self.column_gap)
+        sizes = [[c.measure(theme) for c in run] for run in runs]
+        widths = [max((s.w for s in col), default=0.0) for col in sizes]
+        heights = [sum(s.h for s in col) + gap * max(0, len(col) - 1)
+                   for col in sizes]
+        total_w = sum(widths) + col_gap * max(0, len(runs) - 1)
+        total_h = max(heights, default=0.0)
+        return runs, sizes, widths, heights, total_w, total_h
+
+    def measure(self, theme: Theme) -> BBox:
+        if not self.children:
+            return BBox(0, 0)
+        *_, total_w, total_h = self._geometry(theme)
+        return BBox(max(total_w, self._min_w), max(total_h, self._min_h))
+
+    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        if not self.children:
+            return
+        runs, sizes, widths, heights, total_w, total_h = self._geometry(theme)
+        gap = theme.gap_px(self.gap)
+        col_gap = theme.gap_px(self.column_gap)
+        outer = self.measure(theme)
+        cx = x + (outer.w - total_w) / 2
+        for col_idx, run in enumerate(runs):
+            cy = y + (outer.h - total_h) / 2
+            for child_idx, child in enumerate(run):
+                s = sizes[col_idx][child_idx]
+                if self.align == "start":
+                    child_x = cx
+                elif self.align == "end":
+                    child_x = cx + widths[col_idx] - s.w
+                else:
+                    child_x = cx + (widths[col_idx] - s.w) / 2
+                child.render(canvas, child_x, cy, theme)
+                cy += s.h + gap
+            cx += widths[col_idx] + col_gap
+
 
 class CardRow(Element):
     """A row of Cards (or other Elements) with equal widths by default.

@@ -31,16 +31,24 @@ class Flowed(Element):
     flows that reference them.  This ensures every flow has visible space
     for its arrow shaft without the author having to tune Row/Column gaps
     by hand.  The ``min_flow_space`` parameter controls how much margin
-    is added on the flow-connecting side (default 10 px per side -- i.e.
-    ~20 extra px between two horizontally-connected siblings).
+    is added on the flow-connecting side.  The default (``None``)
+    resolves to ``theme.unit * 5/3`` at measure time -- 10 px per side
+    on the default theme, i.e. ~20 extra px between two horizontally-
+    connected siblings -- so layout-compressed paper themes keep
+    proportional wire space instead of a fixed pixel tax.
     """
 
     def __init__(self, child: Element, flows: Sequence = (),
-                 min_flow_space: float = 10.0):
+                 min_flow_space: Optional[float] = None):
         self.child = child
         self.flows = list(flows)
         self.min_flow_space = min_flow_space
         self._margins_applied = False
+
+    def _flow_space(self, theme: Theme) -> float:
+        if self.min_flow_space is not None:
+            return float(self.min_flow_space)
+        return theme.unit * (5.0 / 3.0)
 
     def _collect_anchors(self, elem, out):
         if isinstance(elem, Anchor):
@@ -69,13 +77,13 @@ class Flowed(Element):
                         if isinstance(val, Element):
                             self._collect_anchors(val, out)
 
-    def _apply_flow_margins(self):
+    def _apply_flow_margins(self, theme: Theme):
         if self._margins_applied:
             return
         self._margins_applied = True
         anchors: dict = {}
         self._collect_anchors(self.child, anchors)
-        m = self.min_flow_space
+        m = self._flow_space(theme)
         for flow in self.flows:
             if isinstance(flow, Flow):
                 src = anchors.get(flow.src)
@@ -141,11 +149,11 @@ class Flowed(Element):
                         a._bump_margin("bottom", bump)
 
     def measure(self, theme: Theme) -> BBox:
-        self._apply_flow_margins()
+        self._apply_flow_margins(theme)
         return self.child.measure(theme)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
-        self._apply_flow_margins()
+        self._apply_flow_margins(theme)
         my_registry: dict = {}
         existing = _anchor_stack.get()
         new_stack = (list(existing) if existing else []) + [my_registry]

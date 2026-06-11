@@ -125,10 +125,34 @@ class Box(Element):
         raw = self.label.split("\n")
         if not self.wrap or theme is None:
             return raw
-        key = (self.label, self.text_size, self.text_weight, self.max_width)
+        # The default wrap budget is theme-derived
+        # (``theme.wrap_budget_px()``), so the cache key must carry the
+        # theme's wrap-relevant tokens too -- the same Box is re-measured
+        # under derived themes when a Diagram compresses its layout
+        # towards ``target_width_pt``.
+        # A forced outer width (explicit ``width=`` or an ``inflate_to``
+        # raised ``min_width``) widens the wrap budget so the label fills
+        # the box it was actually given, so it participates in the key.
+        forced_w = self.width if self.width is not None else self.min_width
+        key = (self.label, self.text_size, self.text_weight, self.max_width,
+               forced_w,
+               round(theme.unit, 4),
+               round(theme.wrap_budget_px(), 4),
+               round(theme.size_px(self.text_size), 4))
         if key in self._wrap_cache:
             return self._wrap_cache[key]
         bold = self.text_weight in ("bold", "600", "700")
+        # When a parent has stretched this Box to a wider slot (sibling
+        # equalisation, AlignedStack stretch, ...) the label should
+        # re-wrap to fill the box's actual inner width instead of
+        # staying at the intrinsic budget and leaving the extra width
+        # as dead margin around a tall, narrow text column.
+        forced_avail = 0.0
+        if forced_w:
+            sub_w, _ = self._sub_metrics(theme)
+            sub_gap = theme.unit * 0.6 if self.sub_label else 0.0
+            forced_avail = (float(forced_w) - theme.unit * 1.6
+                            - sub_w - sub_gap)
         out = []
         for line in raw:
             words = line.split(" ")
@@ -140,7 +164,8 @@ class Box(Element):
             if self.max_width is not None:
                 target = float(self.max_width)
             else:
-                target = max(longest, min(total, theme.unit * 16.0))
+                target = max(longest, min(total, theme.wrap_budget_px()),
+                             min(total, forced_avail))
             cur = ""
             for word in words:
                 trial = (cur + " " + word).strip()

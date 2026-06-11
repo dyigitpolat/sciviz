@@ -162,21 +162,25 @@ def plan_path(src: Endpoint, dst: Endpoint, *,
 
     Routes connectors with ``policy.min_clearance`` of breathing room
     between the path and every unrelated obstacle.  If no such path
-    exists, the function retries without the clearance so the caller
-    always gets a valid (possibly edge-grazing) route.
+    exists, the function degrades the clearance gradually (half, then a
+    quarter, then zero) so the route keeps the *largest feasible*
+    margin instead of collapsing straight to an edge-grazing corridor.
+    The caller always gets a valid route.
     """
     clearance = max(0.0, policy.min_clearance)
     retried = False
     if clearance > 0.0:
-        plan = _plan_path_impl(src, dst, anchors=anchors, regions=regions,
-                               existing_segments=existing_segments,
-                               policy=policy, obstacle_pad=clearance)
-        if plan is not None:
-            _emit_route(owner, src, dst, anchors, regions, plan,
-                        retried_without_clearance=False,
-                        min_clearance=clearance)
-            return plan
-        retried = True
+        for fraction in (1.0, 0.5, 0.25):
+            pad = clearance * fraction
+            plan = _plan_path_impl(src, dst, anchors=anchors, regions=regions,
+                                   existing_segments=existing_segments,
+                                   policy=policy, obstacle_pad=pad)
+            if plan is not None:
+                _emit_route(owner, src, dst, anchors, regions, plan,
+                            retried_without_clearance=retried,
+                            min_clearance=pad)
+                return plan
+            retried = True
     plan = _plan_path_impl(src, dst, anchors=anchors, regions=regions,
                            existing_segments=existing_segments,
                            policy=policy, obstacle_pad=0.0)
@@ -270,6 +274,23 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
                            required_region_names, tol,
                            skip_endpoints=skip_endpoints)
 
+    # Wires must not ride on top of each other: while a clearance pad is
+    # in force, candidates that run co-linear with an already-drawn
+    # segment (closer than ``parallel_sep`` for more than a corner's
+    # worth of shared length) are rejected so the planner shifts to a
+    # parallel lane instead. The pad-free retry drops the constraint so
+    # a route always exists.
+    parallel_sep = max(3.0, obstacle_pad) if obstacle_pad > 0.0 else 0.0
+
+    def clean(path: Sequence[Tuple[float, float]], *,
+              skip_endpoints: bool = False) -> bool:
+        if not ok(path, skip_endpoints=skip_endpoints):
+            return False
+        if parallel_sep <= 0.0 or not existing_segments:
+            return True
+        return _parallel_overlap_len(path, existing_segments,
+                                     parallel_sep, tol) <= 2.0
+
     crossings = sorted(required_region_names)
 
     # ------------------------------------------------------------------
@@ -281,11 +302,11 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
     if _is_opposite(src_dir, dst_dir):
         if src_dir[0] == 0 and abs(sx - dx) < tol:
             cand = [(sx, sy), (dx, dy)]
-            if ok(cand):
+            if clean(cand):
                 return Plan(cand, crossings, "direct", src_side, dst_side)
         if src_dir[1] == 0 and abs(sy - dy) < tol:
             cand = [(sx, sy), (dx, dy)]
-            if ok(cand):
+            if clean(cand):
                 return Plan(cand, crossings, "direct", src_side, dst_side)
 
     # NOTE: The historical "near-colinear opposite-face shortcut" that
@@ -301,7 +322,7 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
     for elbow in _l_elbows(sx, sy, dx, dy, src_dir, dst_dir, tol):
         cand = [(sx, sy), elbow, (dx, dy)]
         cand = _simplify(cand, tol)
-        if len(cand) >= 2 and ok(cand):
+        if len(cand) >= 2 and clean(cand):
             return Plan(cand, crossings, "L", src_side, dst_side)
 
     # 2a. Two-corner U / Z using a bridge column (both endpoints exit
@@ -319,7 +340,7 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
                 required_region_names, tol):
             cand = [(sx, sy), (sx, bridge_y), (dx, bridge_y), (dx, dy)]
             cand = _simplify(cand, tol)
-            if ok(cand):
+            if clean(cand):
                 return Plan(cand, crossings, "U", src_side, dst_side)
 
     if src_dir[1] == 0 and dst_dir[1] == 0:
@@ -329,7 +350,7 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
                 required_region_names, tol):
             cand = [(sx, sy), (bridge_x, sy), (bridge_x, dy), (dx, dy)]
             cand = _simplify(cand, tol)
-            if ok(cand):
+            if clean(cand):
                 return Plan(cand, crossings, "U", src_side, dst_side)
 
     # 2b. Mixed-direction single corner: one axis exit and one axis
@@ -339,7 +360,7 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
     for elbow in ((dx, sy), (sx, dy)):
         cand = [(sx, sy), elbow, (dx, dy)]
         cand = _simplify(cand, tol)
-        if len(cand) >= 2 and ok(cand):
+        if len(cand) >= 2 and clean(cand):
             return Plan(cand, crossings, "L", src_side, dst_side)
 
     # 3. Staircase fallback: exit tap, cross bridge, enter tap.  We
@@ -386,8 +407,15 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
         # with 0 crossings beats any path with >= 1 crossing unless
         # the zero-crossing path exceeds 10000 pixels, which never
         # happens on a real diagram.  Among equally-crossed paths,
-        # shorter is still preferred.
-        return length + 10_000.0 * _count_crossings(cand)
+        # shorter is still preferred.  Riding co-linearly on top of an
+        # already-drawn wire is penalised per shared pixel -- visually
+        # far worse than a perpendicular crossing (which renders as a
+        # hop arc), so any lane shift that avoids it wins.
+        overlap = _parallel_overlap_len(
+            cand, existing_segments,
+            max(3.0, obstacle_pad, policy.tolerance * 2), tol)
+        return (length + 10_000.0 * _count_crossings(cand)
+                + 300.0 * overlap)
 
     best_cand = None
     best_score = float("inf")
@@ -715,9 +743,14 @@ def _bridge_y_candidates(src_tap, dst_tap, src_dir, dst_dir,
             free_sorted = sorted(free, key=lambda iv: -iv[1])
     else:
         free_sorted = sorted(free, key=lambda iv: (abs((iv[0]+iv[1])/2 - target), -(iv[1]-iv[0])))
-    out = []
+    out: List[float] = []
     for (a, b) in free_sorted:
-        out.append(max(a + 2, min(b - 2, target)))
+        # Primary lane: closest interior point to the target. Edge
+        # lanes give the caller alternatives when the primary lane is
+        # rejected (e.g. it would ride on an already-drawn wire).
+        for cand in (max(a + 2, min(b - 2, target)), a + 2, b - 2):
+            if a + 1 <= cand <= b - 1 and all(abs(cand - s) > 2.0 for s in out):
+                out.append(cand)
     return out
 
 
@@ -781,9 +814,14 @@ def _bridge_x_candidates(src_tap, dst_tap, src_dir, dst_dir,
             free_sorted = sorted(free, key=lambda iv: -iv[1])
     else:
         free_sorted = sorted(free, key=lambda iv: (abs((iv[0]+iv[1])/2 - target), -(iv[1]-iv[0])))
-    out = []
+    out: List[float] = []
     for (a, b) in free_sorted:
-        out.append(max(a + 2, min(b - 2, target)))
+        # Primary lane: closest interior point to the target. Edge
+        # lanes give the caller alternatives when the primary lane is
+        # rejected (e.g. it would ride on an already-drawn wire).
+        for cand in (max(a + 2, min(b - 2, target)), a + 2, b - 2):
+            if a + 1 <= cand <= b - 1 and all(abs(cand - s) > 2.0 for s in out):
+                out.append(cand)
     return out
 
 
@@ -864,6 +902,8 @@ def _bridge_y_for_horizontal_candidates(src_tap, dst_tap, obstacles,
         inner_free = _free_intervals_1d(inner_lo, inner_hi, blocks)
         for (a, b) in inner_free:
             inner_candidates.append((a + b) / 2)
+            inner_candidates.extend(
+                c for c in (a + 6.0, b - 6.0) if a + 1 <= c <= b - 1)
     ext_lo = min(src_anchor.top, dst_anchor.top) - 400.0
     ext_hi = max(src_anchor.bottom, dst_anchor.bottom) + 400.0
     ext_free = _free_intervals_1d(ext_lo, ext_hi, blocks)
@@ -871,6 +911,8 @@ def _bridge_y_for_horizontal_candidates(src_tap, dst_tap, obstacles,
     for (a, b) in ext_free:
         clamp = max(a + 6.0, min(b - 6.0, target))
         ext_candidates.append(clamp)
+        ext_candidates.extend(
+            c for c in (a + 6.0, b - 6.0) if a + 1 <= c <= b - 1)
     merged = list(inner_candidates) + ext_candidates
     seen: List[float] = []
     for c in sorted(merged, key=lambda v: abs(v - target)):
@@ -905,11 +947,15 @@ def _best_bridge_x_for_vertical_all(src_tap, dst_tap, obstacles,
     if inner_hi > inner_lo:
         for (a, b) in _free_intervals_1d(inner_lo, inner_hi, blocks):
             inner.append((a + b) / 2)
+            inner.extend(
+                c for c in (a + 6.0, b - 6.0) if a + 1 <= c <= b - 1)
     ext_lo = min(src_anchor.left, dst_anchor.left) - 400.0
     ext_hi = max(src_anchor.right, dst_anchor.right) + 400.0
     ext: List[float] = []
     for (a, b) in _free_intervals_1d(ext_lo, ext_hi, blocks):
         ext.append(max(a + 6.0, min(b - 6.0, target)))
+        ext.extend(
+            c for c in (a + 6.0, b - 6.0) if a + 1 <= c <= b - 1)
     merged = list(inner) + ext
     seen: List[float] = []
     for c in sorted(merged, key=lambda v: abs(v - target)):
@@ -941,6 +987,45 @@ def _pick_closest_in_intervals(free: List[Tuple[float, float]],
 # ---------------------------------------------------------------------------
 # Path validation
 # ---------------------------------------------------------------------------
+
+def _parallel_overlap_len(path: Sequence[Tuple[float, float]],
+                          existing_segments: Sequence[Tuple[float, float, float, float]],
+                          sep: float, tol: float) -> float:
+    """Total length over which ``path`` runs co-linear with any existing
+    segment.
+
+    Two axis-parallel segments "overlap" when their perpendicular
+    distance is below ``sep`` and their axis projections share more
+    than ``tol``.  Crossings (perpendicular intersections) are *not*
+    counted -- those are legitimate and render as hop arcs.
+    """
+    if not existing_segments:
+        return 0.0
+    total = 0.0
+    for i in range(len(path) - 1):
+        x1, y1 = path[i]
+        x2, y2 = path[i + 1]
+        horiz = abs(y1 - y2) < tol
+        vert = abs(x1 - x2) < tol
+        if horiz == vert:
+            continue
+        for (ex1, ey1, ex2, ey2) in existing_segments:
+            eh = abs(ey1 - ey2) < tol
+            ev = abs(ex1 - ex2) < tol
+            if eh == ev:
+                continue
+            if horiz and eh and abs(y1 - ey1) < sep:
+                lo = max(min(x1, x2), min(ex1, ex2))
+                hi = min(max(x1, x2), max(ex1, ex2))
+                if hi - lo > tol:
+                    total += hi - lo
+            elif vert and ev and abs(x1 - ex1) < sep:
+                lo = max(min(y1, y2), min(ey1, ey2))
+                hi = min(max(y1, y2), max(ey1, ey2))
+                if hi - lo > tol:
+                    total += hi - lo
+    return total
+
 
 def _segment_intersects_box(x1: float, y1: float, x2: float, y2: float,
                              box: Box, tol: float) -> bool:

@@ -61,6 +61,7 @@ class Flow:
                  arrow: bool = True,
                  auto_route: bool = True,
                  route_around_labels: bool = False,
+                 clearance: Optional[float] = None,
                  style = _STYLE_UNSET):
         """
         ``src_side`` / ``dst_side`` -- which side of each bbox the flow
@@ -75,6 +76,13 @@ class Flow:
             routes the wire as axis-aligned segments that dodge siblings.
             Set to False to fall back to a simple straight/curved segment;
             an explicit ``style=`` overrides this toggle.
+        ``clearance`` -- preferred distance (px) between the routed wire
+            and every obstacle that is not one of its own endpoints.
+            Default ``None`` resolves at render time to a theme-
+            proportional margin (``theme.unit * 4/3``; 8 px on the
+            default theme) so compressed paper themes keep proportional
+            breathing room. The planner degrades the margin gracefully
+            when corridors are too narrow rather than failing.
         """
         if style is Flow._STYLE_UNSET:
             style = "orthogonal" if auto_route else "straight"
@@ -90,6 +98,13 @@ class Flow:
         self.arrow = arrow
         self.style = style
         self.route_around_labels = route_around_labels
+        self.clearance = clearance
+
+    def _clearance_px(self, theme: Theme) -> float:
+        """Resolve the obstacle-clearance margin for this flow."""
+        if self.clearance is not None:
+            return max(0.0, float(self.clearance))
+        return theme.unit * (4.0 / 3.0)
 
     @staticmethod
     def _auto_side(self_bbox, other_bbox):
@@ -164,6 +179,9 @@ class Flow:
             src_frac = getattr(self, "_share_src_frac", 0.5)
             dst_frac = getattr(self, "_share_dst_frac", 0.5)
             drawn_so_far = registry.get("__drawn_segments__", ())
+            from dataclasses import replace as _dc_replace
+            policy = _dc_replace(_rt.DEFAULT_POLICY,
+                                 min_clearance=self._clearance_px(theme))
             plan = _rt.plan_path(
                 _rt.Endpoint(src_box, src_side, tap=tap,
                              tap_fraction=src_frac),
@@ -172,6 +190,7 @@ class Flow:
                 anchors=all_anchors,
                 regions=all_regions,
                 existing_segments=list(drawn_so_far),
+                policy=policy,
             )
 
             # Retain `anchor_obstacles` for label-placement collision
@@ -187,14 +206,15 @@ class Flow:
             # same Flowed scope so crossings become semicircular jump
             # arcs instead of plain intersections.
             drawn = registry.setdefault("__drawn_segments__", [])
+            drawn_before = list(drawn)
             path = plan.waypoints
-            seg_rects = _rt.render_orthogonal(
+            _rt.render_orthogonal(
                 canvas, plan,
                 stroke=col, width=sw,
                 dasharray=dash,
                 marker_end=marker if self.arrow else None,
                 src_dot=True,
-                existing_segments=list(drawn),
+                existing_segments=drawn_before,
                 hop_radius=max(2.5, sw * 2.5),
             )
             # Record the segments we just drew so subsequent flows can
@@ -205,23 +225,10 @@ class Flow:
                     continue
                 drawn.append((p1[0], p1[1], p2[0], p2[1]))
             if self.label and len(path) >= 2:
-                # Pick the longest segment regardless of orientation. The
-                # placer rotates the label to read along the wire when
-                # the chosen segment is predominantly vertical.
-                best_seg = None
-                best_len = -1.0
-                for i in range(len(path) - 1):
-                    x1, y1 = path[i]
-                    x2, y2 = path[i + 1]
-                    L = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
-                    if L > best_len:
-                        best_len = L
-                        best_seg = ((x1, y1), (x2, y2))
-                if best_seg is None:
-                    best_seg = (path[0], path[1])
                 from ..auto.labels import (
-                    measure_label, place_segment_label,
+                    measure_label, place_polyline_label,
                     register_label_obstacle, registry_label_obstacles,
+                    segment_rects,
                 )
                 sz_tok = "small"
                 lbl = measure_label(self.label, theme, sz_tok)
@@ -230,15 +237,22 @@ class Flow:
                     for ox, oy, ow, oh in anchor_obstacles
                 ]
                 all_anchor_obstacles.extend(registry_label_obstacles(registry))
-                spine_mid_y = (best_seg[0][1] + best_seg[1][1]) / 2
-                seg_obs = [r for r in seg_rects
-                           if not (r[1] <= spine_mid_y <= r[3]
-                                   and abs(r[3] - r[1]) < 2 * sw + 1)]
-                placed = place_segment_label(
-                    best_seg, lbl,
-                    obstacles=all_anchor_obstacles + seg_obs,
+                # Earlier flows' wires are obstacles too: a label must
+                # not sit across another connector's line.
+                wire_pad = max(0.5, sw)
+                for (ex1, ey1, ex2, ey2) in drawn_before:
+                    all_anchor_obstacles.extend(
+                        segment_rects([(ex1, ey1), (ex2, ey2)], wire_pad))
+                # The placer walks every leg of this wire longest-first
+                # and offsets the label perpendicular to the chosen leg,
+                # dodging cards, other labels, other wires, and the
+                # wire's own perpendicular legs.
+                placed = place_polyline_label(
+                    path, lbl,
+                    obstacles=all_anchor_obstacles,
                     prefer="above",
                     gap=theme.unit * 1.0,
+                    wire_width=sw,
                 )
                 _draw_placed_label(canvas, placed, self.label,
                                    lbl.size_px, col)

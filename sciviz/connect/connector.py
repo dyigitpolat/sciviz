@@ -47,6 +47,7 @@ class Connect(Element):
         style=_STYLE_UNSET,
         curvature: float = 0.5,
         detour: float = 24.0,
+        clearance: Optional[float] = None,
         # Inline-mode options --------------------------------------------
         direction: Optional[str] = None,
         length: Optional[float] = None,
@@ -146,6 +147,7 @@ class Connect(Element):
                 style=style,
                 curvature=curvature,
                 detour=detour,
+                clearance=clearance,
             )
 
     # ------------------------------------------------------------------

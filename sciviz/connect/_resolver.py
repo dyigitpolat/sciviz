@@ -19,7 +19,7 @@ Mechanics (mirroring ``Flowed``):
 from __future__ import annotations
 
 import contextvars as _cv
-from typing import List, Union
+from typing import List, Optional, Union
 
 from ..core import BBox, Canvas, Element, Theme
 from ..composition import Anchor, Flow, Bus, _anchor_stack
@@ -109,23 +109,30 @@ class _FlowResolver(Element):
     in the subtree is also rendered at the end.
     """
 
-    def __init__(self, child: Element, *, min_flow_space: float = 10.0):
+    def __init__(self, child: Element, *,
+                 min_flow_space: Optional[float] = None):
         self.child = child
         self.min_flow_space = min_flow_space
         self._margins_applied = False
+
+    def _flow_space(self, theme: Theme) -> float:
+        """Theme-proportional default wire margin (10 px at unit=6)."""
+        if self.min_flow_space is not None:
+            return float(self.min_flow_space)
+        return theme.unit * (5.0 / 3.0)
 
     def _specs_from_tree(self) -> List[Pending]:
         pending: list = []
         _collect_pending(self.child, pending)
         return [p._flow if hasattr(p, "_flow") else p._bus for p in pending]
 
-    def _apply_flow_margins(self):
+    def _apply_flow_margins(self, theme: Theme):
         if self._margins_applied:
             return
         self._margins_applied = True
         anchors: dict = {}
         _collect_anchors(self.child, anchors)
-        m = self.min_flow_space
+        m = self._flow_space(theme)
         # Auto-sided flows don't know which face will be chosen until
         # render-time -- by then layout is frozen. Reserve a lighter
         # margin on every face so the router always has at least a few
@@ -187,11 +194,11 @@ class _FlowResolver(Element):
                         a._bump_margin("bottom", bump)
 
     def measure(self, theme: Theme) -> BBox:
-        self._apply_flow_margins()
+        self._apply_flow_margins(theme)
         return self.child.measure(theme)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
-        self._apply_flow_margins()
+        self._apply_flow_margins(theme)
 
         my_registry: dict = {}
         existing = _anchor_stack.get()

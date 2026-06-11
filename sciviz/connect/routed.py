@@ -33,7 +33,8 @@ class _RoutedConnect(Element):
                  head,
                  style: str,
                  curvature: float,
-                 detour: float):
+                 detour: float,
+                 clearance: Optional[float] = None):
         self._flow = Flow(
             src_name, dst_name,
             src_side=src_side,
@@ -45,6 +46,7 @@ class _RoutedConnect(Element):
             detour=detour,
             arrow=bool(head) if head is not False else False,
             style=style,
+            clearance=clearance,
         )
         # Preserve the head spec for richer arrowhead control if we need it.
         self._head_spec = head

@@ -69,6 +69,7 @@ Spacer(w, h)
 FixedSize(child, width=..., height=...)
 Separator(length=..., orientation="horizontal", style="solid")
 EqualGrid(*children, columns=3, equal="both")
+BalancedColumns(*children, columns="auto", gap="md")
 Card(header, body, role=Palette.blue)
 Stripe(*items, role=Palette.blue)
 StepCell("Activation Quantization", visual, role=Palette.red)
@@ -76,6 +77,23 @@ StepCell("Activation Quantization", visual, role=Palette.red)
 
 `Row` / `Column` filter out `None` children silently, so optional
 pieces read naturally. `align` takes `"start" | "center" | "end"`.
+
+### EqualGrid vs BalancedColumns
+
+`EqualGrid` broadcasts one uniform cell to every child -- the right
+tool when the children are peers of the same shape. `BalancedColumns`
+is its complement for *unequal* children (cards of different heights):
+children flow top-to-bottom, in declared order, into side-by-side
+columns, and the container picks the contiguous split that minimises
+the tallest column. Authors declare reading order and adjacency; the
+library owns where the column breaks fall.
+
+Both accept `columns=<int>` (fixed) or `columns="auto"`. On its own
+`"auto"` means the square-ish default; combined with a diagram-level
+`target_aspect` (see *Physical targets* below) it lets the target
+fitter reflow the container -- redistribute the same children over a
+different column count -- to land the figure in the requested printed
+shape.
 
 ### AlignedStack -- cross-parent column alignment
 
@@ -271,6 +289,18 @@ d = Diagram(title="bus", body=body)
 Every `Connect` accepts `color`, `label`, `label_color`, `dashed`,
 `curvature`, `head`. Defaults are picked so a plain `Connect("a", "b")`
 looks right in paper style.
+
+Routed wires keep a *clearance* margin from every card that is not one
+of their own endpoints (default `theme.unit * 4/3`; pass
+`clearance=<px>` to pin it). When a corridor is too narrow for the
+full margin the router degrades it gradually instead of hugging card
+borders, wires never ride co-linearly on top of an earlier wire when a
+parallel lane exists, and perpendicular crossings render as hop arcs.
+Labels offset from the wire and dodge cards, other labels, and other
+wires automatically -- on short vertical hops where a rotated label
+cannot fit, a horizontal label beside the wire is used instead. If a
+label still collides, improve the semantic structure rather than
+nudging pixels.
 
 **Auto-routing is on by default.** Every `Connect` — routed, bus, and
 inline — runs through the router by default (`auto_route=True`). Pass
@@ -485,3 +515,47 @@ d.save_all("out/hello")
 call. Individual formats are `save("x.svg")`, `save("x.pdf")`,
 `save("x.png")`. PNG export uses `cairosvg` and inherits glyph
 fallback from the theme's `font_family` stack.
+
+### Physical targets
+
+Paper figures declare the physical size they will occupy and let the
+fitter do the layout work:
+
+```python
+from sciviz import Box, Card, Diagram, EqualGrid, Palette, card_header
+
+cards = [Card(card_header(f"Slot {i}"),
+              Box("chip", fill=Palette.blue.soft(), stroke=Palette.blue),
+              role=Palette.blue) for i in range(6)]
+d = Diagram.for_paper(EqualGrid(*cards, columns="auto"),
+                      target_width_pt=252.0,            # IEEE column
+                      target_aspect=(1.0, 1.3))
+```
+
+`target_width_pt` makes theme font tokens mean *final printed points*:
+spacing, padding, and wrap budgets compress (fonts never shrink) until
+the exported canvas width approaches the target, and a canvas within
+half a point of the target is snapped to exactly the target (widened
+when under; trimmed by a sub-point sliver of outer margin when the
+density fixed-point leaves it a hair over), so `\includegraphics`
+scales by exactly 1.0. Spacing density never compresses below its
+cramped-padding floor; if the canvas is still over the target there,
+the fitter keeps going on the text wrap budget alone
+(`Theme.wrap_budget`, consumed by `Box(wrap=True)`): labels re-wrap
+onto more lines at their authored font size, bounded by each label's
+longest-word floor. Boxes inflated to wider slots by sibling
+equalisation re-wrap their labels to the width they were actually
+given, so equalised cells fill rather than centre a narrow text
+column. The trial measurements are ink-aware -- routed wires, their
+labels, and margin detours count toward the footprint.
+
+`target_aspect` (height/width, a `(lo, hi)` range or a single
+height-cap float) additionally balances the layout toward the printed
+shape: the fitter explores every `columns="auto"` reflow variant and a
+small grid of spacing densities, ranking candidates by width fit
+first, then aspect, then least compression. Without it a multi-card
+figure can satisfy the width as one degenerate tall corridor; with it
+the balanced arrangement wins whenever one exists at the authored font
+sizes. If the content cannot reach the requested shape, the fitter
+returns the closest feasible layout -- it never trades fonts for
+geometry.

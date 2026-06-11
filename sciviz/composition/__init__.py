@@ -28,6 +28,7 @@ from ._brace import Brace
 from ._bus import Bus
 from ._captioned import Captioned
 from ._compound import (
+    BalancedColumns,
     Card,
     CardColumn,
     CardRow,
@@ -49,7 +50,8 @@ from ._region import Region
 from ._stackedtiles import StackedTiles
 
 __all__ = [
-    "Inline", "Banner", "Captioned", "Card", "CardColumn", "CardRow",
+    "Inline", "Banner", "Captioned", "BalancedColumns",
+    "Card", "CardColumn", "CardRow",
     "ConditionSpec", "EqualGrid", "SoftLegend", "StepCell", "Stripe",
     "card_header",
     "LabeledChain", "Badge", "LoopIcon", "Brace",
