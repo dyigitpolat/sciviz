@@ -34,6 +34,15 @@ class Panel(Element):
             return t
         return f"({t})"
 
+    def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
+        """Honour a sibling-driven size floor (e.g. ``Row(align="stretch")``):
+        grow the panel's outer box; :meth:`render` then centres the child
+        vertically in the enlarged content area."""
+        if min_w > self.min_width:
+            self.min_width = float(min_w)
+        if min_h > self.min_height:
+            self.min_height = float(min_h)
+
     def _header_h(self, theme: Theme) -> float:
         return theme.text_height(theme.font_panel_title) + theme.unit * 1.4
 
@@ -80,7 +89,10 @@ class Panel(Element):
                 stroke_width=theme.hairline,
             )
         inner = self.child.measure(theme)
-        content_y = y + pad + self._header_h(theme)
+        header_h = self._header_h(theme)
+        content_top = y + pad + header_h
+        content_area_h = max(inner.h, size.h - 2 * pad - header_h)
         inner_w = size.w - 2 * pad
         child_x = x + pad + (inner_w - inner.w) / 2
-        self.child.render(canvas, child_x, content_y, theme)
+        child_y = content_top + (content_area_h - inner.h) / 2
+        self.child.render(canvas, child_x, child_y, theme)

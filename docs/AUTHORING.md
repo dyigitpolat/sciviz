@@ -76,7 +76,14 @@ StepCell("Activation Quantization", visual, role=Palette.red)
 ```
 
 `Row` / `Column` filter out `None` children silently, so optional
-pieces read naturally. `align` takes `"start" | "center" | "end"`.
+pieces read naturally. `align` takes `"start" | "center" | "end"`,
+plus `"stretch"` on `Row`: it inflates every child to the tallest
+child's height so side-by-side siblings (e.g. two `Panel`s) share one
+outer height, then top-aligns them. Children that can grow vertically
+(`Panel`, `Box`) do; leaf text is left at its natural height. Use it
+instead of padding shims when adjacent framed panels should line up
+top and bottom -- the shorter `Panel` centres its content in the
+enlarged box automatically.
 
 ### EqualGrid vs BalancedColumns
 
@@ -491,6 +498,7 @@ Avoid it. Ninety-five percent of the time the answer is:
 * "I want these things centred" -> `Row(align="center")`.
 * "I want two things at the same vertical axis" -> `Column(align="center")`.
 * "I want equal-width cells" -> `Row(..., equal_widths=True)` or `LabeledChain`.
+* "I want side-by-side panels the same height" -> `Row(..., align="stretch")`.
 * "I want shared column widths across rows" -> `Grid`.
 * "I want shared column widths across *different parents*" -> `AlignedStack`.
 * "I want a rule between sections" -> `Separator`.

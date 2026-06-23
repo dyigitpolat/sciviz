@@ -25,8 +25,12 @@ class Row(Element):
         ``"md"``, ``"lg"``, ``"xl"``, ``"2xl"``) are resolved against the
         theme's base unit.
     align : str
-        Vertical alignment of shorter children: ``"start"``, ``"center"``,
-        or ``"end"``.
+        Cross-axis (vertical) placement of children: ``"start"``,
+        ``"center"``, ``"end"``, or ``"stretch"``. ``"stretch"`` first
+        inflates every child to the tallest child's height (via
+        ``inflate_to``) so side-by-side siblings -- e.g. two ``Panel``\\ s
+        -- share one outer height, then top-aligns them; leaf children
+        that cannot grow vertically are left at their natural height.
     equal_widths : bool
         If True, every child gets the same horizontal slot (the max child
         width). Critical for visually aligning columns of differing-width
@@ -51,6 +55,8 @@ class Row(Element):
         # Per-child widths forced by a containing AlignedStack. When set,
         # each visible child occupies at least ``forced_slot_w[i]`` px.
         self._forced_slot_w: List[float] | None = None
+        # Whether align="stretch" has broadcast the tallest height to children.
+        self._stretched = False
 
     def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
         """Grow the Row's outer width when a parent (Card / Region /
@@ -222,6 +228,22 @@ class Row(Element):
                 continue
             c.inflate_to(slot, 0.0)
 
+    def _maybe_stretch_heights(self, theme: Theme) -> None:
+        """For ``align="stretch"``: grow every child to the tallest child's
+        height (cross-axis stretch) so side-by-side siblings share one outer
+        height. Mirrors :meth:`_maybe_equalise_widths`; idempotent per
+        instance. Children without a height-honouring ``inflate_to`` (most
+        leaf elements) are simply left unaffected.
+        """
+        if self.align != "stretch" or self._stretched or not self.children:
+            return
+        self._stretched = True
+        target_h = max((c.measure(theme).h for c in self.children), default=0.0)
+        if target_h <= 0.0:
+            return
+        for c in self.children:
+            c.inflate_to(0.0, target_h)
+
     def measure(self, theme: Theme) -> BBox:
         if not self.children:
             return BBox(0, 0)
@@ -231,6 +253,7 @@ class Row(Element):
         # otherwise heights would be pinned at the taller, narrow-wrap
         # measurements.
         self._maybe_equalise_widths(theme)
+        self._maybe_stretch_heights(theme)
         self._normalize_shape_peers(theme)
         visible = self._visible_children()
         vis_sizes = [c.measure(theme) for c in visible]
@@ -278,6 +301,7 @@ class Row(Element):
         # otherwise heights would be pinned at the taller, narrow-wrap
         # measurements.
         self._maybe_equalise_widths(theme)
+        self._maybe_stretch_heights(theme)
         self._normalize_shape_peers(theme)
         # Resolve cross-axis stretchers (vertical separators etc.) to Row height
         # BEFORE taking measurements, so their measured height fits the row.
@@ -314,7 +338,7 @@ class Row(Element):
             invisible = getattr(child, "is_layout_invisible", False)
             cb_y = cb[1]
             cb_h = cb[3]
-            if self.align == "start":
+            if self.align in ("start", "stretch"):
                 cy = y - cb_y
             elif self.align == "end":
                 cy = y + H - (cb_y + cb_h)
@@ -357,6 +381,7 @@ class Row(Element):
         # otherwise heights would be pinned at the taller, narrow-wrap
         # measurements.
         self._maybe_equalise_widths(theme)
+        self._maybe_stretch_heights(theme)
         self._normalize_shape_peers(theme)
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
@@ -385,7 +410,7 @@ class Row(Element):
             invisible = getattr(child, "is_layout_invisible", False)
             cb_y = cb[1]
             cb_h = cb[3]
-            if self.align == "start":
+            if self.align in ("start", "stretch"):
                 oy = 0.0 - cb_y
             elif self.align == "end":
                 oy = H - (cb_y + cb_h)
