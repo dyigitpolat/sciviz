@@ -60,6 +60,15 @@ def test_long_vertical_leg_keeps_rotated_label():
     assert placed.rotation == 90.0
 
 
+def test_readable_horizontal_leg_beats_longer_vertical_leg():
+    # Research-figure connector labels should remain horizontal when a real
+    # caption lane exists, even if a vertical detour happens to be longer.
+    path = [(0.0, 0.0), (0.0, 180.0), (100.0, 180.0)]
+    placed = place_polyline_label(path, LBL, [], gap=3.0)
+    assert placed.rotation == 0.0
+    assert placed.rect[1] > 130.0
+
+
 def test_label_avoids_other_wires():
     # Open space, but another wire runs parallel exactly where the
     # default offset would land the label.

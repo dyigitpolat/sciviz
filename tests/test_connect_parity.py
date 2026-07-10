@@ -40,6 +40,21 @@ def test_connect_inline_no_head():
     assert new == old
 
 
+def test_connect_inline_bidirectional_heads():
+    svg = _render(Row(Box("A"), Connect(direction="right", head="both"), Box("B")))
+    assert "marker-start=" in svg
+    assert "marker-end=" in svg
+
+
+def test_connect_routed_bidirectional_heads():
+    svg = _render(Column(
+        Row(Anchor("a", Box("A")), Anchor("b", Box("B")), gap="lg"),
+        Connect("a", "b", head="both"),
+    ))
+    assert "marker-start=" in svg
+    assert "marker-end=" in svg
+
+
 def test_connect_inline_label_list():
     new = _render(Row(Box("A"), Connect(label=["top", "bot"], direction="right"), Box("B")))
     old = _render(Row(Box("A"), Arrow(label=["top", "bot"], direction="right"), Box("B")))

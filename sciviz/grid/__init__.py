@@ -49,8 +49,11 @@ class Grid(Element):
     columns : sequence of dict
         Each dict maps a row name (or tuple of row names for a spanning
         cell) to an Element.  Missing row names become empty cells of the
-        row's natural height.  Special key ``"_panel"`` gives the column a
-        BlockGroup-style dashed-blue panel label.
+        row's natural height. Special key ``"_panel"`` gives the column a
+        BlockGroup-style dashed-blue panel label. Adjacent columns sharing
+        the same ``"_region"`` value receive one automatically padded,
+        rounded dashed enclosure; this declares semantic membership without
+        wrapping the columns in a second hand-aligned layout.
     row_labels : dict row_name -> str or Element, optional
         External labels rendered on the left edge, aligned with the row.
     trailer : Element, optional
@@ -73,6 +76,7 @@ class Grid(Element):
                  column_flow_skip_before: Optional[Sequence[str]] = None):
         self.rows = list(rows)
         self.columns = [dict(c) for c in columns]
+        self._column_regions = self._validate_column_regions()
         self.row_labels = row_labels or {}
         self.trailer = trailer
         self.row_gap = row_gap
@@ -87,6 +91,24 @@ class Grid(Element):
         # custom flow (e.g. a Bus for concatenation) will replace the
         # default single-arrow connection.
         self.column_flow_skip_before = set(column_flow_skip_before or ())
+
+    def _validate_column_regions(self) -> Dict[str, Tuple[int, ...]]:
+        members: Dict[str, List[int]] = {}
+        for index, column in enumerate(self.columns):
+            region = column.get("_region")
+            if region is None:
+                continue
+            if not isinstance(region, str) or not region:
+                raise TypeError("Grid column _region values must be non-empty strings")
+            members.setdefault(region, []).append(index)
+        out: Dict[str, Tuple[int, ...]] = {}
+        for name, indices in members.items():
+            if indices != list(range(indices[0], indices[-1] + 1)):
+                raise ValueError(
+                    f"Grid region {name!r} must occupy adjacent columns"
+                )
+            out[name] = tuple(indices)
+        return out
 
     # ---- layout ----------------------------------------------------------
 
@@ -180,6 +202,39 @@ class Grid(Element):
                     if getattr(p, "min_height", None) is None or p.min_height < target_h:
                         p.min_height = target_h
 
+    def _normalize_column_shape_peers(self, col_cells, theme):
+        """Equalise explicitly related silhouettes within each column.
+
+        A named Grid aligns rows and columns, so repeated stages stacked in
+        one semantic lane should receive the same peer treatment that Row and
+        Column already provide. Only matching ``shape_key`` values participate;
+        unrelated stages retain their intrinsic dimensions.
+        """
+        for c in range(len(self.columns)):
+            groups: Dict[str, List[Any]] = {}
+            for r in range(len(self.rows)):
+                cell = col_cells[c][r]
+                if cell is None:
+                    continue
+                elem, _span = cell
+                for peer in self._find_shape_peers(elem):
+                    groups.setdefault(peer.shape_key, []).append(peer)
+            for peers in groups.values():
+                if len(peers) < 2:
+                    continue
+                sizes = [peer.measure(theme) for peer in peers]
+                target_w = max(size.w for size in sizes)
+                target_h = max(size.h for size in sizes)
+                for peer in peers:
+                    if getattr(peer, "width", None) is None:
+                        if getattr(peer, "min_width", None) is None \
+                                or peer.min_width < target_w:
+                            peer.min_width = target_w
+                    if getattr(peer, "height", None) is None:
+                        if getattr(peer, "min_height", None) is None \
+                                or peer.min_height < target_h:
+                            peer.min_height = target_h
+
     def _layout(self, theme: Theme):
         n_rows = len(self.rows)
         n_cols = len(self.columns)
@@ -188,6 +243,7 @@ class Grid(Element):
 
         col_cells = [self._resolve_column(c) for c in self.columns]
         self._normalize_row_shape_peers(col_cells, theme)
+        self._normalize_column_shape_peers(col_cells, theme)
 
         # Per column, compute how much width the cells want to occupy
         # LEFT of the column axis vs RIGHT of it.  The "axis" is the
@@ -265,15 +321,19 @@ class Grid(Element):
         label_h = max_lines * (theme.text_height("small") + theme.unit * 0.25)
         return label_h + theme.unit * 0.7, theme.unit * 0.7
 
+    def _region_pad(self, theme: Theme) -> float:
+        return theme.unit * 0.8 if self._column_regions else 0.0
+
     def measure(self, theme: Theme) -> BBox:
         col_widths, row_heights, _, _ = self._layout(theme)
         row_gap = self._gap(theme, self.row_gap)
         col_gap = self._gap(theme, self.col_gap)
         top_pad, bot_pad = self._panel_overhead(theme)
+        region_pad = self._region_pad(theme)
 
         w = (sum(col_widths) + col_gap * max(0, len(col_widths) - 1))
         h = (sum(row_heights) + row_gap * max(0, len(row_heights) - 1)
-             + top_pad + bot_pad)
+             + top_pad + bot_pad + 2 * region_pad)
 
         label_w = self._row_label_width(theme)
         if label_w > 0:
@@ -289,10 +349,11 @@ class Grid(Element):
         row_gap = self._gap(theme, self.row_gap)
         col_gap = self._gap(theme, self.col_gap)
         top_pad, bot_pad = self._panel_overhead(theme)
+        region_pad = self._region_pad(theme)
 
         label_w = self._row_label_width(theme)
         grid_x = x + (label_w + col_gap if label_w > 0 else 0)
-        grid_y = y + top_pad
+        grid_y = y + top_pad + region_pad
 
         col_xs = [grid_x]
         for cw in col_widths[:-1]:
@@ -302,6 +363,43 @@ class Grid(Element):
             row_ys.append(row_ys[-1] + rh + row_gap)
 
         grid_h_actual = sum(row_heights) + row_gap * max(0, len(row_heights) - 1)
+
+        # --- shared semantic column regions -----------------------------
+        # Draw before cells so the enclosure remains visual structure, not
+        # foreground ink. Its sides live in the inter-column corridors and
+        # its top/bottom use the automatically reserved region padding.
+        for region_name, indices in self._column_regions.items():
+            first, last = indices[0], indices[-1]
+            left_gap = col_gap * 0.48 if first > 0 else 0.0
+            right_gap = col_gap * 0.48 if last < len(self.columns) - 1 else 0.0
+            rx0 = col_xs[first] - left_gap
+            rx1 = col_xs[last] + col_widths[last] + right_gap
+            ry0 = y + theme.unit * 0.1
+            ry1 = y + self.measure(theme).h - theme.unit * 0.1
+            rw, rh = rx1 - rx0, ry1 - ry0
+            radius = max(
+                theme.panel_radius * 2.0,
+                min(theme.unit * 8.0, rh * 0.18),
+            )
+            color = theme.color_of("border")
+            canvas.rect(
+                rx0, ry0, rw, rh,
+                fill="none",
+                stroke=color,
+                stroke_width=theme.hairline,
+                rx=radius,
+                dasharray="4,3",
+            )
+            try:
+                from ..composition import _anchor_stack as _region_stack
+            except Exception:  # pragma: no cover
+                _region_stack = None
+            if _region_stack is not None:
+                stack = _region_stack.get()
+                if stack is not None:
+                    key = f"__region_grid_{id(self):x}_{region_name}"
+                    for registry in stack:
+                        registry[key] = (rx0, ry0, rw, rh)
 
         # --- row labels (left gutter) -----------------------------------
         if self.row_labels:

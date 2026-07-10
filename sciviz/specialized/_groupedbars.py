@@ -72,6 +72,8 @@ class BarGroup:
     values: Sequence[float]
     annotation: Optional[str] = None
     target: Optional[float] = None
+    color: Optional[str] = None
+    value_color: Optional[str] = None
 
 
 # Convenience inputs: the chart accepts raw tuples as well as dataclasses.
@@ -189,6 +191,13 @@ class GroupedBarChart(Element):
         trimming trailing zeros (``16.70 -> "16.7"``).
     """
 
+    _PLOT_SIZES = {
+        "sm": (240.0, 150.0),
+        "md": (300.0, 190.0),
+        "lg": (360.0, 260.0),
+        "xl": (440.0, 300.0),
+    }
+
     def __init__(self,
                  groups: Sequence[GroupLike],
                  *,
@@ -196,8 +205,9 @@ class GroupedBarChart(Element):
                  y_max: Optional[float] = None,
                  y_step: float = 20.0,
                  y_label: str = "",
-                 plot_width: float = 360.0,
-                 plot_height: float = 260.0,
+                 plot_width: Optional[float] = None,
+                 plot_height: Optional[float] = None,
+                 size: str = "lg",
                  bar_width: float = 34.0,
                  intra_gap: float = 8.0,
                  inter_gap: float = 18.0,
@@ -208,6 +218,7 @@ class GroupedBarChart(Element):
                  show_values: bool = True,
                  show_titles: bool = True,
                  show_axis: bool = True,
+                 grid: Optional[bool] = None,
                  delta_from: int = 0,
                  delta_to: int = -1,
                  annotation_color: str = "highlight",
@@ -237,8 +248,16 @@ class GroupedBarChart(Element):
         self.y_max = y_max
         self.y_step = float(y_step)
         self.y_label = y_label
-        self.plot_width = float(plot_width)
-        self.plot_height = float(plot_height)
+        if size not in self._PLOT_SIZES:
+            allowed = ", ".join(self._PLOT_SIZES)
+            raise ValueError(f"GroupedBarChart.size must be one of {allowed}")
+        default_width, default_height = self._PLOT_SIZES[size]
+        self.plot_width = float(
+            default_width if plot_width is None else plot_width
+        )
+        self.plot_height = float(
+            default_height if plot_height is None else plot_height
+        )
         self.bar_width = float(bar_width)
         self.intra_gap = float(intra_gap)
         self.inter_gap = float(inter_gap)
@@ -249,6 +268,11 @@ class GroupedBarChart(Element):
         self.show_values = show_values
         self.show_titles = show_titles
         self.show_axis = show_axis
+        # Card comparisons already provide strong row/column structure;
+        # conventional flat bar charts need quiet horizontal guides.  The
+        # automatic default follows that distinction without another style
+        # decision at each call site.
+        self.grid = (not show_cards) if grid is None else bool(grid)
         self.delta_from = int(delta_from)
         self.delta_to = int(delta_to)
         self.annotation_color = annotation_color
@@ -275,9 +299,35 @@ class GroupedBarChart(Element):
         return max(peak * 1.05, self.y_step)
 
     def _margins(self, theme: Theme):
-        top   = (theme.text_height("panel") + theme.unit * 1.6
-                 if self.show_titles else theme.unit * 0.8)
-        bot   = theme.text_height("tiny") + theme.unit * 0.8
+        titles_above = self.show_titles and self.show_cards
+        titles_below = self.show_titles and not self.show_cards
+        top = (theme.text_height("panel") + theme.unit * 1.6
+               if titles_above else theme.unit * 0.8)
+        # Flat charts place values above bar tops. Reserve a real text band
+        # so auto-scaled maxima never clip at the top of the element.
+        if not self.show_cards:
+            value_lines = 1 if self.show_values else 0
+            annotation_lines = max(
+                (len(g.annotation.splitlines()) if g.annotation else 0
+                 for g in self.groups),
+                default=0,
+            )
+            # Values and annotations are separate information layers.  They
+            # must receive additive space: reserving only the larger layer
+            # makes a two-line callout collide with the numeric value at the
+            # top of the same bar.
+            top += value_lines * theme.text_height("label")
+            top += annotation_lines * theme.text_height("small")
+            if value_lines and annotation_lines:
+                top += theme.unit * 0.55
+            if value_lines or annotation_lines:
+                top += theme.unit * 0.4
+        title_lines = max(
+            (len(g.title.splitlines()) for g in self.groups), default=1
+        ) if titles_below else 0
+        bot = theme.text_height("tiny") + theme.unit * 0.8
+        if titles_below:
+            bot += title_lines * theme.text_height("tiny") + theme.unit * 0.6
         ymax = self._resolved_y_max()
         tick_w = theme.text_width(f"{int(ymax)}", "tiny", bold=False) \
             if self.show_axis else 0.0
@@ -286,6 +336,48 @@ class GroupedBarChart(Element):
             left += theme.text_height("label") + theme.unit * 0.2
         right = theme.unit * 1.2
         return top, right, bot, left
+
+    def _group_geometry(self, theme: Theme, plot_width: float):
+        """Return group/bar geometry guaranteed to fit the plot width.
+
+        Flat categorical charts use one equal slot per category. Card-style
+        grouped comparisons retain their requested geometry when it fits and
+        proportionally compact it when it does not. This keeps bar widths,
+        padding, and gaps coherent instead of letting edge groups escape the
+        axis frame.
+        """
+        n_groups = max(1, len(self.groups))
+        n_series = max(1, len(self.groups[0].values))
+        requested_bar = self.bar_width
+        requested_intra = self.intra_gap
+        requested_inter = self.inter_gap
+        requested_pad = self.panel_pad
+        if not self.show_cards:
+            panel_w = plot_width / n_groups
+            intra = min(requested_intra, panel_w * 0.10)
+            max_bar = (
+                panel_w - theme.unit * 1.2 - intra * (n_series - 1)
+            ) / n_series
+            bar_w = max(theme.unit * 0.9, min(requested_bar, max_bar))
+            inner_w = n_series * bar_w + (n_series - 1) * intra
+            pad = max(0.0, (panel_w - inner_w) / 2)
+            return 0.0, panel_w, 0.0, bar_w, intra, pad
+
+        natural_inner = (
+            n_series * requested_bar + (n_series - 1) * requested_intra
+        )
+        natural_panel = natural_inner + 2 * requested_pad
+        natural_total = (
+            n_groups * natural_panel + (n_groups - 1) * requested_inter
+        )
+        scale = min(1.0, plot_width / natural_total) if natural_total else 1.0
+        bar_w = requested_bar * scale
+        intra = requested_intra * scale
+        pad = requested_pad * scale
+        panel_w = natural_panel * scale
+        inter = requested_inter * scale
+        total = n_groups * panel_w + (n_groups - 1) * inter
+        return (plot_width - total) / 2, panel_w, inter, bar_w, intra, pad
 
     # --- geometry --------------------------------------------------------
 
@@ -301,8 +393,7 @@ class GroupedBarChart(Element):
         top, right, bot, left = self._margins(theme)
         px = x + left
         py = y + top
-        pw = self.plot_width
-        ph = self.plot_height
+        pw, ph = self.plot_width, self.plot_height
         ymax = self._resolved_y_max()
 
         wash_col = theme.color_of(self.wash)
@@ -314,15 +405,12 @@ class GroupedBarChart(Element):
                                      x + theme.unit * 0.6,
                                      py + ph / 2)
 
-        n_series = len(self.groups[0].values) if self.groups else 0
-        inner_w = n_series * self.bar_width + (n_series - 1) * self.intra_gap
-        panel_w = inner_w + 2 * self.panel_pad
-        n = len(self.groups)
-        total_w = n * panel_w + (n - 1) * self.inter_gap
-        group_x0 = px + (pw - total_w) / 2
+        (group_offset, panel_w, inter_gap, bar_width,
+         intra_gap, panel_pad) = self._group_geometry(theme, pw)
+        group_x0 = px + group_offset
 
         if self.show_axis:
-            self._draw_axis(canvas, theme, px, py, ph, ymax)
+            self._draw_axis(canvas, theme, px, py, pw, ph, ymax)
 
         head = canvas.define_arrow_marker(
             color=theme.color_of(self.delta_color),
@@ -330,24 +418,27 @@ class GroupedBarChart(Element):
             arrow_size=5.5, name_hint="gbc_delta")
 
         for i, g in enumerate(self.groups):
-            px0 = group_x0 + i * (panel_w + self.inter_gap)
+            px0 = group_x0 + i * (panel_w + inter_gap)
             base_y = py + ph
             self._draw_group(canvas, theme, g, px0, py, panel_w, base_y,
-                             ph, ymax, head, y)
+                             ph, ymax, head, y, i, bar_width,
+                             intra_gap, panel_pad)
 
     # --- per-group ------------------------------------------------------
 
     def _draw_group(self, canvas: Canvas, theme: Theme,
                     g: BarGroup, px0: float, py: float,
                     panel_w: float, base_y: float, ph: float,
-                    ymax: float, head: str, y_outer: float) -> None:
+                    ymax: float, head: str, y_outer: float,
+                    group_index: int, bar_width: float,
+                    intra_gap: float, panel_pad: float) -> None:
         if self.show_cards:
             canvas.rect(px0, py, panel_w, ph,
                         fill=theme.color_of(self.card_fill),
                         stroke=theme.color_of(self.card_stroke),
                         stroke_width=theme.hairline, rx=2.0)
 
-        if self.show_titles:
+        if self.show_titles and self.show_cards:
             canvas.text(px0 + panel_w / 2,
                         y_outer + theme.size_px("panel") + theme.unit * 0.3,
                         g.title,
@@ -358,30 +449,56 @@ class GroupedBarChart(Element):
         # Bars.
         bar_xs = []
         bar_heights = []
+        value_ys = []
         for j, (v, s) in enumerate(zip(g.values, self.series)):
-            bx = px0 + self.panel_pad + j * (self.bar_width + self.intra_gap)
+            bx = px0 + panel_pad + j * (bar_width + intra_gap)
             bh = (v / ymax) * ph
             by = base_y - bh
-            fill = theme.color_of(s.color)
-            stroke = theme.color_of(s.stroke) if s.stroke is not None else fill
-            canvas.rect(bx, by, self.bar_width, bh,
+            group_color = g.color if len(g.values) == 1 else None
+            fill = theme.color_of(group_color or s.color)
+            stroke_spec = s.stroke if s.stroke is not None else (group_color or s.color)
+            stroke = theme.color_of(stroke_spec)
+            canvas.rect(bx, by, bar_width, bh,
                         fill=fill, stroke=stroke,
                         stroke_width=theme.hairline)
-            bar_xs.append(bx + self.bar_width / 2)
+            bar_xs.append(bx + bar_width / 2)
             bar_heights.append((by, bh))
             if self.show_values:
-                canvas.text(bar_xs[-1], base_y - theme.unit * 1.0,
-                            self.value_formatter(v),
-                            size=theme.size_px("label"),
-                            fill=self._value_color(s, fill, theme),
-                            anchor="middle", weight="700")
+                text_h = theme.text_height("label")
+                if not self.show_cards or bh < text_h * 1.8:
+                    value_y = by - theme.unit * 0.45
+                    value_color = theme.color_of(g.value_color or "text")
+                else:
+                    value_y = by + text_h
+                    value_color = theme.color_of(
+                        g.value_color) if g.value_color else self._value_color(
+                            s, fill, theme)
+                canvas.text(
+                    bar_xs[-1], value_y, self.value_formatter(v),
+                    size=theme.size_px("label"), fill=value_color,
+                    anchor="middle", weight="700",
+                )
+                value_ys.append(value_y)
+
+        if self.show_titles and not self.show_cards:
+            lines = g.title.splitlines() or [g.title]
+            title_y = base_y + theme.text_height("tiny")
+            for line_index, line in enumerate(lines):
+                canvas.text(
+                    px0 + panel_w / 2,
+                    title_y + line_index * theme.text_height("tiny"),
+                    line,
+                    size=theme.size_px("tiny"),
+                    fill=theme.color_of(self.title_color),
+                    anchor="middle",
+                )
 
         # Target line at the configured target (default = max value).
         target_v = g.target if g.target is not None else max(g.values)
         target_y = base_y - (target_v / ymax) * ph
         if self.show_target_line:
-            canvas.line(px0 + self.panel_pad * 0.4, target_y,
-                        px0 + panel_w - self.panel_pad * 0.4, target_y,
+            canvas.line(px0 + panel_pad * 0.4, target_y,
+                        px0 + panel_w - panel_pad * 0.4, target_y,
                         stroke=theme.color_of(self.target_color),
                         stroke_width=theme.hairline,
                         dasharray="5,3")
@@ -404,14 +521,31 @@ class GroupedBarChart(Element):
 
         # Per-group annotation (free-form label).
         if g.annotation:
-            # Centred horizontally over the whole bar block, placed just
-            # above the target line so it reads as a caption of the gap.
+            # Centred horizontally over the whole bar block.  In a flat
+            # chart the annotation forms a stack above the value label;
+            # card comparisons retain the historical target-line caption.
             centre_x = (bar_xs[0] + bar_xs[-1]) / 2 if bar_xs else px0
-            canvas.text(centre_x, target_y - theme.unit * 0.7,
-                        g.annotation,
-                        size=theme.size_px("small"),
-                        fill=theme.color_of(self.annotation_color),
-                        anchor="middle", weight="700")
+            lines = g.annotation.splitlines()
+            line_h = theme.text_height("small")
+            if not self.show_cards and value_ys:
+                last_y = (
+                    min(value_ys)
+                    - theme.text_height("label")
+                    - theme.unit * 0.55
+                )
+            else:
+                last_y = target_y - theme.unit * 0.7
+            start_y = last_y - max(0, len(lines) - 1) * line_h
+            for line_index, line in enumerate(lines):
+                canvas.text(
+                    centre_x,
+                    start_y + line_index * line_h,
+                    line,
+                    size=theme.size_px("small"),
+                    fill=theme.color_of(self.annotation_color),
+                    anchor="middle",
+                    weight="700",
+                )
 
     # --- helpers --------------------------------------------------------
 
@@ -424,15 +558,23 @@ class GroupedBarChart(Element):
         return i
 
     def _draw_axis(self, canvas: Canvas, theme: Theme,
-                   px: float, py: float, ph: float, ymax: float) -> None:
+                   px: float, py: float, pw: float,
+                   ph: float, ymax: float) -> None:
         muted = theme.color_of(self.axis_color)
         canvas.line(px, py, px, py + ph,
+                    stroke=muted, stroke_width=theme.hairline)
+        canvas.line(px, py + ph, px + pw, py + ph,
                     stroke=muted, stroke_width=theme.hairline)
         # Include the last tick inclusively.
         k = 0
         while k * self.y_step <= ymax + 1e-6:
             v = k * self.y_step
             ty = py + ph - (v / ymax) * ph
+            if self.grid and v > 0:
+                canvas.line(px, ty, px + pw, ty,
+                            stroke=theme.color_of("grid"),
+                            stroke_width=theme.hairline,
+                            opacity=0.18)
             canvas.line(px - 3, ty, px, ty,
                         stroke=muted, stroke_width=theme.hairline)
             canvas.text(px - 5, ty + theme.size_px("tiny") * 0.35,
@@ -478,5 +620,5 @@ def _default_fmt(v: float) -> str:
     need a different look (``f"{v:.2f}"`` or a currency formatter) can
     pass ``value_formatter=...`` to :class:`GroupedBarChart`.
     """
-    s = f"{v:.1f}".rstrip("0").rstrip(".")
+    s = f"{v:.2f}".rstrip("0").rstrip(".")
     return s or "0"

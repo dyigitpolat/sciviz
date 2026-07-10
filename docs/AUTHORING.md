@@ -60,7 +60,7 @@ required fonts and glyph-path output is preferable.
 Signatures at call sites:
 
 ```
-Row(*children, gap="md", align="center", equal_widths=False)
+Row(*children, gap="md", align="center", equal_widths=False, balance_outer=False)
 Column(*children, gap="md", align="center")
 Panel(tag, title, child)
 Grid(*children, cols=..., col_align=...)
@@ -84,6 +84,13 @@ outer height, then top-aligns them. Children that can grow vertically
 instead of padding shims when adjacent framed panels should line up
 top and bottom -- the shorter `Panel` centres its content in the
 enlarged box automatically.
+
+For a bilateral architecture or comparison with one semantic hub, use
+`Row(left, hub, right, balance_outer=True)`. The outer systems receive equal
+slots and pack inward while the hub stays on the exact figure centreline;
+unequal left/right labels therefore cannot skew the whole composition.
+Exactly three visible children participate (layout-invisible `Connect`
+specifications do not count).
 
 ### EqualGrid vs BalancedColumns
 
@@ -297,6 +304,12 @@ Every `Connect` accepts `color`, `label`, `label_color`, `dashed`,
 `curvature`, `head`. Defaults are picked so a plain `Connect("a", "b")`
 looks right in paper style.
 
+`head` describes directionality rather than a drawing primitive: `True` or
+`"end"` gives the usual destination arrowhead, `False` or `"none"` gives an
+undirected line, `"start"` reverses the head, and `"both"` expresses a
+bidirectional relationship. The same values work for inline and routed
+connections, so authors never need arrow glyphs or paired one-way wires.
+
 Routed wires keep a *clearance* margin from every card that is not one
 of their own endpoints (default `theme.unit * 4/3`; pass
 `clearance=<px>` to pin it). When a corridor is too narrow for the
@@ -316,6 +329,12 @@ flag is a no-op for bus/inline since those are axis-aligned by
 construction. An explicit `style=` still wins, so existing calls that
 pin `style="curve"` or `style="straight"` keep working.
 
+Ports are selected from geometry rather than fixed midpoints. When two
+parallel node faces overlap, the connector projects the narrower face onto
+the wider one and uses one shared coordinate; aligned links therefore stay
+straight. Fan-in/fan-out ports preserve those projections and separate only
+when two wires would otherwise occupy the same attachment point.
+
 ## Anchors
 
 Wrap an element in `Anchor("name", element)` to give the connector
@@ -334,7 +353,7 @@ body = Row(
 d = Diagram(title="anchors", body=body)
 ```
 
-## Grouping: Region, Brace, Captioned, Badge
+## Grouping: Region, Brace, Captioned, Badge, Docked
 
 ### Region -- labeled bordered container
 
@@ -396,6 +415,34 @@ badge = Badge("+")
 d = Diagram(title="wrappers", body=cap)
 ```
 
+### Docked overlays and tapered modules
+
+`Docked` expresses a decoration that belongs on a node boundary or across a
+node group. A center decoration may inherit the primary child's width/height
+and sit at the upper, middle, or lower third. `Mux` provides a tapered module;
+horizontal labels wrap from its semantic size rather than forcing authors to
+pick a width:
+
+```python
+from sciviz import Box, Docked, Mux, Palette, Row, Diagram
+
+modules = Row(Box("Video DiT"), Box("Action DiT"), gap="sm")
+coupled = Docked(
+    modules,
+    center=Box("Cross-attention", fill=Palette.violet.soft(), stroke="none"),
+    center_fit="width",
+    center_position="lower",
+)
+encoder = Mux(
+    "Unified Encoder",
+    orientation="up",
+    vertical_text=False,
+    fill=Palette.violet.soft(),
+    stroke=Palette.violet,
+)
+d = Diagram(title="coupled streams", body=Row(coupled, encoder))
+```
+
 ## Charts and specialised primitives
 
 ```
@@ -413,6 +460,105 @@ AlignedColumns(*groups, ...)
 Tree(TreeNode(...))
 ```
 
+### Structured matrices and shared color scales
+
+Use `MatrixCell` when the number controlling colour is not the only text a
+cell must show. A shared `ColorScale` keeps small multiples comparable;
+`MatrixSelection` adds non-destructive, named outlines and `ColorBar` renders
+the same scale as a measured element.
+
+```python
+from sciviz import ColorBar, ColorScale, Diagram, Matrix, MatrixCell, MatrixSelection, Row
+
+scale = ColorScale((-1.0, 1.0), center=0.0)
+matrix = Matrix(
+    [[MatrixCell(-0.4, "18.2", "-0.4"), MatrixCell(0.7, "23.1", "+0.7")],
+     [MatrixCell(0.1, "20.0", "+0.1"), MatrixCell(-0.2, "19.4", "-0.2")]],
+    scale=scale,
+    selections=[MatrixSelection(0, slice(0, 2), name="active", label="active row")],
+    row_labels=["A", "B"], col_labels=["X", "Y"],
+    col_label_position="bottom",
+    cell_size="xl",
+)
+d = Diagram.for_paper(Row(matrix, ColorBar(scale, ticks=(-1, 0, 1))))
+```
+
+`cell_size` accepts the semantic density tokens `"micro"`, `"tiny"`, `"xs"`,
+`"sm"`, `"md"`, `"lg"`, and `"xl"`. Prefer the token that communicates the
+matrix's role: `"micro"`/`"tiny"` are intended for compact masks and
+paper-scale matrix small multiples, while larger tokens leave room for richer
+cell labels. Dense and categorical matrices retain contiguous square cells at
+every token size.
+
+### Relational line charts and part-to-whole charts
+
+Key line series when another encoding refers to them. `FillBetween` derives a
+band over the shared domain and can derive a label at every shared sample from
+the paired values. Markers, exact ticks, semantic plot sizes, and in-plot
+legend placement remain series/chart data.
+`DonutChart` derives slice geometry and group summaries directly from `Part`
+values.
+
+```python
+from sciviz import Diagram, FillBetween, LineChart, Series
+
+chart = LineChart(
+    [Series([(0, 1), (1, 2)], label="baseline", key="base", marker="circle"),
+     Series([(0, 2), (1, 4)], label="adapted", key="adapt", marker="square")],
+    fills=[FillBetween(
+        "base", "adapt",
+        labels=lambda _x, low, high: f"+{high - low:.1f}",
+    )],
+    x_range=(0, 1), y_range=(0, 4), x_ticks=(0, 1), y_ticks=(0, 2, 4),
+    size="lg", legend="inside-bottom-right",
+)
+d = Diagram.for_paper(chart)
+```
+
+```python
+from sciviz import Diagram, DonutChart, GroupSummary, Part
+
+mix = DonutChart(
+    [Part("small video", 40, group="video"),
+     Part("large video", 40, group="video"),
+     Part("image", 20, group="image")],
+    center=GroupSummary(("video", "image"), label="video / image"),
+)
+d = Diagram.for_paper(mix)
+```
+
+### Semantic flow graphs and detail callouts
+
+`FlowGraph` is for a whole DAG whose ranks, groups, ports, and exact edge
+semantics should drive layout. Independent `FlowEdge` objects stay independent;
+a list-valued endpoint explicitly requests a bus. Mark exceptional return paths
+with `kind="feedback"` instead of choosing geometry.
+
+```python
+from sciviz import Diagram, FlowEdge, FlowGraph, FlowGroup, FlowNode
+
+flow = FlowGraph(
+    [FlowNode("db", "Trace DB", shape="store", group="sim"),
+     FlowNode("run", "Execute", group="sim"),
+     FlowNode("report", "Report", shape="document")],
+    [FlowEdge("db", "run"), FlowEdge("run", "report")],
+    groups=[FlowGroup("sim", label="Simulator")],
+)
+d = Diagram.for_paper(flow)
+```
+
+Use `DetailCallout` when a detail must remain semantically bound to one named
+component inside an overview. The library chooses right/below placement and
+routes a headless leader.
+
+```python
+from sciviz import Anchor, Box, DetailCallout, Diagram, Region, Row
+
+overview = Region(Row(Anchor("sm0", Box("SM 0")), Box("SM")), label="GPU")
+detail = Region(Box("Tensor cores + local memory"), label="Inside one SM")
+d = Diagram.for_paper(DetailCallout(overview, detail, source="sm0"))
+```
+
 ### LineChart with inline annotations
 
 ```python
@@ -422,7 +568,7 @@ chart = LineChart(
     [Series([(i, i*i) for i in range(10)], label="n^2", color="blue"),
      Series([(i, 5*i) for i in range(10)], label="5n", color="amber", dash="4,3")],
     x_range=(0, 9), y_range=(0, 80),
-    width=260, height=160,
+    size="md",
     x_label="n", y_label="cost",
     annotations=[Annotate(4, 16, "crossover", color="accent")],
     legend="right",

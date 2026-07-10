@@ -97,6 +97,8 @@ def test_render_orthogonal_emits_arc_hop_for_crossing():
         "expected the hop-carrying segment to NOT also be drawn as a "
         f"plain line; got calls={canvas.calls}"
     )
+    path_call = next(call for call in canvas.calls if call[0] == "path")
+    assert path_call[2]["ink_bbox"] == (-3.0, 47.0, 203.0, 53.0)
 
 
 def test_render_orthogonal_plain_line_when_no_crossings():

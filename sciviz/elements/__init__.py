@@ -14,18 +14,29 @@ from ._arrow import Arrow, Connector
 from ._box import Box
 from ._caption import Caption
 from ._condition_glyph import ConditionGlyph
+from ._cylinder import Cylinder
+from ._document import Document
+from ._mux import Mux
 from ._icon import Icon
 from ._image import Image
 from ._legend import Legend, LegendItem
-from ._matrix import Matrix
+from ._matrix import (
+    ColorBar,
+    ColorScale,
+    Matrix,
+    MatrixCell,
+    MatrixGroup,
+    MatrixSelection,
+)
 from ._obstacles import _register_implicit_obstacle
 from ._separator import Separator
 from ._text import Span, Text, TextBlock
 from ._tokenrow import TokenRow
 
 __all__ = [
-    "Text", "TextBlock", "Span", "Box", "Matrix", "Legend", "LegendItem",
-    "Caption", "ConditionGlyph", "TokenRow", "Icon", "Image", "Separator",
+    "Text", "TextBlock", "Span", "Box", "Matrix", "MatrixCell",
+    "MatrixSelection", "MatrixGroup", "ColorScale", "ColorBar", "Legend", "LegendItem",
+    "Caption", "ConditionGlyph", "Cylinder", "Document", "Mux", "TokenRow", "Icon", "Image", "Separator",
     # Internal; kept for backwards-compatible intra-package imports.
     "Arrow", "Connector",
 ]

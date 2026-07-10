@@ -234,10 +234,24 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
     src_anchor = src.anchor
     dst_anchor = dst.anchor
 
-    raw_obstacles: List[Box] = [a for a in anchors
-                                if a is not src_anchor and a is not dst_anchor
-                                and not _same_box(a, src_anchor)
-                                and not _same_box(a, dst_anchor)]
+    def _contains(container: Box, child: Box) -> bool:
+        return (
+            container.left <= child.left + tol
+            and container.top <= child.top + tol
+            and container.right >= child.right - tol
+            and container.bottom >= child.bottom - tol
+        )
+
+    raw_obstacles: List[Box] = [
+        a for a in anchors
+        if a is not src_anchor and a is not dst_anchor
+        and not _same_box(a, src_anchor)
+        and not _same_box(a, dst_anchor)
+        # A visual container around an endpoint is not a wall. Treat it
+        # as endpoint ancestry so a wire may enter a card or listing.
+        and not _contains(a, src_anchor)
+        and not _contains(a, dst_anchor)
+    ]
     if obstacle_pad > 0.0:
         obstacles = [Box(x=o.x - obstacle_pad, y=o.y - obstacle_pad,
                          w=o.w + 2 * obstacle_pad, h=o.h + 2 * obstacle_pad,
@@ -251,6 +265,10 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
 
     src_ancestors = _region_ancestors(src_anchor, regions)
     dst_ancestors = _region_ancestors(dst_anchor, regions)
+    shared_region_names = (
+        {region.name for region in src_ancestors}
+        & {region.name for region in dst_ancestors}
+    )
     required_region_names = (set(a.name for a in src_ancestors)
                              ^ set(a.name for a in dst_ancestors))
     forbidden_regions = [r for r in regions
@@ -259,12 +277,43 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
 
     sx, sy = _side_point_frac(src_anchor, src_side, src.tap_fraction)
     dx, dy = _side_point_frac(dst_anchor, dst_side, dst.tap_fraction)
+    # A second wire may request the same midpoint port as a wire already
+    # routed into this node.  Spread such taps along the same edge before
+    # planning, so each connection keeps a distinct perpendicular approach
+    # instead of painting several shafts on top of one another.
+    sx, sy = _spread_occupied_tap(
+        src_anchor, src_side, (sx, sy), existing_segments, policy)
+    dx, dy = _spread_occupied_tap(
+        dst_anchor, dst_side, (dx, dy), existing_segments, policy)
 
     src_dir = _outward(src_side)
     dst_dir = _outward(dst_side)
 
-    stap = _clamp_tap(src_anchor, src_dir, src.tap, obstacles, policy)
-    dtap = _clamp_tap(dst_anchor, dst_dir, dst.tap, obstacles, policy)
+    src_exclusive = [
+        r for r in src_ancestors if r.name not in shared_region_names
+    ]
+    dst_exclusive = [
+        r for r in dst_ancestors if r.name not in shared_region_names
+    ]
+    # When only one endpoint is enclosed, the connecting path itself can
+    # cross that required boundary exactly once. Forcing the enclosed
+    # endpoint's normal stub all the way through a different side of the
+    # region creates a needless exit-and-reentry U-turn (and can extend far
+    # beyond both nodes). Both stubs need full boundary escape only when the
+    # route genuinely travels between two distinct enclosed regions.
+    escape_both = bool(src_exclusive and dst_exclusive)
+    src_escape = _region_escape_tap(
+        (sx, sy), src_dir, src_exclusive if escape_both else (), policy,
+    )
+    dst_escape = _region_escape_tap(
+        (dx, dy), dst_dir, dst_exclusive if escape_both else (), policy,
+    )
+    stap = _clamp_tap(
+        src_anchor, src_dir, max(src.tap, src_escape), obstacles, policy
+    )
+    dtap = _clamp_tap(
+        dst_anchor, dst_dir, max(dst.tap, dst_escape), obstacles, policy
+    )
     src_tap = (sx + src_dir[0] * stap, sy + src_dir[1] * stap)
     dst_tap = (dx + dst_dir[0] * dtap, dy + dst_dir[1] * dtap)
 
@@ -280,7 +329,11 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
     # worth of shared length) are rejected so the planner shifts to a
     # parallel lane instead. The pad-free retry drops the constraint so
     # a route always exists.
-    parallel_sep = max(3.0, obstacle_pad) if obstacle_pad > 0.0 else 0.0
+    # Parallel wires only need enough separation to remain optically
+    # distinct. Reusing the full obstacle clearance (normally 8 px) made
+    # adjacent fan-in edges reject every local lane and detour hundreds of
+    # pixels around an otherwise compact subgraph.
+    parallel_sep = min(3.0, obstacle_pad) if obstacle_pad > 0.0 else 0.0
 
     def clean(path: Sequence[Tuple[float, float]], *,
               skip_endpoints: bool = False) -> bool:
@@ -320,7 +373,11 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
     #    arrives against dst_dir can be "clean" (taps absorb into the
     #    outer legs).
     for elbow in _l_elbows(sx, sy, dx, dy, src_dir, dst_dir, tol):
-        cand = [(sx, sy), elbow, (dx, dy)]
+        # Include the semantic endpoint taps in every turning route.  They
+        # guarantee that the shaft leaves and enters each node along its
+        # boundary normal for a visible, theme-scaled distance before the
+        # first bend.
+        cand = [(sx, sy), src_tap, elbow, dst_tap, (dx, dy)]
         cand = _simplify(cand, tol)
         if len(cand) >= 2 and clean(cand):
             return Plan(cand, crossings, "L", src_side, dst_side)
@@ -338,7 +395,9 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
                 src_tap, dst_tap, src_dir, dst_dir, sx, dx, obstacles,
                 forbidden_regions, src_anchor, dst_anchor,
                 required_region_names, tol):
-            cand = [(sx, sy), (sx, bridge_y), (dx, bridge_y), (dx, dy)]
+            cand = [(sx, sy), src_tap,
+                    (sx, bridge_y), (dx, bridge_y),
+                    dst_tap, (dx, dy)]
             cand = _simplify(cand, tol)
             if clean(cand):
                 return Plan(cand, crossings, "U", src_side, dst_side)
@@ -348,7 +407,9 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
                 src_tap, dst_tap, src_dir, dst_dir, sy, dy, obstacles,
                 forbidden_regions, src_anchor, dst_anchor,
                 required_region_names, tol):
-            cand = [(sx, sy), (bridge_x, sy), (bridge_x, dy), (dx, dy)]
+            cand = [(sx, sy), src_tap,
+                    (bridge_x, sy), (bridge_x, dy),
+                    dst_tap, (dx, dy)]
             cand = _simplify(cand, tol)
             if clean(cand):
                 return Plan(cand, crossings, "U", src_side, dst_side)
@@ -357,11 +418,14 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
     #     entry.  Both elbow positions were already tried above, but we
     #     retry without the L tap-direction constraint to cover shapes
     #     the L filter excluded.
-    for elbow in ((dx, sy), (sx, dy)):
-        cand = [(sx, sy), elbow, (dx, dy)]
-        cand = _simplify(cand, tol)
-        if len(cand) >= 2 and clean(cand):
-            return Plan(cand, crossings, "L", src_side, dst_side)
+    if src_dir[0] == 0:
+        relaxed_elbow = (src_tap[0], dst_tap[1])
+    else:
+        relaxed_elbow = (dst_tap[0], src_tap[1])
+    cand = [(sx, sy), src_tap, relaxed_elbow, dst_tap, (dx, dy)]
+    cand = _simplify(cand, tol)
+    if len(cand) >= 2 and clean(cand):
+        return Plan(cand, crossings, "L", src_side, dst_side)
 
     # 3. Staircase fallback: exit tap, cross bridge, enter tap.  We
     #    enumerate multiple bridge candidates (free intervals) and pick
@@ -483,7 +547,37 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
 
     # 4. Last-resort corridor: always emit *something* -- the caller
     #    prefers an ugly route over a missing arrow.
-    fallback = [(sx, sy), src_tap, dst_tap, (dx, dy)]
+    # Even the last-resort route honours the orthogonal and endpoint-normal
+    # contracts.  It may cross an obstacle, but it must never introduce a
+    # diagonal or turn immediately on a node border.
+    if src_dir == dst_dir and src_dir[1] != 0:
+        bridge_y = (
+            max(src_tap[1], dst_tap[1]) + max(policy.min_tap, 4.0)
+            if src_dir[1] > 0
+            else min(src_tap[1], dst_tap[1]) - max(policy.min_tap, 4.0)
+        )
+        fallback_mid = [
+            (src_tap[0], bridge_y),
+            (dst_tap[0], bridge_y),
+        ]
+    elif src_dir == dst_dir and src_dir[0] != 0:
+        bridge_x = (
+            max(src_tap[0], dst_tap[0]) + max(policy.min_tap, 4.0)
+            if src_dir[0] > 0
+            else min(src_tap[0], dst_tap[0]) - max(policy.min_tap, 4.0)
+        )
+        fallback_mid = [
+            (bridge_x, src_tap[1]),
+            (bridge_x, dst_tap[1]),
+        ]
+    elif abs(src_tap[0] - dst_tap[0]) < tol \
+            or abs(src_tap[1] - dst_tap[1]) < tol:
+        fallback_mid = []
+    elif src_dir[0] == 0:
+        fallback_mid = [(src_tap[0], dst_tap[1])]
+    else:
+        fallback_mid = [(dst_tap[0], src_tap[1])]
+    fallback = [(sx, sy), src_tap, *fallback_mid, dst_tap, (dx, dy)]
     return Plan(_simplify(fallback, tol), crossings, "fallback",
                 src_side, dst_side)
 
@@ -547,6 +641,54 @@ def _side_point_frac(box: Box, side: str, frac: float) -> Tuple[float, float]:
     # Corners and unknown sides: fall back to the existing midpoint
     # mapping so callers always get a concrete point on the boundary.
     return _side_point(box, side)
+
+
+def _spread_occupied_tap(
+        box: Box, side: str, point: Tuple[float, float],
+        existing_segments: Sequence[Tuple[float, float, float, float]],
+        policy: CrossPolicy) -> Tuple[float, float]:
+    """Move a reused edge tap to the nearest free parallel-axis slot.
+
+    This is an internal fan-in/fan-out policy, not author-facing geometry.
+    Explicitly separated taps remain untouched; only a tap coincident with
+    an existing wire endpoint is shifted.  Candidates alternate around the
+    requested point and remain inset from rounded corners.
+    """
+    if side not in ("top", "bottom", "left", "right") \
+            or not existing_segments:
+        return point
+
+    horizontal_edge = side in ("top", "bottom")
+    edge_coord = box.top if side == "top" else box.bottom \
+        if side == "bottom" else box.left if side == "left" else box.right
+    requested = point[0] if horizontal_edge else point[1]
+    occupied: List[float] = []
+    tol = max(0.5, policy.tolerance)
+    for x1, y1, x2, y2 in existing_segments:
+        for px, py in ((x1, y1), (x2, y2)):
+            normal_coord = py if horizontal_edge else px
+            parallel_coord = px if horizontal_edge else py
+            if abs(normal_coord - edge_coord) <= tol:
+                occupied.append(parallel_coord)
+    separation = max(policy.min_clearance, policy.min_tap, 4.0)
+    if all(abs(requested - used) >= separation for used in occupied):
+        return point
+
+    span_lo = (box.left if horizontal_edge else box.top) + min(4.0,
+              (box.w if horizontal_edge else box.h) * 0.2)
+    span_hi = (box.right if horizontal_edge else box.bottom) - min(4.0,
+              (box.w if horizontal_edge else box.h) * 0.2)
+    candidates = []
+    for step in range(1, 9):
+        candidates.extend((requested - step * separation,
+                           requested + step * separation))
+    for candidate in candidates:
+        if not (span_lo <= candidate <= span_hi):
+            continue
+        if all(abs(candidate - used) >= separation for used in occupied):
+            return ((candidate, edge_coord) if horizontal_edge
+                    else (edge_coord, candidate))
+    return point
 
 
 def _outward(side: str) -> Tuple[int, int]:
@@ -629,6 +771,32 @@ def _clamp_tap(anchor: Box, direction: Tuple[int, int],
     geometry_upper = max(0.0, min(base_tap, limit))
     visible_floor = min(policy.min_tap, geometry_upper)
     return max(visible_floor, geometry_upper)
+
+
+def _region_escape_tap(point: Tuple[float, float],
+                       direction: Tuple[int, int],
+                       regions: Sequence[Box],
+                       policy: CrossPolicy) -> float:
+    """Distance needed to clear every non-shared enclosing region.
+
+    Long same-side relationships must leave a nested panel/card before
+    making their first lateral turn. The escape remains perpendicular to
+    the endpoint face and includes a small routing corridor outside the
+    outermost boundary.
+    """
+    if not regions:
+        return 0.0
+    x, y = point
+    clearance = max(policy.min_tap, policy.min_clearance * 0.75)
+    if direction == (0, 1):
+        return max(region.bottom for region in regions) + clearance - y
+    if direction == (0, -1):
+        return y - min(region.top for region in regions) + clearance
+    if direction == (1, 0):
+        return max(region.right for region in regions) + clearance - x
+    if direction == (-1, 0):
+        return x - min(region.left for region in regions) + clearance
+    return 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -1123,8 +1291,14 @@ def _simplify(points: Sequence[Tuple[float, float]],
         ax, ay = cleaned[-1]
         bx, by = out[i]
         cx, cy = out[i + 1]
-        if (abs(ax - bx) < tol and abs(bx - cx) < tol) or (
-                abs(ay - by) < tol and abs(by - cy) < tol):
+        vertical = abs(ax - bx) < tol and abs(bx - cx) < tol
+        horizontal = abs(ay - by) < tol and abs(by - cy) < tol
+        # Drop a collinear middle only when travel continues in the same
+        # direction. A-B-C with B beyond A and C is a required U-turn
+        # (typically an endpoint escape leg) and must be preserved.
+        if vertical and (by - ay) * (cy - by) >= -tol:
+            continue
+        if horizontal and (bx - ax) * (cx - bx) >= -tol:
             continue
         cleaned.append(out[i])
     if len(out) >= 2:
@@ -1140,6 +1314,7 @@ def render_orthogonal(canvas, plan: Plan, *,
                        stroke: str, width: float,
                        dasharray: Optional[str] = None,
                        marker_end=None,
+                       marker_start=None,
                        src_dot: bool = True,
                        existing_segments: Optional[
                            List[Tuple[float, float, float, float]]] = None,
@@ -1170,6 +1345,7 @@ def render_orthogonal(canvas, plan: Plan, *,
             stroke=stroke, width=width,
             dasharray=dasharray,
             marker_end=marker_end if i == last else None,
+            marker_start=marker_start if i == 0 else None,
             existing_segments=existing_segments or [],
             hop_radius=hop_radius,
         )
@@ -1185,7 +1361,7 @@ def _draw_orthogonal_segment_with_hops(
         canvas, x1: float, y1: float, x2: float, y2: float, *,
         stroke: str, width: float,
         dasharray: Optional[str],
-        marker_end,
+        marker_end, marker_start,
         existing_segments: Sequence[Tuple[float, float, float, float]],
         hop_radius: float) -> None:
     """Draw a single orthogonal segment, jumping over perpendicular
@@ -1203,7 +1379,8 @@ def _draw_orthogonal_segment_with_hops(
     if not (horizontal or vertical) or horizontal == vertical:
         _emit_line(canvas, x1, y1, x2, y2,
                    stroke=stroke, width=width,
-                   dasharray=dasharray, marker_end=marker_end)
+                   dasharray=dasharray, marker_end=marker_end,
+                   marker_start=marker_start)
         return
 
     crossings: List[float] = []
@@ -1240,7 +1417,8 @@ def _draw_orthogonal_segment_with_hops(
     if not crossings:
         _emit_line(canvas, x1, y1, x2, y2,
                    stroke=stroke, width=width,
-                   dasharray=dasharray, marker_end=marker_end)
+                   dasharray=dasharray, marker_end=marker_end,
+                   marker_start=marker_start)
         return
 
     # Build the sub-path: M start, L to crossing_a-r, A arc over,
@@ -1291,17 +1469,31 @@ def _draw_orthogonal_segment_with_hops(
         attrs["dasharray"] = dasharray
     if marker_end is not None:
         attrs["marker_end"] = marker_end
+    if marker_start is not None:
+        attrs["marker_start"] = marker_start
+    # The hop path contains SVG arc radii and flags. Canvas's generic
+    # numeric parser cannot distinguish those from coordinate pairs, so
+    # publish the known conservative footprint instead of letting a small
+    # wire jump inflate the diagram by hundreds of points.
+    attrs["ink_bbox"] = (
+        min(x1, x2) - hop_radius,
+        min(y1, y2) - hop_radius,
+        max(x1, x2) + hop_radius,
+        max(y1, y2) + hop_radius,
+    )
     canvas.path(d, **attrs)
 
 
 def _emit_line(canvas, x1: float, y1: float, x2: float, y2: float, *,
                stroke: str, width: float,
-               dasharray: Optional[str], marker_end) -> None:
+               dasharray: Optional[str], marker_end, marker_start) -> None:
     attrs = {"stroke": stroke, "stroke_width": width}
     if dasharray:
         attrs["dasharray"] = dasharray
     if marker_end is not None:
         attrs["marker_end"] = marker_end
+    if marker_start is not None:
+        attrs["marker_start"] = marker_start
     canvas.line(x1, y1, x2, y2, **attrs)
 
 
@@ -1309,6 +1501,7 @@ def render_curved(canvas, plan: Plan, *,
                    stroke: str, width: float,
                    dasharray: Optional[str] = None,
                    marker_end=None,
+                   marker_start=None,
                    curvature: float = 0.5,
                    src_dot: bool = True) -> None:
     """Smooth ``plan.waypoints`` into a cardinal spline path.
@@ -1324,7 +1517,8 @@ def render_curved(canvas, plan: Plan, *,
         x2, y2 = pts[1]
         d = f"M {x1:.2f},{y1:.2f} L {x2:.2f},{y2:.2f}"
         canvas.path(d, stroke=stroke, fill="none", stroke_width=width,
-                    marker_end=marker_end, dasharray=dasharray)
+                    marker_end=marker_end, marker_start=marker_start,
+                    dasharray=dasharray)
         if src_dot:
             canvas.circle(x1, y1, r=width * 1.4, fill=stroke, stroke="none")
         return
@@ -1345,6 +1539,7 @@ def render_curved(canvas, plan: Plan, *,
                       f"{p2[0]:.2f},{p2[1]:.2f}")
     canvas.path(" ".join(pieces), stroke=stroke, fill="none",
                 stroke_width=width, marker_end=marker_end,
+                marker_start=marker_start,
                 dasharray=dasharray)
     if src_dot:
         sx, sy = pts[0]

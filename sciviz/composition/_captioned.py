@@ -48,6 +48,7 @@ class Captioned(Element):
     """
 
     def __init__(self, child: Element, *,
+                 decoration: Optional[Element] = None,
                  number: Optional[str] = None,
                  number_role=None,
                  number_size: float = 24.0,
@@ -56,7 +57,8 @@ class Captioned(Element):
                  title_size: str = "small",
                  gap: Union[str, float] = "xs",
                  align: str = "center",
-                 align_on: str = "outer"):
+                 align_on: str = "outer",
+                 placement: str = "top"):
         """
         ``align_on``: ``"outer"`` (default, back-compat) reports the full
         captioned bbox as the content axis. ``"child"`` reports only the
@@ -64,6 +66,17 @@ class Captioned(Element):
         containers align on the child's midline, ignoring the caption.
         """
         self.child = child
+        if decoration is not None and not isinstance(decoration, Element):
+            raise TypeError("Captioned.decoration must be an Element")
+        if decoration is not None and (number is not None or title is not None):
+            raise ValueError(
+                "Captioned.decoration cannot be combined with number/title"
+            )
+        if placement not in ("top", "bottom", "left", "right"):
+            raise ValueError(
+                "Captioned.placement must be top/bottom/left/right"
+            )
+        self.decoration = decoration
         self.number = number
         self.number_role = number_role
         self.number_size = number_size
@@ -72,12 +85,15 @@ class Captioned(Element):
         self.title_size = title_size
         self.gap = gap
         self.align = align
+        self.placement = placement
         if align_on not in ("outer", "child"):
             raise ValueError(
                 f"align_on must be 'outer' or 'child'; got {align_on!r}")
         self.align_on = align_on
 
     def _decoration(self) -> Optional[Element]:
+        if self.decoration is not None:
+            return self.decoration
         if self.number is not None:
             role = self.number_role if self.number_role is not None else "info"
             return Badge(self.number, color=role, size=self.number_size,
@@ -95,31 +111,44 @@ class Captioned(Element):
         d_bb = d.measure(theme)
         c_bb = self.child.measure(theme)
         gap_px = theme.gap_px(self.gap)
-        return BBox(max(d_bb.w, c_bb.w), d_bb.h + gap_px + c_bb.h)
+        if self.placement in ("top", "bottom"):
+            return BBox(max(d_bb.w, c_bb.w), d_bb.h + gap_px + c_bb.h)
+        return BBox(d_bb.w + gap_px + c_bb.w, max(d_bb.h, c_bb.h))
+
+    def _offsets(self, theme: Theme):
+        """Return decoration/child offsets inside the measured frame."""
+        d = self._decoration()
+        assert d is not None
+        size = self.measure(theme)
+        d_bb = d.measure(theme)
+        c_bb = self.child.measure(theme)
+        gap_px = theme.gap_px(self.gap)
+        if self.placement == "top":
+            d_pos = (_offset_like(self.align, size.w, d_bb.w), 0.0)
+            c_pos = (_offset_like(self.align, size.w, c_bb.w),
+                     d_bb.h + gap_px)
+        elif self.placement == "bottom":
+            c_pos = (_offset_like(self.align, size.w, c_bb.w), 0.0)
+            d_pos = (_offset_like(self.align, size.w, d_bb.w),
+                     c_bb.h + gap_px)
+        elif self.placement == "left":
+            d_pos = (0.0, _offset_like(self.align, size.h, d_bb.h))
+            c_pos = (d_bb.w + gap_px,
+                     _offset_like(self.align, size.h, c_bb.h))
+        else:
+            c_pos = (0.0, _offset_like(self.align, size.h, c_bb.h))
+            d_pos = (c_bb.w + gap_px,
+                     _offset_like(self.align, size.h, d_bb.h))
+        return d_pos, c_pos
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         d = self._decoration()
         if d is None:
             self.child.render(canvas, x, y, theme)
             return
-        size = self.measure(theme)
-        d_bb = d.measure(theme)
-        c_bb = self.child.measure(theme)
-        gap_px = theme.gap_px(self.gap)
-
-        def _offset(outer_w: float, inner_w: float) -> float:
-            if self.align == "start":
-                return 0.0
-            if self.align == "end":
-                return outer_w - inner_w
-            return (outer_w - inner_w) / 2
-
-        d_x = x + _offset(size.w, d_bb.w)
-        d.render(canvas, d_x, y, theme)
-
-        c_y = y + d_bb.h + gap_px
-        c_x = x + _offset(size.w, c_bb.w)
-        self.child.render(canvas, c_x, c_y, theme)
+        d_pos, c_pos = self._offsets(theme)
+        d.render(canvas, x + d_pos[0], y + d_pos[1], theme)
+        self.child.render(canvas, x + c_pos[0], y + c_pos[1], theme)
 
     def content_bbox(self, theme: Theme):
         """When ``align_on="child"``, report only the wrapped child's
@@ -133,14 +162,27 @@ class Captioned(Element):
         d = self._decoration()
         if d is None:
             return self.child.content_bbox(theme)
-        size = self.measure(theme)
-        d_bb = d.measure(theme)
-        c_bb = self.child.measure(theme)
-        gap_px = theme.gap_px(self.gap)
+        _d_pos, c_pos = self._offsets(theme)
         cx, cy, cw, ch = self.child.content_bbox(theme)
-        c_x = _offset_like(self.align, size.w, c_bb.w)
-        c_y = d_bb.h + gap_px
-        return (c_x + cx, c_y + cy, cw, ch)
+        return (c_pos[0] + cx, c_pos[1] + cy, cw, ch)
+
+    # Captioned is a transparent decoration for sibling-aware layout.  A
+    # title must not hide a Grid/Row's shared-column contract from Column or
+    # AlignedStack; otherwise two titled panels drift even though their
+    # underlying semantic columns correspond exactly.
+    def _shared_column_widths(self, theme: Theme):
+        probe = getattr(self.child, "_shared_column_widths", None)
+        return list(probe(theme)) if probe is not None else []
+
+    def _apply_shared_columns(self, widths) -> None:
+        apply = getattr(self.child, "_apply_shared_columns", None)
+        if apply is not None:
+            apply(widths)
+
+    def _stretch_visible_to_slots(self, widths) -> None:
+        stretch = getattr(self.child, "_stretch_visible_to_slots", None)
+        if stretch is not None:
+            stretch(widths)
 
 
 def _offset_like(align: str, outer_w: float, inner_w: float) -> float:
@@ -149,5 +191,3 @@ def _offset_like(align: str, outer_w: float, inner_w: float) -> float:
     if align == "end":
         return outer_w - inner_w
     return (outer_w - inner_w) / 2
-
-

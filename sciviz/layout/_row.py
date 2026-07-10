@@ -36,14 +36,27 @@ class Row(Element):
         width). Critical for visually aligning columns of differing-width
         labels (e.g. tokens, bars, pictograms). Each child is centered
         within its slot.
+    balance_outer : bool
+        For a three-part bilateral composition, reserve equal-width slots
+        for the first and third visible children and keep the middle child
+        on the exact row centreline.  The outer children pack inward, so an
+        unequal legend/system pair does not push the semantic centre off
+        axis.  Layout-invisible children such as ``Connect`` are ignored.
     """
 
     def __init__(self, *children: Element, gap: Union[str, float] = "md",
-                 align: str = "center", equal_widths: bool = False):
+                 align: str = "center", equal_widths: bool = False,
+                 balance_outer: bool = False):
         self.children: List[Element] = [c for c in children if c is not None]
         self.gap = gap
         self.align = align
         self.equal_widths = equal_widths
+        self.balance_outer = bool(balance_outer)
+        if self.balance_outer and self.equal_widths:
+            raise ValueError(
+                "balance_outer and equal_widths are alternative Row slot "
+                "contracts; choose one"
+            )
         self._shape_normalized = False
         # Tracks whether ``_maybe_equalise_widths`` has already fired for
         # this Row so we never inflate twice (which would compound the
@@ -52,6 +65,8 @@ class Row(Element):
         # Optional row-width floor set by ``inflate_to`` so the Row
         # rendered width can grow to match a sibling slot width.
         self._min_width: float = 0.0
+        # Cross-axis floor set when a parent stretches this nested Row.
+        self._min_height: float = 0.0
         # Per-child widths forced by a containing AlignedStack. When set,
         # each visible child occupies at least ``forced_slot_w[i]`` px.
         self._forced_slot_w: List[float] | None = None
@@ -64,12 +79,31 @@ class Row(Element):
         floor is honoured by ``measure`` and propagated to children via
         ``_maybe_equalise_widths`` when ``equal_widths=True``.
 
-        ``min_h`` is currently ignored -- Rows derive their height from
-        the tallest child, not a floor.
+        A height floor is forwarded to structural Column children while
+        compact accessories remain centred in the taller row.
         """
         if min_w > self._min_width:
             self._min_width = float(min_w)
             self._equalised = False
+        if min_h > self._min_height:
+            self._min_height = float(min_h)
+            self._stretched = False
+
+    def _apply_height_floor(self, theme: Theme) -> None:
+        if self._min_height <= 0.0:
+            return
+        natural = max(
+            (child.measure(theme).h for child in self._visible_children()),
+            default=0.0,
+        )
+        if natural >= self._min_height - 0.5:
+            return
+        absorbers = [
+            child for child in self._visible_children()
+            if getattr(child, "absorbs_cross_axis_stretch", False)
+        ]
+        for child in absorbers:
+            child.inflate_to(0.0, self._min_height)
 
     @staticmethod
     def _find_shape_peer(elem):
@@ -83,6 +117,13 @@ class Row(Element):
         while cur is not None and seen < 6:
             if getattr(cur, "shape_key", None):
                 return cur
+            # Structural containers own an outer silhouette (padding,
+            # border, header band). Their inner Box is not a visual peer of
+            # adjacent leaf boxes; unwrapping through that boundary creates
+            # a feedback loop where each equalisation pass adds container
+            # padding again.
+            if getattr(cur, "shape_peer_boundary", False):
+                return None
             # Try common wrapper attributes: .child (Anchor, Captioned),
             # .body (Banner), .label (Box with Element label).
             nxt = getattr(cur, "child", None) or getattr(cur, "body", None)
@@ -151,6 +192,89 @@ class Row(Element):
             else:
                 slots.append(base)
         return slots
+
+    def _balanced_outer_geometry(self, theme: Theme):
+        """Return inward-packed x offsets for a bilateral three-part row.
+
+        This is the single source of truth used by measurement, rendering,
+        anchor publication, and content-bbox propagation.  Keeping the
+        geometry here prevents the centreline from drifting between those
+        phases when the two outer systems have unequal intrinsic widths.
+        """
+        visible = self._visible_children()
+        if len(visible) != 3:
+            raise ValueError(
+                "Row(balance_outer=True) requires exactly three visible "
+                f"children; got {len(visible)}"
+            )
+        sizes = [child.measure(theme) for child in visible]
+        g = theme.gap_px(self.gap)
+        side_slot = max(sizes[0].w, sizes[2].w)
+        natural_w = 2.0 * side_slot + sizes[1].w + 2.0 * g
+        if self._min_width > natural_w:
+            side_slot += (self._min_width - natural_w) / 2.0
+        offsets = (
+            side_slot - sizes[0].w,
+            side_slot + g,
+            side_slot + g + sizes[1].w + g,
+        )
+        width = 2.0 * side_slot + sizes[1].w + 2.0 * g
+        return offsets, width
+
+    def _x_in_shared_slot(self, child: Element,
+                          slot_x: float, slot_w: float,
+                          content_bbox, visible_index: int,
+                          visible_count: int, theme: Theme) -> float:
+        """Place content inside a cross-row shared column.
+
+        Shared columns normally centre corresponding stages.  When an outer
+        stage is much narrower than its peer in another row, pure centring
+        creates a conspicuous moat at the *inside* of the pipeline.  Bias
+        only those large-surplus outer slots inward: the leftmost stage ends
+        at its column boundary and the rightmost starts there.  Middle
+        columns and small discrepancies remain centred, preserving ordinary
+        table-like rhythm.
+        """
+        cb_x, _cb_y, cb_w, _cb_h = content_bbox
+        slack = max(0.0, slot_w - cb_w)
+        material_slack = max(theme.unit * 2.0,
+                             theme.gap_px(self.gap) * 1.5)
+        # Inward packing is for composite stages (streams, grouped panels),
+        # not leaf nodes. A bare/anchored Box in a shared tower column should
+        # stay centred under its encoder rather than hugging the centre gap.
+        composite = hasattr(child, "children") or hasattr(child, "body")
+        if composite and visible_count > 1 and slack > material_slack:
+            if visible_index == 0:
+                return slot_x + slot_w - (cb_x + cb_w)
+            if visible_index == visible_count - 1:
+                return slot_x - cb_x
+        return slot_x + slot_w / 2.0 - (cb_x + cb_w / 2.0)
+
+    def _auto_top_aligned_indices(self, content) -> set[int]:
+        """Identify tall peer structures around a compact accessory.
+
+        Architecture rows often contain two large nested systems separated
+        by a small bridge/NIC/legend. Geometrically centring every child
+        makes the systems' header bands drift. When at least two peers are
+        similarly tall *and* a genuinely compact accessory is present,
+        align those tall content boxes at the top while leaving the compact
+        item optically centred. Ordinary rows retain centre alignment.
+        """
+        if self.align != "center":
+            return set()
+        visible = [
+            (index, cb)
+            for index, (child, cb) in enumerate(zip(self.children, content))
+            if not getattr(child, "is_layout_invisible", False)
+        ]
+        if len(visible) < 3:
+            return set()
+        max_h = max((cb[3] for _index, cb in visible), default=0.0)
+        if max_h <= 0.0:
+            return set()
+        tall = {index for index, cb in visible if cb[3] >= max_h * 0.72}
+        has_compact = any(cb[3] <= max_h * 0.55 for _index, cb in visible)
+        return tall if len(tall) >= 2 and has_compact else set()
 
     # ---- AlignedStack hooks ---------------------------------------------
 
@@ -238,7 +362,10 @@ class Row(Element):
         if self.align != "stretch" or self._stretched or not self.children:
             return
         self._stretched = True
-        target_h = max((c.measure(theme).h for c in self.children), default=0.0)
+        target_h = max(
+            self._min_height,
+            max((c.measure(theme).h for c in self.children), default=0.0),
+        )
         if target_h <= 0.0:
             return
         for c in self.children:
@@ -254,13 +381,16 @@ class Row(Element):
         # measurements.
         self._maybe_equalise_widths(theme)
         self._maybe_stretch_heights(theme)
+        self._apply_height_floor(theme)
         self._normalize_shape_peers(theme)
         visible = self._visible_children()
         vis_sizes = [c.measure(theme) for c in visible]
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
         n_vis = max(len(visible), 1)
-        if self.equal_widths and visible:
+        if self.balance_outer:
+            _offsets, w = self._balanced_outer_geometry(theme)
+        elif self.equal_widths and visible:
             # Inline connectors keep their intrinsic width while card-like
             # siblings equalise. The slot is taken from non-connector
             # children only; if every child is a connector, fall back to
@@ -287,7 +417,11 @@ class Row(Element):
         content_h = max(cb[3] for cb in content)
         max_top = max(cb[1] for cb in content)
         max_bot = max(s.h - cb[1] - cb[3] for s, cb in zip(sizes, content))
-        h = max(content_h + max_top + max_bot, max(s.h for s in sizes))
+        h = max(
+            self._min_height,
+            content_h + max_top + max_bot,
+            max(s.h for s in sizes),
+        )
         if self._min_width > w:
             w = self._min_width
         return BBox(w, h)
@@ -302,6 +436,7 @@ class Row(Element):
         # measurements.
         self._maybe_equalise_widths(theme)
         self._maybe_stretch_heights(theme)
+        self._apply_height_floor(theme)
         self._normalize_shape_peers(theme)
         # Resolve cross-axis stretchers (vertical separators etc.) to Row height
         # BEFORE taking measurements, so their measured height fits the row.
@@ -324,28 +459,49 @@ class Row(Element):
                 slot = max((s.w for s in vis_sizes), default=0.0)
         # AlignedStack-forced per-slot widths (visible children only).
         forced_slots = None
-        if not self.equal_widths and self._forced_slot_w is not None:
-            vis_sizes = [c.measure(theme) for c in self._visible_children()]
+        if (not self.equal_widths and not self.balance_outer
+                and self._forced_slot_w is not None):
+            visible_children = self._visible_children()
+            vis_sizes = [c.measure(theme) for c in visible_children]
             forced_slots = self._slot_widths_for_visible(vis_sizes)
+            visible_count = len(visible_children)
+        else:
+            visible_count = len(self._visible_children())
+        balanced_offsets = None
+        if self.balance_outer:
+            balanced_offsets, _balanced_width = self._balanced_outer_geometry(theme)
         # Pre-compute the content-axis centre so that children with
         # asymmetric decoration margins (e.g. a Banner header above
         # but nothing below) stay inside the Row's reported bbox.
         _content_h = max(c[3] for c in content)
         _max_top = max(c[1] for c in content)
+        top_aligned = self._auto_top_aligned_indices(content)
         cx = x
         vis_idx = 0
-        for child, size, cb in zip(self.children, sizes, content):
+        for child_index, (child, size, cb) in enumerate(
+                zip(self.children, sizes, content)):
             invisible = getattr(child, "is_layout_invisible", False)
             cb_y = cb[1]
             cb_h = cb[3]
             if self.align in ("start", "stretch"):
-                cy = y - cb_y
+                # Align CONTENT tops while retaining the largest asymmetric
+                # decoration reserve (Region labels, badges, headers) above
+                # them.  Using ``y - cb_y`` leaked decorated siblings above
+                # the Row's measured bbox.
+                cy = y + _max_top - cb_y
             elif self.align == "end":
-                cy = y + H - (cb_y + cb_h)
+                # The shared content baseline excludes the largest bottom
+                # decoration reserve just as start excludes the top reserve.
+                cy = y + _max_top + _content_h - (cb_y + cb_h)
+            elif child_index in top_aligned:
+                cy = y + _max_top - cb_y
             else:
                 row_content_center_y = y + _max_top + _content_h / 2
                 cy = row_content_center_y - (cb_y + cb_h / 2)
-            if self.equal_widths and not invisible:
+            if self.balance_outer and not invisible:
+                child.render(canvas, x + balanced_offsets[vis_idx], cy, theme)
+                vis_idx += 1
+            elif self.equal_widths and not invisible:
                 cb_x = cb[0]
                 cb_w = cb[2]
                 if self._is_inline_connector(child):
@@ -357,10 +513,10 @@ class Row(Element):
                     cx += slot + g
             elif forced_slots is not None and not invisible:
                 slot_w = forced_slots[vis_idx]
-                cb_x = cb[0]
-                cb_w = cb[2]
-                slot_cx = cx + slot_w / 2
-                child.render(canvas, slot_cx - (cb_x + cb_w / 2), cy, theme)
+                child_x = self._x_in_shared_slot(
+                    child, cx, slot_w, cb, vis_idx, visible_count, theme
+                )
+                child.render(canvas, child_x, cy, theme)
                 cx += slot_w + g
                 vis_idx += 1
             else:
@@ -382,6 +538,7 @@ class Row(Element):
         # measurements.
         self._maybe_equalise_widths(theme)
         self._maybe_stretch_heights(theme)
+        self._apply_height_floor(theme)
         self._normalize_shape_peers(theme)
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
@@ -398,15 +555,25 @@ class Row(Element):
             else:
                 slot = max((s.w for s in vis_sizes), default=0.0)
         forced_slots = None
-        if not self.equal_widths and self._forced_slot_w is not None:
-            vis_sizes = [c.measure(theme) for c in self._visible_children()]
+        if (not self.equal_widths and not self.balance_outer
+                and self._forced_slot_w is not None):
+            visible_children = self._visible_children()
+            vis_sizes = [c.measure(theme) for c in visible_children]
             forced_slots = self._slot_widths_for_visible(vis_sizes)
+            visible_count = len(visible_children)
+        else:
+            visible_count = len(self._visible_children())
+        balanced_offsets = None
+        if self.balance_outer:
+            balanced_offsets, _balanced_width = self._balanced_outer_geometry(theme)
         _content_h = max(c[3] for c in content)
         _max_top = max(c[1] for c in content)
+        top_aligned = self._auto_top_aligned_indices(content)
         offs = []
         cx = 0.0
         vis_idx = 0
-        for child, size, cb in zip(self.children, sizes, content):
+        for child_index, (child, size, cb) in enumerate(
+                zip(self.children, sizes, content)):
             invisible = getattr(child, "is_layout_invisible", False)
             cb_y = cb[1]
             cb_h = cb[3]
@@ -414,9 +581,14 @@ class Row(Element):
                 oy = 0.0 - cb_y
             elif self.align == "end":
                 oy = H - (cb_y + cb_h)
+            elif child_index in top_aligned:
+                oy = _max_top - cb_y
             else:
                 oy = (_max_top + _content_h / 2) - (cb_y + cb_h / 2)
-            if self.equal_widths and not invisible:
+            if self.balance_outer and not invisible:
+                offs.append((balanced_offsets[vis_idx], oy, size))
+                vis_idx += 1
+            elif self.equal_widths and not invisible:
                 if self._is_inline_connector(child):
                     offs.append((cx, oy, size))
                     cx += size.w + g
@@ -427,8 +599,9 @@ class Row(Element):
                     cx += slot + g
             elif forced_slots is not None and not invisible:
                 slot_w = forced_slots[vis_idx]
-                slot_cx = cx + slot_w / 2
-                ox = slot_cx - (cb[0] + cb[2] / 2)
+                ox = self._x_in_shared_slot(
+                    child, cx, slot_w, cb, vis_idx, visible_count, theme
+                )
                 offs.append((ox, oy, size))
                 cx += slot_w + g
                 vis_idx += 1

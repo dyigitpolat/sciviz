@@ -45,7 +45,7 @@ def Connect(
     # ---- appearance -----------------------------------------------------
     color: ColorRef | str = "text",
     dashed: bool = False,
-    head: bool | str = True,         # True / False / "both" / "src" / "dst"
+    head: bool | str = True,         # True / False / "none" / "start" / "end" / "both"
     # ---- routing (all modes) -------------------------------------------
     auto_route: bool = True,         # topological planner on by default
     # ---- routed mode only ----------------------------------------------
@@ -138,11 +138,13 @@ Every old call site maps to a `Connect` call:
 
 ### Arrowhead semantics
 
-`head` generalises the old boolean `arrow`:
+`head` generalises the old boolean `arrow` with the same vocabulary in inline
+and routed modes:
 
-- `True` (default): arrowhead at destination (one-way).
-- `False`: no arrowhead.
-- `"src"`, `"dst"`, `"both"`: explicit control.
+- `True` or `"end"` (default): arrowhead at the destination (one-way).
+- `False` or `"none"`: no arrowhead.
+- `"start"`: arrowhead at the source.
+- `"both"`: arrowheads at both endpoints (bidirectional).
 
 ### Label semantics
 

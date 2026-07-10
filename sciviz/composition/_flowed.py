@@ -11,7 +11,7 @@ from ..elements import Text, TextBlock
 from ..layout import Row, Column, Spacer
 from ._anchor import Anchor, _anchor_stack, _side_point, _side_point_frac
 from ._bus import Bus
-from ._flow import Flow, Labeled
+from ._flow import Flow, Labeled, _assign_edge_shares
 
 class Flowed(Element):
     """Render ``child`` and overlay :class:`Flow` arrows between named anchors.
@@ -61,9 +61,12 @@ class Flowed(Element):
                 for c in children:
                     if c is not None:
                         self._collect_anchors(c, out)
-        for attr in ("child",):
+        for attr in (
+            "child", "body", "header", "footer", "above", "below",
+            "decoration", "source",
+        ):
             child = getattr(elem, attr, None)
-            if child is not None:
+            if isinstance(child, Element):
                 self._collect_anchors(child, out)
         # Grid stores cells in a list of dicts keyed by row name -- recurse
         # into every value (including tuple-keyed spanning cells).
@@ -88,12 +91,13 @@ class Flowed(Element):
             if isinstance(flow, Flow):
                 src = anchors.get(flow.src)
                 dst = anchors.get(flow.dst)
+                bump = m * (1.6 if flow.label else 1.0)
                 # If the flow's side is "auto", skip margin inflation --
                 # we don't know which boundary the flow will attach to.
                 if src is not None and flow.src_side != "auto":
-                    src._bump_margin(flow.src_side, m)
+                    src._bump_margin(flow.src_side, bump)
                 if dst is not None and flow.dst_side != "auto":
-                    dst._bump_margin(flow.dst_side, m)
+                    dst._bump_margin(flow.dst_side, bump)
             elif isinstance(flow, Bus):
                 # A Bus chooses its orientation (horizontal or vertical
                 # spine) at render time based on measured positions; at
@@ -167,70 +171,9 @@ class Flowed(Element):
             flow._render(canvas, theme, my_registry)
 
     def _assign_edge_shares(self, registry: dict) -> None:
-        """Distribute multiple flows that attach to the same anchor edge
-        along that edge, instead of piling them onto the midpoint.
-
-        Groups flows by ``(anchor_name, resolved_side)`` and assigns
-        fractional taps evenly: ``(i+1)/(n+1)`` for a group of ``n``.
-        Within a group, flows are ordered by the *other* endpoint's
-        perpendicular coordinate so neighbouring attachments correspond
-        to neighbouring counterparts -- e.g. two flows entering a box's
-        top from the left and right get their taps on the left and
-        right of that top edge respectively.
-        """
-        flow_endpoints = []
-        for flow in self.flows:
-            if not isinstance(flow, Flow):
-                continue
-            sb = registry.get(flow.src)
-            db = registry.get(flow.dst)
-            if sb is None or db is None:
-                continue
-            src_side = (flow._auto_side(sb, db)
-                        if flow.src_side == "auto" else flow.src_side)
-            dst_side = (flow._auto_side(db, sb)
-                        if flow.dst_side == "auto" else flow.dst_side)
-            flow_endpoints.append((flow, sb, db, src_side, dst_side))
-
-        buckets: dict = {}
-        for entry in flow_endpoints:
-            flow, sb, db, src_side, dst_side = entry
-            buckets.setdefault((flow.src, src_side), []).append(
-                ("src", entry))
-            buckets.setdefault((flow.dst, dst_side), []).append(
-                ("dst", entry))
-
-        for (anchor_name, side), members in buckets.items():
-            if len(members) <= 1:
-                # Single flow on this edge -- keep the midpoint default.
-                for role, entry in members:
-                    flow, sb, db, ssd, dsd = entry
-                    if role == "src":
-                        flow._share_src_frac = 0.5
-                    else:
-                        flow._share_dst_frac = 0.5
-                continue
-
-            def sort_key(m):
-                role, entry = m
-                flow, sb, db, ssd, dsd = entry
-                other = db if role == "src" else sb
-                ox, oy, ow, oh = other
-                return (ox + ow / 2) if side in ("top", "bottom") else (oy + oh / 2)
-
-            members.sort(key=sort_key)
-            n = len(members)
-            for i, (role, entry) in enumerate(members):
-                flow, sb, db, ssd, dsd = entry
-                frac = (i + 1) / (n + 1)
-                if role == "src":
-                    flow._share_src_frac = frac
-                else:
-                    flow._share_dst_frac = frac
+        _assign_edge_shares(self.flows, registry)
 
 
 # ---------------------------------------------------------------------------
 # MatchSize -- container that equalises children along an axis
 # ---------------------------------------------------------------------------
-
-

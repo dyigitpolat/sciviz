@@ -12,6 +12,7 @@ from sciviz import (
     EqualGrid,
     Icon,
     MiniMatrix,
+    Math,
     Palette,
     SoftLegend,
     SparkLine,
@@ -111,6 +112,17 @@ def test_canvas_ink_bbox_tracks_text():
     assert y0 < 0
 
 
+def test_math_publishes_its_known_ink_bbox():
+    theme = Theme()
+    formula = Math(r"x_i + y_i")
+    size = formula.measure(theme)
+    canvas = Canvas()
+    formula.render(canvas, 7.0, 11.0, theme)
+    assert canvas.ink_bbox == pytest.approx((7.0, 11.0,
+                                             7.0 + size.w,
+                                             11.0 + size.h))
+
+
 class Overpaint(Element):
     def measure(self, theme: Theme):
         from sciviz.core import BBox
@@ -128,6 +140,20 @@ def test_diagram_for_paper_auto_fits_overflow():
     assert d._last_render_size.h > nominal.h
 
 
+class BottomOverpaint(Element):
+    def measure(self, theme: Theme):
+        return BBox(20, 20)
+
+    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        canvas.rect(x, y, 20, 20, fill="#123456")
+        canvas.rect(x, y + 80, 20, 20, fill="#654321")
+
+
+def test_bottom_overflow_grows_canvas_without_shifting_top_ink_negative():
+    svg = Diagram.for_paper(BottomOverpaint()).render(embed_fonts=False)
+    assert 'y="-' not in svg
+
+
 def test_pdf_backend_probe_falls_back_to_cairosvg(monkeypatch):
     from sciviz.diagram import Diagram as DiagramClass
 
@@ -138,6 +164,14 @@ def test_pdf_backend_probe_falls_back_to_cairosvg(monkeypatch):
 def test_condition_glyph_rejects_unknown_kind():
     with pytest.raises(ValueError):
         ConditionGlyph("code-flag")
+
+
+def test_conflict_condition_glyph_renders_cross():
+    glyph = ConditionGlyph("conflict", size="title", color="negative")
+    canvas = Canvas()
+    size = glyph.measure(Theme())
+    glyph.render(canvas, 0.0, 0.0, Theme())
+    assert canvas.to_svg(size.w, size.h).count("<line") == 2
 
 
 def test_stepcell_index_badge_grows_for_two_digits():
@@ -348,7 +382,7 @@ def test_inline_arrow_label_does_not_force_long_shaft():
         f"label width {label_w}"
     )
     # Both arrows should keep at least the compact default shaft.
-    assert short_bbox.w >= 48.0 - 0.5
+    assert short_bbox.w >= 24.0 - 0.5
 
 
 def test_row_equal_widths_skips_inline_connectors():
@@ -546,6 +580,25 @@ def test_orthogonal_router_keeps_minimum_visible_tap():
     p1 = plan.waypoints[1]
     stub_len = max(abs(p1[0] - p0[0]), abs(p1[1] - p0[1]))
     assert stub_len >= DEFAULT_POLICY.min_tap - 0.5
+
+
+def test_turning_route_keeps_perpendicular_stubs_at_both_nodes():
+    """A misaligned opposite-face route keeps full endpoint-normal legs."""
+    from sciviz.auto.router import Box as RBox, Endpoint, plan_path
+    src = RBox(x=0, y=0, w=40, h=30, name="src")
+    dst = RBox(x=180, y=70, w=40, h=30, name="dst")
+    tap = 12.0
+    plan = plan_path(
+        Endpoint(src, side="right", tap=tap),
+        Endpoint(dst, side="left", tap=tap),
+        anchors=[src, dst],
+    )
+    p0, p1 = plan.waypoints[:2]
+    q1, q0 = plan.waypoints[-2:]
+    assert p1[0] - p0[0] >= tap - 0.5
+    assert abs(p1[1] - p0[1]) < 0.5
+    assert q0[0] - q1[0] >= tap - 0.5
+    assert abs(q0[1] - q1[1]) < 0.5
 
 
 def test_for_paper_trims_blank_margins():

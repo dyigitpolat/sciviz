@@ -105,7 +105,13 @@ class Legend(Element):
     def _positional_container(self):
         from ..layout import Row, Column
         cls = Row if self.orientation == "horizontal" else Column
-        return cls(*self._children, gap=self.gap, align="center")
+        children = list(self._children)
+        if self.label:
+            children.insert(
+                0,
+                Text(self.label, size="small", color="text", weight="700"),
+            )
+        return cls(*children, gap=self.gap, align="center")
 
     def measure(self, theme: Theme) -> BBox:
         if self._children:
@@ -163,5 +169,4 @@ class Legend(Element):
                     canvas.text(cx, cy_text, lbl,
                                size=sz, fill=theme.text_muted)
                     cx += theme.text_width(lbl, "small") + theme.unit
-
 

@@ -45,7 +45,10 @@ class Theme:
     # "processing" (yellow/gold) and "shared" (green) families.
     accent_proc: str = "#fbe5a8"
     accent_shared: str = "#c1e1c1"
-    panel_soft: str = "#c0cbd7"
+    # A grouping surface, not a data encoding. Keep it near-paper-white so
+    # nested panels preserve contrast hierarchy instead of becoming a large
+    # blue-gray visual mass.
+    panel_soft: str = "#eef1f5"
     muted_label: str = "#475569"
 
     # -- text --------------------------------------------------------------
@@ -70,7 +73,8 @@ class Theme:
     font_family: str = ("'Helvetica Neue', Helvetica, Arial, "
                         "'DejaVu Sans', 'Lucida Sans Unicode', "
                         "'Apple Symbols', sans-serif")
-    font_mono: str = "'Inconsolata', 'Menlo', 'Consolas', monospace"
+    font_mono: str = ("'Inconsolata', 'Menlo', 'Consolas', "
+                      "'DejaVu Sans Mono', monospace")
     font_serif: str = "'Computer Modern Serif', 'Latin Modern Roman', 'Times New Roman', serif"
 
     font_title: float = 15.0
@@ -95,16 +99,18 @@ class Theme:
     # re-wrapping labels onto more lines narrows the figure without
     # touching font sizes or paddings.
     wrap_budget: float = 16.0
-
     # -- stroke weights (all diagrams default to hairlines) ---------------
     hairline: float = 0.6
     line: float = 0.9
     thick: float = 1.3
-    connector: float = 1.6
+    # Connectors should read as relationships, not as a second set of box
+    # borders.  A modest step above ``line`` survives print reduction while
+    # keeping dense workflows calm.
+    connector: float = 1.15
 
     # Fixed arrowhead marker size keeps every arrow in a diagram visually
     # consistent regardless of which connector primitive draws it.
-    arrow_size: float = 4.0
+    arrow_size: float = 3.6
 
     # -- palettes (paper-appropriate: desaturated, print-safe) ------------
     sequential_blues: List[str] = field(default_factory=lambda: [
@@ -247,6 +253,36 @@ class Theme:
                 return self._auto_contrast(val)
         return name
 
+    def paint_of(self, name) -> str:
+        """Resolve a shape fill/stroke without text auto-contrast.
+
+        ``color_of`` is intentionally context-sensitive so legacy
+        ``Text(color="white")`` remains readable when moved into a light
+        container. Shape paint must never use that correction: a white box
+        inside a pale card is still a white box, not dark text ink.
+        """
+        if name is None:
+            return "none"
+        from ..palette import ColorRef, resolve_color
+        if isinstance(name, ColorRef):
+            return resolve_color(name, self)
+        if not isinstance(name, str):
+            raise TypeError(
+                f"paint_of expects str|ColorRef|None, got {type(name).__name__}"
+            )
+        if name.startswith("#") or name == "none" or name.startswith("rgb"):
+            return name
+        attr = self._COLOR_MAP.get(name)
+        if attr is not None:
+            return getattr(self, attr)
+        if name in self._ROLE_PALETTE:
+            return self._ROLE_PALETTE[name]
+        if hasattr(self, name):
+            val = getattr(self, name)
+            if isinstance(val, str):
+                return val
+        return name
+
     # ---------------- automatic contrast helpers --------------------------
 
     def push_bg(self, color) -> None:
@@ -258,7 +294,7 @@ class Theme:
         if color is None:
             return
         try:
-            hex_str = self.color_of(color) if isinstance(color, str) \
+            hex_str = self.paint_of(color) if isinstance(color, str) \
                 else self._resolve_for_bg(color)
         except Exception:  # pragma: no cover -- defensive
             return
@@ -303,7 +339,7 @@ class Theme:
     def contrast_text(self, color) -> str:
         """Return ``text_inverse`` or ``text`` such that text is readable
         on the given background colour."""
-        hex_str = self.color_of(color) if isinstance(color, str) \
+        hex_str = self.paint_of(color) if isinstance(color, str) \
             else self._resolve_for_bg(color)
         return self.text_inverse if not self.is_light(hex_str) else self.text
 

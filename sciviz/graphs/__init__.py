@@ -23,6 +23,14 @@ from typing import Dict, List, Optional, Sequence as Seq, Tuple, Union
 from ..core import Element, BBox, Canvas, Theme
 
 from ._tree import Tree, TreeNode
+from ._flow_graph import (
+    FlowEdge,
+    FlowGraph,
+    FlowGroup,
+    FlowNode,
+    FlowPort,
+    FlowRef,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -59,12 +67,15 @@ class Token(Element):
         "warn":   ("amber", "soft"),
         "info":   ("blue",  "soft"),
     }
+    _SEMANTIC_HEIGHTS = {"sm": 3.2, "md": 4.0, "lg": 5.0}
 
     def __init__(self, label: str, *,
                  role="neutral",
                  variant: str = "soft",
                  width: Optional[float] = None,
-                 height: float = 22.0):
+                 height: float = 22.0,
+                 size: Optional[str] = None,
+                 noisy: bool = False):
         # collapse string aliases (ColorRef objects pass through unchanged).
         if isinstance(role, str) and role in self._ROLE_ALIASES:
             role, variant = self._ROLE_ALIASES[role]
@@ -73,13 +84,25 @@ class Token(Element):
         self.variant = variant
         self.width = width
         self.height = height
+        if size is not None and size not in self._SEMANTIC_HEIGHTS:
+            allowed = ", ".join(self._SEMANTIC_HEIGHTS)
+            raise ValueError(f"Token.size must be one of {allowed} or None")
+        self.size = size
+        self.noisy = bool(noisy)
+
+    def _height(self, theme: Theme) -> float:
+        if self.size is not None:
+            return theme.unit * self._SEMANTIC_HEIGHTS[self.size]
+        return float(self.height)
 
     def _intrinsic_w(self, theme: Theme) -> float:
         return theme.text_width(self.label, "small", bold=True) + theme.unit * 1.6
 
     def measure(self, theme: Theme) -> BBox:
+        height = self._height(theme)
         w = self.width if self.width is not None else self._intrinsic_w(theme)
-        return BBox(max(w, theme.unit * 3), self.height)
+        min_w = height if not self.label else theme.unit * 3
+        return BBox(max(w, min_w), height)
 
     def _resolve_palette(self, theme: Theme):
         """Pick (fill, stroke, text_col) for this Token's role/variant.
@@ -126,7 +149,8 @@ class Token(Element):
         fill, stroke, text_col = self._resolve_palette(theme)
         canvas.rect(x, y, size.w, size.h,
                    fill=fill, stroke=stroke,
-                   stroke_width=theme.hairline, rx=2)
+                   stroke_width=theme.hairline, rx=2,
+                   dasharray="3,2" if self.noisy else None)
         canvas.text(x + size.w / 2,
                    y + size.h / 2 + theme.size_px("small") * 0.33,
                    self.label,
@@ -149,18 +173,23 @@ class Tokens(Element):
 
     def __init__(self, items: Seq, *,
                  height: float = 22.0,
-                 gap: Union[str, float] = "xs"):
+                 gap: Union[str, float] = "xs",
+                 size: Optional[str] = None):
         self.items = list(items)
         self.height = height
         self.gap = gap
+        if size is not None and size not in Token._SEMANTIC_HEIGHTS:
+            allowed = ", ".join(Token._SEMANTIC_HEIGHTS)
+            raise ValueError(f"Tokens.size must be one of {allowed} or None")
+        self.size = size
 
     def _coerce(self, it):
         if isinstance(it, Element):
             return it
         if isinstance(it, str):
-            return Token(it, role="neutral", height=self.height)
+            return Token(it, role="neutral", height=self.height, size=self.size)
         if isinstance(it, tuple) and len(it) == 2:
-            return Token(it[0], role=it[1], height=self.height)
+            return Token(it[0], role=it[1], height=self.height, size=self.size)
         raise TypeError(f"Tokens item: str, (label, role) tuple, or Element; got {it}")
 
     def _kids(self):
@@ -545,5 +574,3 @@ class Sequence(Element):
                            label, size=theme.size_px("small"),
                            fill=theme.color_of("text"),
                            weight="500", anchor="middle")
-
-

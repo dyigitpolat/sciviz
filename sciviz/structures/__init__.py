@@ -171,6 +171,12 @@ class BlockGroup(Element):
         ``"start"`` (default), ``"center"``, ``"end"``.
     """
 
+    shape_peer_boundary = True
+    # When a containing Column is stretched to match peer stages, grow the
+    # panel boundary rather than scattering the entire surplus into blank
+    # inter-element gaps.
+    absorbs_main_axis_stretch = True
+
     def __init__(self, child: Element, *,
                  label: Optional[str] = None,
                  color = "muted",
@@ -187,6 +193,8 @@ class BlockGroup(Element):
         self.padding = padding
         self.label_align = label_align
         self.label_size = label_size
+        self._min_w = 0.0
+        self._min_h = 0.0
 
     def _pad(self, theme):
         return theme.gap_px(self.padding) if isinstance(self.padding, str) else float(self.padding)
@@ -194,21 +202,49 @@ class BlockGroup(Element):
     def _label_h(self, theme):
         return theme.text_height(self.label_size) + theme.unit * 0.4 if self.label else 0.0
 
+    def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
+        """Grow the outer group and forward the usable inner floor.
+
+        Peer-layout containers can therefore equalise real painted panel
+        boundaries instead of merely centring smaller groups in equal slots.
+        Exact padding arithmetic remains theme-owned and is applied lazily.
+        """
+        self._min_w = max(self._min_w, float(min_w))
+        self._min_h = max(self._min_h, float(min_h))
+
+    def _apply_child_inflation(self, theme: Theme) -> None:
+        if self._min_w <= 0.0 and self._min_h <= 0.0:
+            return
+        p = self._pad(theme)
+        inner_w = max(0.0, self._min_w - 2 * p)
+        inner_h = max(
+            0.0, self._min_h - 2 * p - self._label_h(theme)
+        )
+        self.child.inflate_to(inner_w, inner_h)
+
     def measure(self, theme: Theme) -> BBox:
+        self._apply_child_inflation(theme)
         b = self.child.measure(theme)
         p = self._pad(theme)
         lbl_w = (theme.text_width(self.label, self.label_size, bold=True)
                  + theme.unit * 1.2) if self.label else 0
         w = max(b.w + 2 * p, lbl_w + 2 * p)
         h = b.h + 2 * p + self._label_h(theme)
-        return BBox(w, h)
+        return BBox(max(w, self._min_w), max(h, self._min_h))
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        self._apply_child_inflation(theme)
         size = self.measure(theme)
         p = self._pad(theme)
         lbl_h = self._label_h(theme)
-        col = theme.color_of(self.color)
-        fill_col = theme.color_of(self.fill) if self.fill is not None else "none"
+        col = theme.paint_of(self.color)
+        # Borders are intentionally quiet; very light strokes are not viable
+        # title colours on paper. Promote them to the standard muted text ink
+        # while retaining saturated semantic colours as-is.
+        label_col = (
+            theme.color_of("text_muted") if theme.is_light(col) else col
+        )
+        fill_col = theme.paint_of(self.fill) if self.fill is not None else "none"
         border_x = x
         border_y = y + lbl_h
         border_w = size.w
@@ -245,9 +281,9 @@ class BlockGroup(Element):
             # Label sits transparently on top of whatever is underneath.
             canvas.text(lx, y + theme.size_px(self.label_size) * 0.85, self.label,
                        size=theme.size_px(self.label_size),
-                       fill=col, weight="700", anchor=anchor)
+                       fill=label_col, weight="700", anchor=anchor)
         b = self.child.measure(theme)
         cx = x + (size.w - b.w) / 2
-        self.child.render(canvas, cx, y + lbl_h + p, theme)
-
-
+        available_h = max(0.0, size.h - lbl_h - 2 * p)
+        cy = y + lbl_h + p + max(0.0, (available_h - b.h) / 2)
+        self.child.render(canvas, cx, cy, theme)

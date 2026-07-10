@@ -94,18 +94,34 @@ class MiniMatrix(Element):
 
 
 class MiniGraph(Element):
+    _SIZES = {
+        "sm": (8.0, 5.0, 1.0),
+        "md": (12.0, 8.0, 1.15),
+        "lg": (16.0, 11.0, 1.35),
+        "xl": (20.0, 14.0, 1.55),
+    }
+
     def __init__(self, nodes: Sequence[Tuple[float, float]], edges: Sequence[Tuple[int, int]],
                  *, role="primary", width: float | str = "auto",
-                 height: float | str = "auto"):
+                 height: float | str = "auto", size: str = "sm",
+                 filled: bool = False):
+        if size not in self._SIZES:
+            allowed = ", ".join(self._SIZES)
+            raise ValueError(f"MiniGraph.size must be one of {allowed}")
         self.nodes = list(nodes)
         self.edges = list(edges)
         self.role = role
         self.width = width
         self.height = height
+        self.size = size
+        self.filled = bool(filled)
 
     def _size(self, theme: Theme) -> tuple[float, float]:
-        return (theme.unit * 8 if self.width == "auto" else float(self.width),
-                theme.unit * 5 if self.height == "auto" else float(self.height))
+        width_units, height_units, _scale = self._SIZES[self.size]
+        return (
+            theme.unit * width_units if self.width == "auto" else float(self.width),
+            theme.unit * height_units if self.height == "auto" else float(self.height),
+        )
 
     def measure(self, theme: Theme) -> BBox:
         w, h = self._size(theme)
@@ -115,12 +131,15 @@ class MiniGraph(Element):
         w, h = self._size(theme)
         pts = [(x + nx * w, y + ny * h) for nx, ny in self.nodes]
         c = theme.color_of(self.role)
+        _wu, _hu, scale = self._SIZES[self.size]
         for a, b in self.edges:
             x1, y1 = pts[a]
             x2, y2 = pts[b]
-            canvas.line(x1, y1, x2, y2, stroke=c, stroke_width=theme.hairline)
+            canvas.line(x1, y1, x2, y2, stroke=c,
+                        stroke_width=theme.hairline * min(scale, 1.4))
         for px, py in pts:
-            canvas.circle(px, py, 2.4, fill=_soft(theme, self.role),
+            node_fill = c if self.filled else _soft(theme, self.role)
+            canvas.circle(px, py, 2.4 * scale, fill=node_fill,
                           stroke=c, stroke_width=theme.hairline)
 
 

@@ -46,6 +46,17 @@ def test_svg_path_is_stroke_only_by_default():
     assert 'fill="none"' in svg
 
 
+def test_path_explicit_ink_bbox_ignores_arc_radii_and_flags():
+    canvas = Canvas()
+    canvas.path(
+        "M 10 20 A 100 200 0 1 1 30 40",
+        stroke="#000000",
+        stroke_width=2,
+        ink_bbox=(10, 20, 30, 40),
+    )
+    assert canvas.ink_bbox == (9.0, 19.0, 31.0, 41.0)
+
+
 def test_image_emits_image_tag_with_href():
     c = Canvas()
     c.image(5, 6, 100, 80, href="data:image/png;base64,AAAA")

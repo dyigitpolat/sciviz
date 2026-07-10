@@ -97,10 +97,18 @@ from .elements import (
     Span,
     Box,
     Matrix,
+    MatrixCell,
+    MatrixGroup,
+    MatrixSelection,
+    ColorScale,
+    ColorBar,
     Legend,
     LegendItem,
     Caption,
     ConditionGlyph,
+    Cylinder,
+    Document,
+    Mux,
     TokenRow,
     Icon,
     Image,
@@ -111,13 +119,15 @@ from .elements import (
 from .math import Math
 
 # ----- charts --------------------------------------------------------------
-from .charts import Table, AlignedColumns, BarChart
+from .charts import (
+    Table, AlignedColumns, BarChart, DonutChart, GroupSummary, Part,
+)
 
 # ----- specialized ---------------------------------------------------------
 from .specialized import (
-    Annotate, BarGroup, BarSeries, GroupedBarChart, LineChart, Pyramid,
+    Annotate, BarGroup, BarSeries, FillBetween, GroupedBarChart, LineChart, Pyramid,
     MiniGraph, MiniMatrix, MiniRaster, MiniTimeline, Scatter, Series,
-    SparkLine, Sparkline, Timeline,
+    SeriesDelta, SparkLine, Sparkline, Timeline,
 )
 
 # ----- structures (high-level layout primitives) --------------------------
@@ -145,8 +155,12 @@ from .composition import (
     LoopIcon,
     Brace,
     MatchSize,
+    Repeat,
     Group,
     Region,
+    DetailCallout,
+    Docked,
+    FeedbackPair,
     SoftLegend,
     StepCell,
     StackedTiles,
@@ -166,6 +180,12 @@ from .graphs import (
     Sequence,
     Tree,
     TreeNode,
+    FlowPort,
+    FlowRef,
+    FlowNode,
+    FlowEdge,
+    FlowGroup,
+    FlowGraph,
 )
 
 # ----- top-level Diagram ---------------------------------------------------
@@ -179,14 +199,16 @@ __all__ = [
     "Spacer", "FixedSize", "Row", "Column", "Grid", "Panel", "AlignedStack",
     # elements
     "Text", "TextBlock", "Span", "Box",
-    "Matrix", "Legend", "LegendItem", "Caption", "ConditionGlyph", "TokenRow",
+    "Matrix", "MatrixCell", "MatrixGroup", "MatrixSelection", "ColorScale", "ColorBar",
+    "Legend", "LegendItem", "Caption", "ConditionGlyph", "Cylinder", "Document", "Mux", "TokenRow",
     "Icon", "Image", "Separator",
     # math
     "Math",
     # charts
-    "Table", "AlignedColumns", "BarChart",
+    "Table", "AlignedColumns", "BarChart", "Part", "GroupSummary", "DonutChart",
     # specialized
-    "Pyramid", "Timeline", "Scatter", "LineChart", "Series", "Annotate",
+    "Pyramid", "Timeline", "Scatter", "LineChart", "Series", "FillBetween",
+    "SeriesDelta", "Annotate",
     "GroupedBarChart", "BarGroup", "BarSeries", "SparkLine", "Sparkline",
     "MiniMatrix", "MiniGraph", "MiniTimeline", "MiniRaster",
     # structures
@@ -199,12 +221,15 @@ __all__ = [
     "Inline", "BalancedColumns", "Banner", "Card", "Captioned",
     "ConditionSpec", "EqualGrid", "LabeledChain",
     "Badge", "LoopIcon", "Brace",
-    "MatchSize", "Group", "Region", "SoftLegend", "StepCell",
+    "MatchSize", "Group", "Region", "Repeat", "DetailCallout", "Docked",
+    "FeedbackPair", "SoftLegend",
+    "StepCell",
     "StackedTiles", "Stripe",
     # unified connector
     "Connect", "Anchor",
     # graphs
     "Token", "Tokens", "NodeTree", "Sequence", "Tree", "TreeNode",
+    "FlowPort", "FlowRef", "FlowNode", "FlowEdge", "FlowGroup", "FlowGraph",
     # root
     "Diagram",
 ]

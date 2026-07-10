@@ -55,20 +55,23 @@ aligned stacks, structured text runs, and the rest of the vocabulary.
 sciviz/
   core/           Element, BBox, Canvas, Theme
   layout/         Row, Column, Panel, Spacer, FixedSize, AlignedStack
-  elements/       Text, TextBlock, Span, Box, Matrix, Legend, Caption,
+  elements/       Text, TextBlock, Span, Box, Matrix (+ structured cells,
+                  selections, ColorScale/ColorBar), Legend, Caption,
                   TokenRow, Icon, Image, Separator
   composition/    Inline, Captioned, Badge, Brace (+ Brace.spanning),
                   Card, EqualGrid, Stripe, StepCell, SoftLegend,
                   Group, Region (label_position/annotations/corner_badge),
-                  LabeledChain, MatchSize, LoopIcon
+                  LabeledChain, MatchSize, LoopIcon, DetailCallout
   connect/        Connect, Anchor       -- the only public connector API
   grid/           Grid                  -- per-column alignment
-  charts/         Table, AlignedColumns, BarChart
+  charts/         Table, AlignedColumns, BarChart, DonutChart
   primitives/     Heatmap, Histogram, MeshArray, VectorTiles, StackedBoxes
-  specialized/    Pyramid, Timeline, Scatter, LineChart, Series, Annotate,
+  specialized/    Pyramid, Timeline, Scatter, LineChart, Series, FillBetween,
+                  Annotate,
                   Sparkline, MiniGraph, MiniMatrix, MiniTimeline, MiniRaster
   structures/     Section, BlockGroup
-  graphs/         Tree, TreeNode, NodeTree, Token, Tokens, Sequence
+  graphs/         Tree, TreeNode, NodeTree, Token, Tokens, Sequence,
+                  FlowGraph (+ nodes, edges, groups, ports)
   math/           Math                  -- LaTeX via matplotlib mathtext
   palette/        Palette, ColorRef     -- semantic colour system
   _assets/        bundled Lucide icon SVG paths
@@ -120,6 +123,43 @@ Connector labels are placed through the same obstacle-aware label placer
 used by buses and routed wires; placed labels become obstacles for later
 labels, and `Diagram(auto_fit=True)` expands the canvas if ink falls just
 outside the measured body.
+
+For a complete grouped DAG, use `FlowGraph`: declare exact nodes, semantic
+ranks/groups, and edges while the library owns ranked placement, named ports,
+buses, feedback corridors, and flowchart shapes.
+
+```python
+from sciviz import Diagram, FlowEdge, FlowGraph, FlowNode
+
+body = FlowGraph(
+    nodes=[
+        FlowNode("input", "Trace DB", shape="store"),
+        FlowNode("run", "Execute"),
+        FlowNode("report", "Report", shape="document"),
+    ],
+    edges=[FlowEdge("input", "run"), FlowEdge("run", "report")],
+)
+diagram = Diagram.for_paper(body)
+```
+
+## Structured scientific encodings
+
+`Matrix` accepts `MatrixCell` values whose numeric colour, primary label,
+detail line, categorical role, and mark are independent. Reuse one immutable
+`ColorScale` across small multiples and render its measured `ColorBar` so equal
+values always mean equal colours. `MatrixSelection` outlines named row, column,
+or block regions without altering their data.
+
+`LineChart` supports keyed `Series`, semantic markers and plot sizes, exact tick
+sequences, in-plot legends, and `FillBetween` bands with derived gap labels.
+Structured matrices can place column labels above or below the grid and use
+semantic cell-size tokens. `DonutChart` is the part-to-whole primitive: `Part`
+values drive slice geometry and `GroupSummary` derives center totals instead of
+duplicating them in author code.
+
+Use `DetailCallout(overview, detail, source="anchor")` when a specific nested
+component is expanded elsewhere; placement and the leader are measured and
+routed automatically.
 
 ## Paper figures
 

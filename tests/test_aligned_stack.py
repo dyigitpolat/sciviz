@@ -83,6 +83,43 @@ def test_stacked_rows_share_column_widths():
     assert a._forced_slot_w[0] >= 80.0  # widest of the two
 
 
+def test_stacked_rows_pack_large_outer_slot_surplus_inward():
+    narrow = Row(
+        Column(Box("left", width=40, height=20)),
+        Box("right", width=30, height=20),
+        gap="sm",
+    )
+    wide = Row(
+        Box("left", width=100, height=20),
+        Box("right", width=30, height=20),
+        gap="sm",
+    )
+    stack = AlignedStack(narrow, wide)
+    stack.measure(DEFAULT_THEME)
+
+    narrow_offsets = narrow._child_offsets(DEFAULT_THEME)
+    # The 40px first child is end-aligned inside the 100px shared slot,
+    # keeping the gap to the downstream/right stage compact.
+    assert narrow_offsets[0][0] == 60.0
+
+
+def test_stacked_rows_keep_leaf_nodes_centered_in_shared_slots():
+    narrow = Row(
+        Box("left", width=40, height=20, shape_key=""),
+        Box("right", width=30, height=20, shape_key=""),
+        gap="sm",
+    )
+    wide = Row(
+        Box("left", width=100, height=20, shape_key=""),
+        Box("right", width=30, height=20, shape_key=""),
+        gap="sm",
+    )
+    stack = AlignedStack(narrow, wide)
+    stack.measure(DEFAULT_THEME)
+
+    assert narrow._child_offsets(DEFAULT_THEME)[0][0] == 30.0
+
+
 def test_stacked_grids_share_column_widths():
     g1 = SimpleGrid(Box("a", width=30), Box("b", width=30), cols=2)
     g2 = SimpleGrid(Box("c", width=70), Box("d", width=30), cols=2)

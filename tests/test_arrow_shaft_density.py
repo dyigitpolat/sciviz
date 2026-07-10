@@ -5,8 +5,8 @@ with a scaled-down ``unit`` (fonts keep their authored sizes).  A fixed
 pixel floor on the default Arrow shaft would refuse to compress with
 the rest of the layout, leaving a card-sized corridor around every
 inline ``Connect`` exactly when the figure is tightest.  The default
-shaft is therefore expressed in theme units (8 units == the historical
-48px at the default ``unit=6.0``); an explicit ``length=`` always wins.
+shaft is therefore expressed in theme units (4 units == a compact 24px
+at the default ``unit=6.0``); an explicit ``length=`` always wins.
 """
 from __future__ import annotations
 
@@ -14,11 +14,10 @@ from sciviz import Theme
 from sciviz.elements import Arrow
 
 
-def test_default_shaft_matches_historical_default_density():
+def test_default_shaft_uses_compact_paper_density():
     theme = Theme()
     arrow = Arrow(direction="right")
-    # 8 units at the default unit=6.0 -> the historical 48px shaft.
-    assert arrow.measure(theme).w == 48.0
+    assert arrow.measure(theme).w == 24.0
 
 
 def test_default_shaft_compresses_with_theme_unit():

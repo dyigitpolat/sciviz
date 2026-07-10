@@ -39,7 +39,10 @@ from ._compound import (
     Stripe,
     card_header,
 )
+from ._detail_callout import DetailCallout
+from ._docked import Docked
 from ._flow import Flow, Labeled
+from ._feedback_pair import FeedbackPair
 from ._flowed import Flowed
 from ._group import Group
 from ._inline import Inline
@@ -47,6 +50,7 @@ from ._labeledchain import LabeledChain
 from ._loopicon import LoopIcon
 from ._matchsize import MatchSize
 from ._region import Region
+from ._repeat import Repeat
 from ._stackedtiles import StackedTiles
 
 __all__ = [
@@ -56,5 +60,7 @@ __all__ = [
     "card_header",
     "LabeledChain", "Badge", "LoopIcon", "Brace",
     "Anchor", "Flow", "Flowed", "Labeled",
-    "MatchSize", "Group", "Region", "Bus", "StackedTiles",
+    "MatchSize", "Group", "Region", "Repeat", "DetailCallout", "Docked",
+    "FeedbackPair", "Bus",
+    "StackedTiles",
 ]

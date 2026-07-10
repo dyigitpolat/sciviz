@@ -50,7 +50,7 @@ class Connect(Element):
         clearance: Optional[float] = None,
         # Inline-mode options --------------------------------------------
         direction: Optional[str] = None,
-        length: Optional[float] = None,
+        length: Optional[Union[str, float]] = None,
         italic: bool = True,
         size: Union[str, float] = "small",
         # Bus-mode options -----------------------------------------------
@@ -84,7 +84,7 @@ class Connect(Element):
                 label_color=arrow_label_color,
                 italic=italic,
                 size=size,
-                head=bool(head) if head is not False else False,
+                head=head,
             )
             self._wrapped = None
             return

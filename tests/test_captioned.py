@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 
-from sciviz import Captioned, Box, Palette, Canvas, Theme
+from sciviz import Captioned, Box, Column, Palette, Canvas, Row, Theme
 
 
 def _render(elem):
@@ -48,3 +48,23 @@ def test_captioned_centers_child_when_decoration_wider():
     cap = Captioned(body, title="a very long title here")
     size = cap.measure(Theme())
     assert size.w > 10, "width expands to the decoration's width"
+
+
+def test_captioned_preserves_child_shared_column_contract():
+    first = Row(
+        Box("a", width=20, height=10),
+        Box("b", width=60, height=10),
+    )
+    second = Row(
+        Box("c", width=80, height=10),
+        Box("d", width=30, height=10),
+    )
+    stack = Column(
+        Captioned(first, title="First"),
+        Captioned(second, title="Second"),
+    )
+
+    stack.measure(Theme())
+
+    assert first._forced_slot_w == second._forced_slot_w
+    assert first._forced_slot_w == [80.0, 60.0]

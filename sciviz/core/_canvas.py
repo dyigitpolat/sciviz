@@ -115,7 +115,7 @@ class Canvas:
         self._defs.append(
             f'<marker id="{mid}" viewBox="0 0 10 10" refX="9" refY="5" '
             f'markerWidth="{_fmt(size)}" markerHeight="{_fmt(size)}" '
-            f'orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="{color}"/></marker>'
+            f'orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="{color}"/></marker>'
         )
         return mid
 
@@ -220,7 +220,18 @@ class Canvas:
 
     def path(self, d: str, *, fill: str = "none", stroke: str = "none",
              stroke_width: float = 1.0, dasharray: Optional[str] = None,
-             opacity: float = 1.0, marker_end: Optional[str] = None) -> None:
+             opacity: float = 1.0, marker_end: Optional[str] = None,
+             marker_start: Optional[str] = None,
+             ink_bbox: Optional[tuple[float, float, float, float]] = None) -> None:
+        """Append an SVG path and account for its painted bounds.
+
+        ``ink_bbox`` is an optional exact or conservative
+        ``(x0, y0, x1, y1)`` supplied by elements that already know their
+        geometry. It is important for paths containing arc commands: the
+        radii and SVG flags in an ``A`` command are not coordinate pairs, so
+        the numeric fallback cannot infer a trustworthy box from the path
+        string alone.
+        """
         parts = [f'd="{d}"', f'fill="{fill}"']
         if stroke != "none":
             parts.append(f'stroke="{stroke}" stroke-width="{_fmt(stroke_width)}"')
@@ -230,13 +241,19 @@ class Canvas:
             parts.append(f'opacity="{_fmt(opacity)}"')
         if marker_end:
             parts.append(f'marker-end="url(#{marker_end})"')
+        if marker_start:
+            parts.append(f'marker-start="url(#{marker_start})"')
         self._body.append(f"<path {' '.join(parts)}/>")
+        pad = stroke_width / 2 if stroke != "none" else 0.0
+        if ink_bbox is not None:
+            x0, y0, x1, y1 = ink_bbox
+            self._mark_ink(x0 - pad, y0 - pad, x1 + pad, y1 + pad)
+            return
         nums = [float(v) for v in
                 __import__("re").findall(r"[-+]?[0-9]*\.?[0-9]+", d)]
         if len(nums) >= 2:
             xs = nums[0::2]
             ys = nums[1::2]
-            pad = stroke_width / 2 if stroke != "none" else 0.0
             self._mark_ink(min(xs) - pad, min(ys) - pad,
                            max(xs) + pad, max(ys) + pad)
 

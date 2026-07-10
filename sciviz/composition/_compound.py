@@ -18,7 +18,7 @@ def _pad_px(theme: Theme, padding) -> float:
 
 
 def _soft(theme: Theme, role) -> str:
-    return theme.color_of(role.soft()) if hasattr(role, "soft") else theme.role(str(role), "soft")
+    return theme.paint_of(role.soft()) if hasattr(role, "soft") else theme.role(str(role), "soft")
 
 
 def _align_x_in_slot(child: Element, slot_x: float, slot_w: float,
@@ -56,7 +56,8 @@ class Card(Element):
     def __init__(self, header: Element | str, *body: Element, role,
                  footer: Optional[Element] = None, padding="sm",
                  radius: Optional[float] = None, dashed: bool = False,
-                 body_gap: str = "xs", body_align: str = "stretch"):
+                 body_gap: str = "xs", body_align: str = "stretch",
+                 body_fill=None):
         # ``body`` may be one Element (kept as-is) or many (auto-stacked
         # in a Column for the caller's convenience).
         elems = [b for b in body if b is not None]
@@ -73,6 +74,7 @@ class Card(Element):
         self.padding = padding
         self.radius = radius
         self.dashed = dashed
+        self.body_fill = body_fill
         self._min_w = 0.0
         self._min_h = 0.0
         self._header_h: Optional[float] = None
@@ -133,12 +135,22 @@ class Card(Element):
         size = self.measure(theme)
         pad = _pad_px(theme, self.padding)
         radius = self.radius if self.radius is not None else theme.panel_radius * 2
-        stroke = theme.color_of(self.role)
-        body_bg = _soft(theme, self.role)
+        stroke = theme.paint_of(self.role)
+        body_bg = (
+            _soft(theme, self.role)
+            if self.body_fill is None
+            else theme.paint_of(self.body_fill)
+        )
         canvas.rect(x, y, size.w, size.h, fill=body_bg,
                     stroke=stroke, stroke_width=theme.hairline, rx=radius,
                     dasharray="3,2" if self.dashed else None)
         _register_implicit_obstacle(x, y, size.w, size.h)
+        from ._anchor import _anchor_stack
+        stack = _anchor_stack.get()
+        if stack is not None:
+            key = f"__region_{id(self):x}"
+            for registry in stack:
+                registry[key] = (x, y, size.w, size.h)
 
         header_h = self._header_height(theme)
         canvas.rect(x, y, size.w, header_h, fill=stroke, stroke=stroke,

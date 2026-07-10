@@ -16,6 +16,12 @@ from typing import List, Optional, Sequence, Tuple, Union
 
 from ..core import Element, BBox, Canvas, Theme
 from ..elements import Text
+from ._donut import DonutChart, GroupSummary, Part
+
+__all__ = [
+    "Table", "AlignedColumns", "BarChart",
+    "Part", "GroupSummary", "DonutChart",
+]
 
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,29 @@ from typing import List, Optional, Sequence, Union
 from ..core import BBox, Canvas, Element, Theme
 from ..elements import Text
 
+
+def _baseline_offset(child: Element, size: BBox, theme: Theme) -> float:
+    """Return the visual baseline inside an inline child's measured box.
+
+    Text and math use different renderers and therefore reserve different
+    top/bottom safety bands.  Centring their *outer* boxes makes subscripts
+    appear to collide with the neighbouring prose even when the measured
+    widths are correct.  Keep this policy private to ``Inline``: arbitrary
+    miniature elements still align on their optical centre, while text and
+    math share a typographic baseline.
+    """
+    if isinstance(child, Text) and child.rotate not in (90, -90, 270, -270):
+        return theme.size_px(child.size) * 0.88
+
+    # Import lazily: the math module intentionally defers matplotlib setup.
+    from ..math import Math
+    if isinstance(child, Math):
+        # Matplotlib mathtext includes a small crop pad in its SVG bbox.
+        # Four fifths of that bbox is a stable approximation of its emitted
+        # alphabetic baseline across ordinary formulae and sub/superscripts.
+        return size.h * 0.80
+    return size.h / 2.0
+
 class Inline(Element):
     """Lay out a sequence of text, math and small elements on a shared baseline.
 
@@ -58,7 +81,13 @@ class Inline(Element):
         sizes = [c.measure(theme) for c in kids]
         g = theme.gap_px(self.gap)
         w = sum(s.w for s in sizes) + g * (len(sizes) - 1)
-        h = max(s.h for s in sizes)
+        baselines = [
+            _baseline_offset(child, size, theme)
+            for child, size in zip(kids, sizes)
+        ]
+        h = max(baselines) + max(
+            size.h - baseline for size, baseline in zip(sizes, baselines)
+        )
         return BBox(w, h)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
@@ -66,12 +95,15 @@ class Inline(Element):
         if not kids:
             return
         sizes = [c.measure(theme) for c in kids]
-        H = max(s.h for s in sizes)
+        baselines = [
+            _baseline_offset(child, size, theme)
+            for child, size in zip(kids, sizes)
+        ]
+        shared_baseline = max(baselines)
         g = theme.gap_px(self.gap)
         cx = x
-        for child, sz in zip(kids, sizes):
-            cy = y + (H - sz.h) / 2
+        for child, sz, baseline in zip(kids, sizes, baselines):
+            cy = y + shared_baseline - baseline
             child.render(canvas, cx, cy, theme)
             cx += sz.w + g
-
 

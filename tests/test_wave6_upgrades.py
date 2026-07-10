@@ -6,18 +6,23 @@ and the new semantic positive/negative/warning colour roles.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from sciviz import (
     Box,
+    Badge,
     Brace,
     Canvas,
+    Captioned,
     DEFAULT_THEME,
     Region,
     Row,
     Text,
     Theme,
 )
+from sciviz import Math
 
 
 # ---------------------------- Brace.spanning ------------------------------
@@ -49,6 +54,104 @@ def test_brace_spanning_renders_label():
     c = Canvas()
     b.render(c, 0, 0, DEFAULT_THEME)
     assert "grouped" in c.to_svg(200, 80)
+
+
+def test_vertical_brace_spanning_uses_element_height_and_multiline_label():
+    box = Box("stack", width=80, height=120)
+    brace = Brace.spanning(
+        box, label="reuse\nindices", direction="right", color="positive"
+    )
+    measured = brace.measure(DEFAULT_THEME)
+    assert measured.h == pytest.approx(box.measure(DEFAULT_THEME).h, abs=1.0)
+    canvas = Canvas()
+    brace.render(canvas, 0, 0, DEFAULT_THEME)
+    svg = canvas.to_svg(200, 160)
+    assert "reuse" in svg and "indices" in svg
+
+
+def test_brace_rejects_unknown_direction():
+    with pytest.raises(ValueError):
+        Brace(40, direction="diagonal")
+
+
+def test_badge_accepts_math_element_and_semantic_size():
+    badge = Badge(Math(r"O_{t+1}"), size="lg", bordered=True)
+    measured = badge.measure(DEFAULT_THEME)
+    assert measured.w == measured.h
+    assert measured.w >= DEFAULT_THEME.unit * 5.2
+    canvas = Canvas()
+    badge.render(canvas, 0, 0, DEFAULT_THEME)
+    svg = canvas.to_svg(100, 100)
+    assert "sciviz-math" in svg and "<circle" in svg
+
+
+def test_box_semantic_aspect_controls_silhouette_without_pixels():
+    portrait = Box("IDM", aspect="portrait").measure(DEFAULT_THEME)
+    landscape = Box("decoder", aspect="landscape").measure(DEFAULT_THEME)
+    square = Box("x", aspect="square").measure(DEFAULT_THEME)
+    assert portrait.h > portrait.w
+    assert portrait.h / portrait.w >= 1.5
+    assert landscape.w > landscape.h
+    assert landscape.w / landscape.h >= 2.4
+    assert square.w == square.h
+
+
+def test_box_semantic_size_scales_both_dimensions():
+    small = Box("node", size="sm").measure(DEFAULT_THEME)
+    large = Box("node", size="2xl").measure(DEFAULT_THEME)
+    assert large.w > small.w and large.h > small.h
+
+
+def test_large_landscape_size_spends_growth_on_line_length():
+    box = Box("formula stage", size="xl", aspect="landscape")
+    measured = box.measure(DEFAULT_THEME)
+    assert measured.w / measured.h >= 3.2
+
+
+def test_box_rejects_unknown_aspect():
+    with pytest.raises(ValueError):
+        Box("x", aspect="banana")
+
+
+def test_box_rejects_unknown_semantic_size():
+    with pytest.raises(ValueError):
+        Box("x", size="huge")
+
+
+def test_box_pill_radius_tracks_box_height():
+    box = Box("bus", aspect="landscape", radius="pill")
+    canvas = Canvas()
+    size = box.measure(DEFAULT_THEME)
+    box.render(canvas, 0, 0, DEFAULT_THEME)
+    svg = canvas.to_svg(200, 100)
+    assert f'rx="{size.h / 2:g}"' in svg
+
+
+def test_box_rejects_unknown_semantic_radius():
+    with pytest.raises(ValueError):
+        Box("x", radius="roundish")
+
+
+def test_captioned_right_accessory_reports_child_alignment_axis():
+    child = Box("carrier", aspect="landscape")
+    accessory = Badge(Math(r"O_{t+1}"), size="lg", bordered=True)
+    decorated = Captioned(
+        child,
+        decoration=accessory,
+        placement="right",
+        gap=0,
+        align_on="child",
+    )
+    assert decorated.measure(DEFAULT_THEME).w > child.measure(DEFAULT_THEME).w
+    decorated_content = decorated.content_bbox(DEFAULT_THEME)
+    child_content = child.content_bbox(DEFAULT_THEME)
+    assert decorated_content[0] == child_content[0]
+    assert decorated_content[2] == child_content[2]
+
+
+def test_captioned_rejects_conflicting_decorations():
+    with pytest.raises(ValueError):
+        Captioned(Box("x"), decoration=Badge("1"), number="2")
 
 
 # --------------------------- Region label_position ------------------------
@@ -125,6 +228,29 @@ def test_region_corner_badge_renders():
     svg = c.to_svg(300, 200)
     assert "beta" in svg
     assert "Feature" in svg
+
+
+def test_region_corner_badge_is_reserved_above_child_content():
+    badge = Box("1", width=14, height=14, fill="negative")
+    region = Region(Box("PE"), corner_badge=badge)
+    size = region.measure(DEFAULT_THEME)
+    canvas = Canvas()
+    region.render(canvas, 0, 0, DEFAULT_THEME)
+    assert canvas.ink_bbox is not None
+    x0, y0, x1, y1 = canvas.ink_bbox
+    tolerance = DEFAULT_THEME.hairline
+    assert x0 >= -tolerance and y0 >= -tolerance
+    assert x1 <= size.w + tolerance and y1 <= size.h + tolerance
+
+    rects = [
+        tuple(float(value) for value in match)
+        for match in re.findall(
+            r'<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"',
+            canvas.to_svg(size.w, size.h),
+        )
+    ]
+    _border, badge_rect, child = rects[:3]
+    assert badge_rect[1] + badge_rect[3] <= child[1]
 
 
 # --------------------------- Semantic color roles -------------------------

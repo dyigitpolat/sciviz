@@ -41,10 +41,11 @@ class _RoutedConnect(Element):
             dst_side=dst_side,
             color=color,
             label=label,
+            label_color=label_color,
             dashed=dashed,
             curvature=curvature,
             detour=detour,
-            arrow=bool(head) if head is not False else False,
+            arrow=head,
             style=style,
             clearance=clearance,
         )

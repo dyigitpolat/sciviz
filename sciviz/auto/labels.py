@@ -128,11 +128,12 @@ def place_polyline_label(points: Sequence[Point], label: LabelBox,
 
     Generalises :func:`place_segment_label` from "the longest segment"
     to "whichever segment admits a collision-free offset placement":
-    segments are tried longest-first and the first placement that
-    overlaps no obstacle wins, so labels nudge themselves onto another
-    leg of the wire when the longest leg is hemmed in by cards, other
-    labels, or other wires. When every candidate overlaps something,
-    the minimum-overlap candidate (ties: longer segment) is returned.
+    readable horizontal segments are tried first when they are long enough
+    to carry the label, then remaining segments are tried longest-first.
+    This keeps paper-figure labels horizontal whenever the route provides a
+    genuine caption lane, while preserving vertical labels for truly
+    vertical routes.  The first collision-free placement wins; when every
+    candidate overlaps something, the minimum-overlap candidate is used.
 
     The polyline's *other* segments are treated as obstacles for each
     candidate (inflated by ``wire_width``), so a label never sits on a
@@ -156,13 +157,20 @@ def place_polyline_label(points: Sequence[Point], label: LabelBox,
         own_rects.append((min(x1, x2) - pad, min(y1, y2) - pad,
                           max(x1, x2) + pad, max(y1, y2) + pad))
         if length > 1.0:
-            seg_indices.append((length, i))
+            is_horizontal = abs(x2 - x1) >= abs(y2 - y1)
+            horizontal_caption_lane = (
+                is_horizontal and length >= label.width + 2.0 * gap
+            )
+            seg_indices.append((length, i, horizontal_caption_lane))
     if not seg_indices:
-        seg_indices = [(0.0, 0)]
-    seg_indices.sort(key=lambda t: -t[0])
+        seg_indices = [(0.0, 0, False)]
+    # Horizontal reading is substantially faster in dense research figures.
+    # Prefer it only when the segment can actually carry the label; tiny
+    # endpoint stubs must never steal captions from a useful vertical run.
+    seg_indices.sort(key=lambda t: (not t[2], -t[0]))
 
     best: Optional[Tuple[float, int, float, PlacedLabel]] = None
-    for length, i in seg_indices:
+    for length, i, _horizontal_caption_lane in seg_indices:
         seg = (points[i], points[i + 1])
         others = [r for j, r in enumerate(own_rects) if j != i]
         cand_obstacles = list(obstacles) + others

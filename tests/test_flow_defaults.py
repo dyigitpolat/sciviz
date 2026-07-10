@@ -64,3 +64,13 @@ def test_flow_default_color_is_neutral_text():
         # Acceptable: "warn" doesn't appear as a STROKE in a default flow.
         assert f'stroke="{warn}"' not in svg, (
             f"default Flow should not use warn accent; svg=\n{svg}")
+
+
+def test_ordinary_flow_has_no_implicit_source_dot():
+    svg = _render(
+        [Anchor("a", Box("A", width=40, height=20)),
+         Spacer(40, 0),
+         Anchor("b", Box("B", width=40, height=20))],
+        flows=[Flow("a", "b", src_side="right", dst_side="left")],
+    )
+    assert "<circle" not in svg

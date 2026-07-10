@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from sciviz import Box, Canvas, DEFAULT_THEME, Text, Tree, TreeNode
+from sciviz import Box, Canvas, Captioned, DEFAULT_THEME, Text, Tree, TreeNode
 
 
 def _simple_tree():
@@ -60,6 +60,7 @@ def test_tree_per_edge_color_styles_line():
     svg = c.to_svg(400, 400)
     assert f'stroke="{DEFAULT_THEME.color_of("green")}"' in svg
     assert f'stroke="{DEFAULT_THEME.color_of("red")}"' in svg
+    assert f'stroke-width="{DEFAULT_THEME.thick:.2f}"' in svg
 
 
 def test_tree_per_edge_dashed_style():
@@ -69,6 +70,16 @@ def test_tree_per_edge_dashed_style():
     c = Canvas()
     t.render(c, 0, 0, DEFAULT_THEME)
     assert 'stroke-dasharray="4,3"' in c.to_svg(400, 400)
+
+
+def test_tree_edge_width_accepts_theme_token():
+    tree = Tree(Tree.node(Text("r"), children=[
+        (Tree.node(Box("a")), {"width": "hairline"}),
+    ]))
+    canvas = Canvas()
+    tree.render(canvas, 0.0, 0.0, DEFAULT_THEME)
+    assert f'stroke-width="{DEFAULT_THEME.hairline:.2f}"' in \
+        canvas.to_svg(200, 200)
 
 
 def test_tree_per_edge_label():
@@ -95,3 +106,51 @@ def test_tree_leaf_only():
     assert "solo" in svg
     # No edges out of a leaf root.
     assert svg.count("<line ") == 0
+
+
+def test_tree_level_label_draws_measured_rank_band():
+    tree = Tree(
+        Tree.node(Box("root"), children=[
+            Tree.node(Box("left")),
+            Tree.node(Box("right")),
+        ]),
+        level_labels={1: "LUT"},
+    )
+    size = tree.measure(DEFAULT_THEME)
+    canvas = Canvas()
+    tree.render(canvas, 0.0, 0.0, DEFAULT_THEME)
+    svg = canvas.to_svg(size.w, size.h)
+
+    assert ">LUT<" in svg
+    assert 'stroke-dasharray="4,3"' in svg
+
+
+def test_tree_auto_spacing_resolves_from_theme_density():
+    tree = Tree(_simple_tree())
+    dense = DEFAULT_THEME.with_overrides(unit=DEFAULT_THEME.unit * 0.5)
+    assert tree._level_gap(dense) == tree._level_gap(DEFAULT_THEME) * 0.5
+    assert tree._page_gap(dense) == tree._page_gap(DEFAULT_THEME) * 0.5
+
+
+def test_tree_aligns_decorated_nodes_on_primary_face():
+    decorated = Captioned(
+        Box("decorated", width=40, height=20),
+        decoration=Box("note", width=30, height=18),
+        placement="bottom",
+        align_on="child",
+    )
+    tree = Tree(Tree.node(Box("root"), children=[
+        Tree.node(Box("plain", width=40, height=20)),
+        Tree.node(decorated),
+    ]))
+    canvas = Canvas()
+    size = tree.measure(DEFAULT_THEME)
+    tree.render(canvas, 0.0, 0.0, DEFAULT_THEME)
+
+    import re
+    rects = re.findall(
+        r'<rect x="[-\d.]+" y="([-\d.]+)" width="40" height="20"',
+        "".join(canvas._body),
+    )
+    assert len(rects) == 2
+    assert float(rects[0]) == float(rects[1])

@@ -37,6 +37,13 @@ class VectorTiles(Element):
         Corner radius.
     """
 
+    _SIZES = {
+        "xs": (1.8, 0.8, 0.0, 0.15),
+        "sm": (2.4, 1.1, 0.0, 0.20),
+        "md": (3.0, 1.3, 0.0, 0.25),
+        "lg": (3.8, 1.7, 0.1, 0.30),
+    }
+
     def __init__(self, n: int, *,
                  color = "info",
                  per_cell: Optional[Sequence] = None,
@@ -46,7 +53,11 @@ class VectorTiles(Element):
                  cell_spacing: float = 0.5,
                  stroke = "text",
                  radius: float = 1.5,
-                 palette: str = "blues"):
+                 palette: str = "blues",
+                 size: Optional[str] = None):
+        if size is not None and size not in self._SIZES:
+            allowed = ", ".join(self._SIZES)
+            raise ValueError(f"VectorTiles.size must be one of {allowed} or None")
         self.n = n
         self.color = color
         self.per_cell = list(per_cell) if per_cell else None
@@ -57,12 +68,23 @@ class VectorTiles(Element):
         self.stroke = stroke
         self.radius = radius
         self.palette = palette
+        self.size = size
+
+    def _dimensions(self, theme: Theme):
+        if self.size is None:
+            return (self.cell_size, self.cell_thickness,
+                    self.cell_spacing, self.radius)
+        long_u, thick_u, gap_u, radius_u = self._SIZES[self.size]
+        return (theme.unit * long_u, theme.unit * thick_u,
+                theme.unit * gap_u, theme.unit * radius_u)
 
     def measure(self, theme: Theme) -> BBox:
-        long_dim = self.n * self.cell_size + (self.n - 1) * self.cell_spacing
+        cell_size, cell_thickness, cell_spacing, _radius = \
+            self._dimensions(theme)
+        long_dim = self.n * cell_size + (self.n - 1) * cell_spacing
         if self.orientation == "vertical":
-            return BBox(self.cell_thickness, long_dim)
-        return BBox(long_dim, self.cell_thickness)
+            return BBox(cell_thickness, long_dim)
+        return BBox(long_dim, cell_thickness)
 
     def _resolve_cell_color(self, idx: int, theme: Theme) -> str:
         if self.per_cell is not None and idx < len(self.per_cell):
@@ -76,22 +98,23 @@ class VectorTiles(Element):
         has_stroke = self.stroke is not None and self.stroke != "none"
         stroke_col = theme.color_of(self.stroke) if has_stroke else "none"
         sw = theme.hairline if has_stroke else 0.0
+        cell_size, cell_thickness, cell_spacing, radius = \
+            self._dimensions(theme)
         for i in range(self.n):
-            offset = i * (self.cell_size + self.cell_spacing)
+            offset = i * (cell_size + cell_spacing)
             if self.orientation == "vertical":
                 cx = x
                 cy = y + offset
-                w = self.cell_thickness
-                h = self.cell_size
+                w = cell_thickness
+                h = cell_size
             else:
                 cx = x + offset
                 cy = y
-                w = self.cell_size
-                h = self.cell_thickness
+                w = cell_size
+                h = cell_thickness
             canvas.rect(cx, cy, w, h,
                        fill=self._resolve_cell_color(i, theme),
                        stroke=stroke_col, stroke_width=sw,
-                       rx=self.radius)
-
+                       rx=radius)
 
 

@@ -14,7 +14,7 @@ class ConditionGlyph(Element):
     once, while individual cards avoid code-like labels such as ``if act_q``.
     """
 
-    _KINDS = {"branch", "toggle", "alternative", "verification"}
+    _KINDS = {"branch", "toggle", "alternative", "verification", "conflict"}
 
     def __init__(self, kind: str, *, size: Union[str, float] = "tiny",
                  color="muted", stroke_width: float = 1.2):
@@ -68,6 +68,13 @@ class ConditionGlyph(Element):
             canvas.line(x + s * 0.32, y + s * 0.52, x + s * 0.20, y + s * 0.65,
                         stroke=c, stroke_width=sw)
             canvas.line(x + s * 0.32, y + s * 0.78, x + s * 0.20, y + s * 0.65,
+                        stroke=c, stroke_width=sw)
+        elif self.kind == "conflict":
+            canvas.line(x + s * 0.18, y + s * 0.18,
+                        x + s * 0.82, y + s * 0.82,
+                        stroke=c, stroke_width=sw)
+            canvas.line(x + s * 0.82, y + s * 0.18,
+                        x + s * 0.18, y + s * 0.82,
                         stroke=c, stroke_width=sw)
         else:  # verification
             pts = [

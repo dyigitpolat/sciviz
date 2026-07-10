@@ -88,3 +88,29 @@ def test_column_center_aligns_narrower_child_by_content_centre():
         f"Column align='center' must centre content centres, got "
         f"wide_cx={wide_cx} vs narrow_cx={narrow_cx}"
     )
+
+
+def test_inflated_column_centres_natural_content_band():
+    """A widened Column must centre its children in the new outer frame."""
+    child = Anchor("child", Box(width=24, height=20))
+    col = Column(child, align="center")
+    col.inflate_to(200)
+
+    reg = _render_registry(col)
+    x, _, w, _ = reg["child"]
+
+    assert abs((x + w / 2) - 100) < 0.5, (
+        "inflated Column left its centred child outside the frame centre: "
+        f"child centre={x + w / 2}"
+    )
+
+
+def test_column_start_uses_exact_union_of_asymmetric_children():
+    """Margins on different children must not be counted simultaneously."""
+    first = Anchor("first", Box(width=100, height=20), margin_right=50)
+    second = Anchor("second", Box(width=200, height=20), margin_left=50)
+    col = Column(first, second, gap=0, align="start")
+
+    assert col.measure(Theme()).w == 250
+    reg = _render_registry(col)
+    assert reg["first"][0] == reg["second"][0]

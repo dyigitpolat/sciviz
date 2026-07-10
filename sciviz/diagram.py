@@ -28,7 +28,6 @@ from .core import (
     FontRegistry, outline_svg_text,
 )
 
-
 class Diagram:
     """Root container for a sciviz figure.
 
@@ -76,7 +75,6 @@ class Diagram:
         Legibility floor used by the ``target_width_pt`` overflow
         warning: the printed size the smallest text must keep when the
         figure is scaled to the target width.  Default 6 pt.
-
     Examples
     --------
     >>> d = Diagram(
@@ -166,7 +164,10 @@ class Diagram:
         reflowing ``columns="auto"`` grids and tightening spacing --
         toward that printed shape.
         """
-        kwargs.setdefault("chrome", "none")
+        # ``none`` suppresses every piece of chrome, including the footer.
+        # Paper figures need the distinct footer-only mode so a semantic
+        # Caption survives while title/subtitle chrome remains absent.
+        kwargs.setdefault("chrome", "footer-only")
         kwargs.setdefault("auto_trim", True)
         return cls(body, **kwargs)
 
@@ -196,9 +197,8 @@ class Diagram:
     def _layout_theme(self) -> Theme:
         """The theme layout and rendering actually use.
 
-        Identical to :attr:`theme` unless ``target_width_pt`` is set, in
-        which case it is the layout-compressed derivation resolved by
-        :meth:`_fit_theme_to_target` (computed once, then cached).
+        When ``target_width_pt`` is set, target fitting compresses layout
+        without modifying font tokens.
         """
         if self.target_width_pt is None:
             return self.theme
@@ -214,7 +214,7 @@ class Diagram:
         theme = self._layout_theme()
         m = self._margin()
         body_sz = self._body_for_render().measure(theme)
-        footer_sz = self.footer.measure(theme) if self.footer else BBox(0, 0)
+        footer_sz = self._footer_size(theme, body_sz.w)
         content_w = max(body_sz.w, footer_sz.w)
         if self.title:
             tw = theme.text_width(self.title, "title", bold=True)
@@ -230,11 +230,27 @@ class Diagram:
                    + 2 * m)
         return BBox(total_w, total_h)
 
+    def _footer_size(self, theme: Theme, body_width: float,
+                     footer: Optional[Element] = None) -> BBox:
+        """Measure a footer after offering it the semantic body width.
+
+        Body-aware elements such as :class:`Caption` can wrap themselves
+        without Diagram importing a concrete element type or authors copying
+        pixel widths out of a previous render.
+        """
+        elem = self.footer if footer is None else footer
+        if elem is None:
+            return BBox(0.0, 0.0)
+        fit = getattr(elem, "fit_width", None)
+        if callable(fit):
+            fit(body_width)
+        return elem.measure(theme)
+
     def _margin(self) -> float:
         return self._margin_for(self._layout_theme())
 
     def _margin_for(self, theme: Theme) -> float:
-        if self.chrome == "none":
+        if self.chrome in ("none", "footer-only"):
             return theme.unit * 0.5
         return theme.diagram_margin
 
@@ -277,9 +293,13 @@ class Diagram:
         if children is not None:
             for c in children:
                 Diagram._collect_reflowables(c, out)
-        child = getattr(elem, "child", None)
-        if child is not None:
-            Diagram._collect_reflowables(child, out)
+        for attr in (
+            "child", "body", "header", "footer", "above", "below",
+            "decoration", "source",
+        ):
+            child = getattr(elem, attr, None)
+            if isinstance(child, Element):
+                Diagram._collect_reflowables(child, out)
         wrapped = getattr(elem, "_wrapped", None)
         if wrapped:
             for a in wrapped:
@@ -351,7 +371,7 @@ class Diagram:
             w += max(0.0, -x0) + max(0.0, x1 - sz.w)
             h += max(0.0, -y0) + max(0.0, y1 - sz.h)
         if footer is not None:
-            fsz = footer.measure(theme)
+            fsz = self._footer_size(theme, w, footer)
             w = max(w, fsz.w)
             h += fsz.h + theme.unit * 2.0
         if self.title:
@@ -556,8 +576,9 @@ class Diagram:
         # paper: title left-aligned at content origin
         body_for_render = self._body_for_render()
         body_sz = body_for_render.measure(theme)
+        footer_sz = self._footer_size(theme, body_sz.w)
         content_x = (size.w - max(body_sz.w,
-                                  self.footer.measure(theme).w if self.footer else 0)) / 2
+                                  footer_sz.w)) / 2
         if content_x < m:
             content_x = m
 
@@ -592,7 +613,6 @@ class Diagram:
 
         if self.footer:
             y += theme.unit * 2.0
-            footer_sz = self.footer.measure(theme)
             footer_x = (size.w - footer_sz.w) / 2 + offset_x
             self.footer.render(canvas, footer_x, y, theme)
         return canvas
@@ -636,7 +656,11 @@ class Diagram:
                 # asymmetric residue or the body lands double-shifted
                 # and the pass never converges.
                 offset_x += (grow_l - grow_r) / 2.0
-                offset_y += (grow_t - grow_b) / 2.0
+                # Bodies are horizontally centred but vertically top-aligned.
+                # Growing the bottom therefore needs no y shift; growing the
+                # top needs the full amount. The old symmetric half-shift
+                # moved bottom-overflowing figures upward and clipped them.
+                offset_y += grow_t
                 size = BBox(size.w + grow_l + grow_r,
                             size.h + grow_t + grow_b)
                 canvas = self._render_canvas(size, offset_x=offset_x,
@@ -692,7 +716,10 @@ class Diagram:
         # offset; otherwise we would shift the body left twice and
         # clip its ink off the new left edge.
         offset_x += (excess_r - excess_l) / 2.0
-        offset_y += (excess_b - excess_t) / 2.0
+        # Vertical content is top-aligned, not centred: removing blank space
+        # above the ink shifts the body upward by exactly that amount, while
+        # trimming blank space below changes no content coordinate.
+        offset_y -= excess_t
         new_size = BBox(new_w, new_h)
         canvas = self._render_canvas(new_size, offset_x=offset_x,
                                      offset_y=offset_y)

@@ -10,6 +10,7 @@ from sciviz import (
     DEFAULT_THEME,
     LineChart,
     Series,
+    SeriesDelta,
 )
 
 
@@ -75,6 +76,43 @@ def test_line_chart_annotations_render_text():
     c = Canvas()
     chart.render(c, 0, 0, DEFAULT_THEME)
     assert "midpoint" in c.to_svg(400, 400)
+
+
+def test_line_chart_inside_top_left_legend():
+    chart = LineChart(
+        [Series([(0, 0), (1, 1)], label="method")],
+        legend="inside-top-left",
+    )
+    c = Canvas()
+    chart.render(c, 0, 0, DEFAULT_THEME)
+    svg = c.to_svg(400, 300)
+    assert "method" in svg
+    assert "<rect" in svg
+
+
+def test_series_delta_interpolates_and_draws_directed_relation():
+    chart = LineChart(
+        [
+            Series([(0, 0.8), (1, 0.6)], label="upper"),
+            Series([(0, 0.3), (1, 0.2)], label="lower"),
+        ],
+        deltas=[SeriesDelta(
+            x=1, source="upper", target="lower", label="3×\nlower"
+        )],
+    )
+    canvas = Canvas()
+    chart.render(canvas, 0, 0, DEFAULT_THEME)
+    svg = canvas.to_svg(500, 300)
+    assert "marker-end" in svg
+    assert ">3×<" in svg and ">lower<" in svg
+
+
+def test_series_delta_rejects_unknown_series():
+    with pytest.raises(ValueError):
+        LineChart(
+            [Series([(0, 0), (1, 1)], label="known")],
+            deltas=[SeriesDelta(1, "known", "missing", "delta")],
+        )
 
 
 def test_line_chart_log_scale():

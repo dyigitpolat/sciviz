@@ -11,12 +11,7 @@ from typing import List, Optional, Sequence, Union
 
 from ..core import BBox, Canvas, Element, Theme
 
-import contextvars as _cv
-
-# Stack of active registries. Each Flowed pushes a fresh dict; Anchor
-# registers itself in ALL active registries, so nested Flowed's anchors
-# remain reachable from outer flows.
-_anchor_stack: _cv.ContextVar = _cv.ContextVar("_anchor_stack", default=None)
+from ..core._routing_context import routing_registry_stack as _anchor_stack
 
 
 class Anchor(Element):
@@ -166,4 +161,3 @@ def _side_point_frac(bbox, side: str, frac: float):
         px = x if side == "left" else x + w
         return (px, py)
     return _side_point(bbox, side)
-

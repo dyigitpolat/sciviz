@@ -194,6 +194,11 @@ class Region(Element):
         right = self.margin_x
         inner_bottom = 0.0
         lh = self._label_h(theme)
+        badge_h = (
+            self.corner_badge.measure(theme).h + theme.unit * 0.15
+            if self.corner_badge is not None
+            else 0.0
+        )
         ann = self._anns_by_side()
         if self.label and self.label_position == "top":
             top += lh
@@ -208,6 +213,14 @@ class Region(Element):
             left += self._label_w(theme)
         elif self.label and self.label_position == "right":
             right += self._label_w(theme)
+        # A corner badge is decoration outside the top border. Reserve its
+        # full height (or share the existing label strip) so it never covers
+        # the region's child or leaks into the preceding layout row.
+        if badge_h:
+            if self.label and self.label_position == "top":
+                top += max(0.0, badge_h - lh)
+            else:
+                top += badge_h
         ah = self._ann_h(theme)
         top += ah * len(ann["top"])
         bot += ah * len(ann["bottom"])
@@ -219,6 +232,35 @@ class Region(Element):
                 + theme.unit * 0.6
         return top, bot, left, right, inner_bottom
 
+    def _border_width(self, theme: Theme, child: BBox) -> float:
+        """Width that contains child ink and all top/bottom decoration."""
+        width = child.w + 2 * self.pad_x
+        if self.label and self.label_position in ("top", "bottom"):
+            label_w = theme.text_width(
+                self.label, self.label_size, bold=True
+            )
+            badge_w = (
+                self.corner_badge.measure(theme).w + theme.unit * 0.8
+                if self.corner_badge is not None
+                and self.label_position == "top"
+                else 0.0
+            )
+            width = max(width, label_w + badge_w + 2 * theme.unit)
+        annotations = self._anns_by_side()
+        for side in ("top", "bottom"):
+            if annotations[side]:
+                width = max(
+                    width,
+                    max(theme.text_width(text, "small")
+                        for text in annotations[side]) + 2 * theme.unit,
+                )
+        if self.corner_badge is not None:
+            width = max(
+                width,
+                self.corner_badge.measure(theme).w + 2 * theme.unit,
+            )
+        return width
+
     def measure(self, theme: Theme) -> BBox:
         self._apply_inflate(theme)
         b = self.child.measure(theme)
@@ -229,7 +271,7 @@ class Region(Element):
         # "encroach into the parent's gap" behaviour was a footgun
         # because the rendered footprint was bigger than the reported
         # extent, so sibling layout could collide with the border.
-        w = b.w + 2 * self.pad_x + right + left
+        w = self._border_width(theme, b) + right + left
         h = b.h + 2 * self.pad_y + top + bot + inner_bottom
         return BBox(max(w, self._min_w), max(h, self._min_h))
 
@@ -245,26 +287,38 @@ class Region(Element):
         """
         b = self.child.measure(theme)
         top, _bot, left, _right, _inner_bottom = self._reserve(theme)
-        # The child renders at ``left + pad_x`` from the bbox origin.
-        return (left + self.pad_x, top + self.pad_y, b.w, b.h)
+        border_w = self._border_width(theme, b)
+        # A label-widened border centres its child rather than leaving an
+        # arbitrary empty strip on the right.
+        return (left + (border_w - b.w) / 2.0,
+                top + self.pad_y, b.w, b.h)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         self._apply_inflate(theme)
         b = self.child.measure(theme)
         top, bot, left, right, inner_bottom = self._reserve(theme)
-        col = theme.color_of(self.color)
-        fill_col = theme.color_of(self.fill) if self.fill is not None else "none"
+        col = theme.paint_of(self.color)
+        fill_col = theme.paint_of(self.fill) if self.fill is not None else "none"
 
         # Border ink lives entirely inside the measured bbox now.
         border_x = x + left
-        border_w = b.w + 2 * self.pad_x
+        border_w = self._border_width(theme, b)
         border_top = y + top
         border_h = b.h + 2 * self.pad_y + inner_bottom
+        # Wide grouping surfaces need visibly softened corners at paper
+        # scale; the tiny panel-radius token is appropriate for compact
+        # boxes but makes broad state/workflow bands look like table cells.
+        radius = theme.panel_radius * 1.5
+        if border_w >= border_h * 2.4:
+            radius = max(
+                radius,
+                min(theme.unit * 3.0, border_h * 0.13),
+            )
         canvas.rect(
             border_x, border_top, border_w, border_h,
             fill=fill_col, stroke=col,
             stroke_width=theme.hairline,
-            rx=theme.panel_radius * 1.5,
+            rx=radius,
             dasharray="4,3" if self.dashed else None,
         )
 
@@ -290,7 +344,7 @@ class Region(Element):
         self._render_corner_badge(canvas, border_x, border_top, border_w,
                                    theme)
 
-        self.child.render(canvas, x + left + self.pad_x,
+        self.child.render(canvas, border_x + (border_w - b.w) / 2.0,
                           border_top + self.pad_y, theme)
 
     def _render_label(self, canvas: Canvas, bx: float, by: float,
@@ -364,7 +418,7 @@ class Region(Element):
             return
         bb = self.corner_badge.measure(theme)
         badge_x = bx + bw - bb.w - theme.unit * 0.4
-        badge_y = by - bb.h / 2
+        badge_y = by - bb.h + theme.hairline * 0.5
         self.corner_badge.render(canvas, badge_x, badge_y, theme)
 
 
@@ -385,5 +439,3 @@ class Region(Element):
 #
 # The author writes only endpoint names; the library picks the shape.
 # ---------------------------------------------------------------------------
-
-

@@ -40,6 +40,17 @@ def test_legend_from_positional_items():
     assert size.w > 60  # two items plus gaps
 
 
+def test_positional_legend_renders_its_heading_as_one_atomic_key():
+    leg = Legend(
+        LegendItem(Box(width=14, height=12), "state"),
+        label="Tokens:",
+    )
+    svg, _, size = _render(leg)
+
+    assert "Tokens:" in svg and "state" in svg
+    assert size.w > 40
+
+
 def test_legend_items_kwarg_still_works():
     """Backward-compat: the existing `items=[(color, label), ...]` form."""
     leg = Legend(items=[("info", "hot"), ("muted", "cold")])

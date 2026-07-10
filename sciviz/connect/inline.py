@@ -24,12 +24,12 @@ class _InlineConnect(Element):
     def __init__(self, *,
                  labels: List[str],
                  direction: str,
-                 length: Optional[float],
+                 length: Optional[Union[str, float]],
                  color: str,
                  label_color: str,
                  italic: bool,
                  size: Union[str, float],
-                 head: bool):
+                 head: Union[bool, str]):
         self._arrow = Arrow(
             label=labels if labels else None,
             direction=direction,

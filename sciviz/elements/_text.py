@@ -39,8 +39,11 @@ def Span(text: str, **style: Any) -> Run:
     and both forms may be freely mixed inside a :class:`Text` or
     :class:`TextBlock`.
 
-    Accepted style keys: ``color``, ``weight``, ``italic``, ``size``.
-    Any other key passes through but is currently ignored.
+    Accepted style keys: ``color``, ``weight``, ``italic``, ``size``, and
+    ``anchor`` and ``anchor_side``.  ``anchor="name"`` publishes that run's
+    measured bbox to the normal connector registry; ``anchor_side="top"``
+    optionally supplies the preferred face used when a connector remains on
+    automatic side selection.
     """
     return (text, dict(style))
 
@@ -142,6 +145,16 @@ class Text(Element):
         return self.font
 
     def _total_width(self, theme: Theme) -> float:
+        if self.font == "mono":
+            # Monospaced export uses DejaVu Sans Mono as the concrete
+            # fallback. Its advance is about 0.60em; use a conservative
+            # 0.62em so boxes and code listings never clip their last glyph.
+            if not self.is_runs:
+                return len(self.content) * theme.size_px(self.size) * 0.62
+            return sum(
+                len(text) * theme.size_px(style.get("size", self.size)) * 0.62
+                for text, style in self._runs
+            )
         if not self.is_runs:
             bold = self.weight in ("bold", "600", "700")
             return theme.text_width(self.content, self.size, bold=bold)
@@ -254,6 +267,58 @@ class Text(Element):
                 tspans.append(_xml_escape(text))
 
         canvas.raw(f"<text {' '.join(parts)}>{''.join(tspans)}</text>")
+        # Raw SVG bypasses Canvas.text(), so publish the same ink and text-
+        # size metadata explicitly. Without this, Diagram.for_paper() trims
+        # rich-run captions out of the viewBox even though measure() reserves
+        # their space.
+        canvas._mark_ink(x, y, x + bbox.w, y + bbox.h)
+        max_size = max(
+            [theme.size_px(self.size)]
+            + [theme.size_px(style.get("size", self.size))
+               for _text, style in self._runs]
+        )
+        canvas._mark_text_size(max_size)
+
+        # Publish named run extents after emitting the line.  The Text bbox's
+        # local x-origin is the first glyph for every alignment mode because
+        # the element itself measures exactly to the full line width.
+        named = [(text, style) for text, style in self._runs
+                 if style.get("anchor") is not None]
+        if named:
+            from ..composition._anchor import _anchor_stack
+
+            stack = _anchor_stack.get()
+            if stack:
+                cursor = x
+                base_h = bbox.h
+                for text, style in self._runs:
+                    if self.font == "mono":
+                        run_w = (len(text)
+                                 * theme.size_px(style.get("size", self.size))
+                                 * 0.62)
+                    else:
+                        run_w = _run_width(
+                            theme, text, self.size, self.weight, style
+                        )
+                    anchor = style.get("anchor")
+                    if anchor is not None:
+                        if not isinstance(anchor, str) or not anchor:
+                            raise ValueError(
+                                "Text run anchor must be a non-empty string"
+                            )
+                        for registry in stack:
+                            registry[anchor] = (cursor, y, run_w, base_h)
+                            preferred = style.get("anchor_side")
+                            if preferred is not None:
+                                if preferred not in (
+                                    "top", "bottom", "left", "right"
+                                ):
+                                    raise ValueError(
+                                        "Text run anchor_side must be "
+                                        "top/bottom/left/right"
+                                    )
+                                registry[f"__preferred_side_{anchor}"] = preferred
+                    cursor += run_w
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         if not self.is_runs:

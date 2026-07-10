@@ -26,10 +26,19 @@ def _draw_placed_label(canvas: Canvas, placed, text: str, size_px: float,
     x0, y0, x1, y1 = placed.rect
     cx = (x0 + x1) / 2.0
     cy = (y0 + y1) / 2.0
+    # Connector prose is annotation, not a mathematical variable.  Infer
+    # the common case so authors do not need a typography flag on every
+    # edge: short identifiers and symbolic expressions remain italic,
+    # ordinary words/phrases are upright and substantially easier to read.
+    stripped = text.strip()
+    symbolic = (
+        (" " not in stripped and len(stripped) <= 3)
+        or any(ch in stripped for ch in "_{}^=+-×÷∑∏∈→←λμσ")
+    )
     if getattr(placed, "rotation", 0.0):
         # Rotated text: anchor at the centre of the rotated bbox.
         canvas.text(cx, cy, text,
-                    size=size_px, fill=fill, italic=True,
+                    size=size_px, fill=fill, italic=symbolic,
                     anchor="middle", baseline="middle",
                     rotate=placed.rotation)
     else:
@@ -37,7 +46,7 @@ def _draw_placed_label(canvas: Canvas, placed, text: str, size_px: float,
         # placer's vertical centre (fonts have ~33% descender).
         baseline_y = cy + size_px * 0.33
         canvas.text(cx, baseline_y, text,
-                    size=size_px, fill=fill, italic=True,
+                    size=size_px, fill=fill, italic=symbolic,
                     anchor=placed.anchor)
 
 
@@ -55,6 +64,7 @@ class Flow:
                  dst_side: str = "auto",
                  color = "text",
                  label: Optional[str] = None,
+                 label_color = None,
                  dashed: bool = False,
                  curvature: float = 0.5,
                  detour: float = 24.0,
@@ -92,6 +102,7 @@ class Flow:
         self.dst_side = dst_side
         self.color = color
         self.label = label
+        self.label_color = label_color
         self.dashed = dashed
         self.curvature = curvature
         self.detour = detour
@@ -99,6 +110,17 @@ class Flow:
         self.style = style
         self.route_around_labels = route_around_labels
         self.clearance = clearance
+
+    def _head_flags(self) -> tuple[bool, bool]:
+        if self.arrow is True or self.arrow == "end":
+            return False, True
+        if self.arrow is False or self.arrow == "none":
+            return False, False
+        if self.arrow == "start":
+            return True, False
+        if self.arrow == "both":
+            return True, True
+        raise ValueError("head must be bool or one of none/start/end/both")
 
     def _clearance_px(self, theme: Theme) -> float:
         """Resolve the obstacle-clearance margin for this flow."""
@@ -124,21 +146,33 @@ class Flow:
         db = registry.get(self.dst)
         if sb is None or db is None:
             return
-        src_side = self._auto_side(sb, db) if self.src_side == "auto" else self.src_side
-        dst_side = self._auto_side(db, sb) if self.dst_side == "auto" else self.dst_side
+        src_side = (
+            registry.get(f"__preferred_side_{self.src}",
+                         self._auto_side(sb, db))
+            if self.src_side == "auto" else self.src_side
+        )
+        dst_side = (
+            registry.get(f"__preferred_side_{self.dst}",
+                         self._auto_side(db, sb))
+            if self.dst_side == "auto" else self.dst_side
+        )
         src_frac = getattr(self, "_share_src_frac", 0.5)
         dst_frac = getattr(self, "_share_dst_frac", 0.5)
         sx, sy = _side_point_frac(sb, src_side, src_frac)
         dx, dy = _side_point_frac(db, dst_side, dst_frac)
 
         col = theme.color_of(self.color)
+        label_col = theme.color_of(
+            self.label_color if self.label_color is not None else self.color
+        )
         sw = theme.connector
         dash = "5,3" if self.dashed else None
+        marker_start, marker_end = self._head_flags()
         marker = (canvas.define_arrow_marker(
                       color=col, stroke_width=sw,
                       arrow_size=getattr(theme, "arrow_size", None),
                       name_hint="flow")
-                  if self.arrow else None)
+                  if marker_start or marker_end else None)
 
         # Orthogonal routing is delegated to the shared topological
         # planner (`sciviz.routing`).  The planner decides which region
@@ -212,8 +246,13 @@ class Flow:
                 canvas, plan,
                 stroke=col, width=sw,
                 dasharray=dash,
-                marker_end=marker if self.arrow else None,
-                src_dot=True,
+                marker_end=marker if marker_end else None,
+                marker_start=marker if marker_start else None,
+                # Ordinary directed edges terminate cleanly at node borders.
+                # Dots are reserved for explicit bus/junction semantics; a
+                # dot on every routed source adds unsupported visual meaning
+                # and makes dense paper figures look like editor debug output.
+                src_dot=False,
                 existing_segments=drawn_before,
                 hop_radius=max(2.5, sw * 2.5),
             )
@@ -255,7 +294,7 @@ class Flow:
                     wire_width=sw,
                 )
                 _draw_placed_label(canvas, placed, self.label,
-                                   lbl.size_px, col)
+                                   lbl.size_px, label_col)
                 register_label_obstacle(registry, placed.rect, self.src)
             return
 
@@ -268,7 +307,9 @@ class Flow:
         if self.style == "straight" or self.curvature == 0:
             d = f"M {sx:.2f},{sy:.2f} L {dx:.2f},{dy:.2f}"
             canvas.path(d, stroke=col, fill="none", stroke_width=sw,
-                       marker_end=marker, dasharray=dash)
+                       marker_end=marker if marker_end else None,
+                       marker_start=marker if marker_start else None,
+                       dasharray=dash)
             if self.label:
                 from ..auto.labels import (
                     measure_label, place_segment_label,
@@ -276,7 +317,7 @@ class Flow:
                 )
                 obstacles = []
                 for name, b in registry.items():
-                    if name.startswith("__") or name in (self.src, self.dst):
+                    if name.startswith("__"):
                         continue
                     if isinstance(b, tuple) and len(b) == 4:
                         ox, oy, ow, oh = b
@@ -288,7 +329,7 @@ class Flow:
                     prefer="above", gap=theme.unit * 1.0,
                 )
                 _draw_placed_label(canvas, placed, self.label,
-                                   lbl.size_px, col)
+                                   lbl.size_px, label_col)
                 register_label_obstacle(registry, placed.rect, self.src)
             return
 
@@ -331,23 +372,36 @@ class Flow:
         if src_side.startswith("bottom") and dst_side.startswith("bottom"):
             # Both-below arc: bow under the diagram.
             arch_y = max(sy, dy) + self.detour
-            sign = 1.0 if dx > sx else -1.0
-            pull = abs(dx - sx) * 0.25
-            c1 = (sx + sign * pull, arch_y)
-            c2 = (dx - sign * pull, arch_y)
+            c1 = (sx, arch_y)
+            c2 = (dx, arch_y)
         elif src_side.startswith("top") and dst_side.startswith("top"):
             # Both-above arc: bow over the diagram.
             arch_y = min(sy, dy) - self.detour
-            sign = 1.0 if dx > sx else -1.0
-            pull = abs(dx - sx) * 0.25
-            c1 = (sx + sign * pull, arch_y)
-            c2 = (dx - sign * pull, arch_y)
+            c1 = (sx, arch_y)
+            c2 = (dx, arch_y)
+        elif src_side.startswith("right") and dst_side.startswith("right"):
+            # Compact loop to the right. Scale the bow with endpoint
+            # separation but cap it at detour, so a short consume/feedback
+            # edge hugs its node instead of invading the next lane.
+            bow = min(self.detour, max(theme.unit * 1.5,
+                                       abs(dy - sy) * 0.28))
+            arch_x = max(sx, dx) + bow
+            c1 = (arch_x, sy)
+            c2 = (arch_x, dy)
+        elif src_side.startswith("left") and dst_side.startswith("left"):
+            bow = min(self.detour, max(theme.unit * 1.5,
+                                       abs(dy - sy) * 0.28))
+            arch_x = min(sx, dx) - bow
+            c1 = (arch_x, sy)
+            c2 = (arch_x, dy)
 
         d = (f"M {sx:.2f},{sy:.2f} "
              f"C {c1[0]:.2f},{c1[1]:.2f} {c2[0]:.2f},{c2[1]:.2f} "
              f"{dx:.2f},{dy:.2f}")
         canvas.path(d, stroke=col, fill="none", stroke_width=sw,
-                   marker_end=marker, dasharray=dash)
+                   marker_end=marker if marker_end else None,
+                   marker_start=marker if marker_start else None,
+                   dasharray=dash)
 
         if self.label:
             from ..auto.labels import (
@@ -356,7 +410,7 @@ class Flow:
             )
             obstacles = []
             for name, b in registry.items():
-                if name.startswith("__") or name in (self.src, self.dst):
+                if name.startswith("__"):
                     continue
                 if isinstance(b, tuple) and len(b) == 4:
                     ox, oy, ow, oh = b
@@ -367,8 +421,128 @@ class Flow:
                 [(sx, sy), c1, c2, (dx, dy)], lbl, obstacles,
                 prefer="above", gap=theme.unit * 1.0,
             )
-            _draw_placed_label(canvas, placed, self.label, lbl.size_px, col)
+            _draw_placed_label(canvas, placed, self.label,
+                               lbl.size_px, label_col)
             register_label_obstacle(registry, placed.rect, self.src)
+
+
+def _assign_edge_shares(specs, registry: dict) -> None:
+    """Choose clean attachment ports for a set of routed flows.
+
+    Parallel node faces first try to share one projected coordinate.  When
+    the faces overlap, this turns an aligned parent/child or memory link into
+    one straight segment even if the larger node's midpoint differs.
+    Multiple flows retain those projected coordinates and are separated only
+    when their ports would collide.
+
+    Both :class:`Flowed` and the implicit ``Connect`` resolver call this
+    function; it is deliberately the sole port-assignment implementation.
+    """
+    flow_endpoints = []
+    for spec in specs:
+        flow = spec if isinstance(spec, Flow) else getattr(spec, "_flow", None)
+        if flow is None:
+            continue
+        sb = registry.get(flow.src)
+        db = registry.get(flow.dst)
+        if sb is None or db is None:
+            continue
+        src_side = (
+            registry.get(f"__preferred_side_{flow.src}",
+                         flow._auto_side(sb, db))
+            if flow.src_side == "auto" else flow.src_side
+        )
+        dst_side = (
+            registry.get(f"__preferred_side_{flow.dst}",
+                         flow._auto_side(db, sb))
+            if flow.dst_side == "auto" else flow.dst_side
+        )
+        flow_endpoints.append((flow, sb, db, src_side, dst_side))
+
+    def edge_span(bbox, side):
+        x, y, w, h = bbox
+        inset = min(4.0, w * 0.2, h * 0.2)
+        if side in ("top", "bottom"):
+            return x + inset, x + w - inset
+        if side in ("left", "right"):
+            return y + inset, y + h - inset
+        return None
+
+    def fraction_for(span, coordinate):
+        if span is None:
+            return 0.5
+        lo, hi = span
+        if hi <= lo:
+            return 0.5
+        return max(0.0, min(1.0, (coordinate - lo) / (hi - lo)))
+
+    preferred: dict[tuple[int, str], float] = {}
+    for flow, sb, db, src_side, dst_side in flow_endpoints:
+        src_span = edge_span(sb, src_side)
+        dst_span = edge_span(db, dst_side)
+        parallel = (
+            src_side in ("top", "bottom")
+            and dst_side in ("top", "bottom")
+        ) or (
+            src_side in ("left", "right")
+            and dst_side in ("left", "right")
+        )
+        src_fraction = dst_fraction = 0.5
+        if parallel and src_span is not None and dst_span is not None:
+            overlap_lo = max(src_span[0], dst_span[0])
+            overlap_hi = min(src_span[1], dst_span[1])
+            if overlap_lo <= overlap_hi:
+                src_len = src_span[1] - src_span[0]
+                dst_len = dst_span[1] - dst_span[0]
+                narrower = src_span if src_len <= dst_len else dst_span
+                coordinate = (narrower[0] + narrower[1]) / 2.0
+                coordinate = max(overlap_lo, min(overlap_hi, coordinate))
+                src_fraction = fraction_for(src_span, coordinate)
+                dst_fraction = fraction_for(dst_span, coordinate)
+        preferred[(id(flow), "src")] = src_fraction
+        preferred[(id(flow), "dst")] = dst_fraction
+
+    buckets: dict = {}
+    for entry in flow_endpoints:
+        flow, _sb, _db, src_side, dst_side = entry
+        buckets.setdefault((flow.src, src_side), []).append(("src", entry))
+        buckets.setdefault((flow.dst, dst_side), []).append(("dst", entry))
+
+    for (anchor_name, side), members in buckets.items():
+        span = edge_span(registry[anchor_name], side)
+
+        def member_fraction(member):
+            role, entry = member
+            return preferred[(id(entry[0]), role)]
+
+        members.sort(key=member_fraction)
+        fractions = [member_fraction(member) for member in members]
+        if len(fractions) > 1 and span is not None:
+            usable = max(1.0, span[1] - span[0])
+            separation = min(6.0 / usable, 1.0 / (len(fractions) + 1))
+            for index in range(1, len(fractions)):
+                fractions[index] = max(
+                    fractions[index], fractions[index - 1] + separation
+                )
+            if fractions[-1] > 1.0:
+                fractions[-1] = 1.0
+                for index in range(len(fractions) - 2, -1, -1):
+                    fractions[index] = min(
+                        fractions[index], fractions[index + 1] - separation
+                    )
+            if fractions[0] < 0.0:
+                fractions[0] = 0.0
+                for index in range(1, len(fractions)):
+                    fractions[index] = max(
+                        fractions[index], fractions[index - 1] + separation
+                    )
+
+        for fraction, (role, entry) in zip(fractions, members):
+            flow = entry[0]
+            if role == "src":
+                flow._share_src_frac = fraction
+            else:
+                flow._share_dst_frac = fraction
 
 
 class Labeled(Element):
@@ -437,5 +611,3 @@ class Labeled(Element):
 
     def content_bbox(self, theme: Theme):
         return self.primary_anchor_bbox(theme)
-
-

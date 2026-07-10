@@ -50,3 +50,28 @@ def test_place_label_avoids_all_obstacles_when_possible():
     )
     for ob in obstacles:
         assert not rects_overlap(rect, ob), (rect, ob)
+
+
+def test_diagonal_label_rectangle_clears_its_own_segment():
+    from sciviz._labelplacer import place_label
+
+    p1, p2 = (100.0, 100.0), (20.0, 40.0)
+    gap = 4.0
+    rect, _anchor = place_label(
+        segment=(p1, p2),
+        label_w=90.0,
+        label_h=12.0,
+        prefer="above",
+        gap=gap,
+    )
+
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    length = (dx * dx + dy * dy) ** 0.5
+    nx, ny = dy / length, -dx / length
+    corners = (
+        (rect[0], rect[1]), (rect[2], rect[1]),
+        (rect[0], rect[3]), (rect[2], rect[3]),
+    )
+    signed = [nx * (x - p1[0]) + ny * (y - p1[1]) for x, y in corners]
+    assert all(value >= gap - 1e-6 for value in signed) \
+        or all(value <= -gap + 1e-6 for value in signed)

@@ -112,6 +112,24 @@ def _candidate_centers(
     """
     p1, p2 = segment
     is_horizontal = abs(p1[1] - p2[1]) <= abs(p1[0] - p2[0])
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    length = max((dx * dx + dy * dy) ** 0.5, 1e-9)
+    # Offset an axis-aligned label rectangle far enough along the segment's
+    # true normal that *every corner* clears the wire. A fixed y-offset works
+    # only for horizontal lines; on diagonal tier/feedback edges the wire can
+    # otherwise cut through a long label even when its centre is displaced.
+    if is_horizontal:
+        nx, ny = dy / length, -dx / length
+        if ny > 0:  # canonical "above" normal points upward on the page
+            nx, ny = -nx, -ny
+        support = abs(nx) * w / 2 + abs(ny) * h / 2
+        offset = gap + support
+    else:
+        nx, ny = -dy / length, dx / length
+        if nx > 0:  # canonical "left" normal points left on the page
+            nx, ny = -nx, -ny
+        support = abs(nx) * w / 2 + abs(ny) * h / 2
+        offset = gap + support
     in_range = [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8]
     out_range = [-0.15, 1.15]
     out: List[Tuple[Point, str, bool]] = []
@@ -119,11 +137,15 @@ def _candidate_centers(
         mid = _lerp_point(p1, p2, t)
         extrap = t < 0.0 or t > 1.0
         if is_horizontal:
-            out.append(((mid[0], mid[1] - gap - h / 2), "above", extrap))
-            out.append(((mid[0], mid[1] + gap + h / 2), "below", extrap))
+            out.append(((mid[0] + nx * offset, mid[1] + ny * offset),
+                        "above", extrap))
+            out.append(((mid[0] - nx * offset, mid[1] - ny * offset),
+                        "below", extrap))
         else:
-            out.append(((mid[0] - gap - w / 2, mid[1]), "left", extrap))
-            out.append(((mid[0] + gap + w / 2, mid[1]), "right", extrap))
+            out.append(((mid[0] + nx * offset, mid[1] + ny * offset),
+                        "left", extrap))
+            out.append(((mid[0] - nx * offset, mid[1] - ny * offset),
+                        "right", extrap))
     return out
 
 

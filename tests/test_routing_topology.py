@@ -78,6 +78,19 @@ def test_anchor_obstacle_forces_detour():
                 assert y1 <= obs.top or y1 >= obs.bottom
 
 
+def test_visual_container_enclosing_destination_is_not_a_wall():
+    src = _mkbox(0, 40, 20, 20, "src")
+    dst = _mkbox(180, 40, 20, 20, "dst")
+    container = _mkbox(150, 0, 100, 100, "visual-container")
+    plan = plan_path(
+        Endpoint(src, "right"),
+        Endpoint(dst, "left"),
+        anchors=[src, dst, container],
+        regions=[],
+    )
+    assert _corner_count(plan) == 0
+
+
 def test_region_boundary_only_crossed_when_required():
     # src lives INSIDE region r1; dst lives OUTSIDE any region.  The
     # planner must cross exactly r1's boundary, not r2's.

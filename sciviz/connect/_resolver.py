@@ -23,6 +23,7 @@ from typing import List, Optional, Union
 
 from ..core import BBox, Canvas, Element, Theme
 from ..composition import Anchor, Flow, Bus, _anchor_stack
+from ..composition._flow import _assign_edge_shares
 
 
 Pending = Union[Flow, Bus]
@@ -48,9 +49,15 @@ def _collect_anchors(elem, out):
             for c in children:
                 if c is not None:
                     _collect_anchors(c, out)
-    for attr in ("child",):
+    # Transparent semantic wrappers use different names for their primary
+    # element.  Connector discovery must follow all of them; otherwise an
+    # Anchor inside Card.body or Banner.body silently disappears.
+    for attr in (
+        "child", "body", "header", "footer", "above", "below",
+        "decoration", "source",
+    ):
         child = getattr(elem, attr, None)
-        if child is not None:
+        if isinstance(child, Element):
             _collect_anchors(child, out)
     # Connect holds auto-wrapped anchors in _wrapped.
     wrapped = getattr(elem, "_wrapped", None)
@@ -86,9 +93,12 @@ def _collect_pending(elem, out):
             for c in children:
                 if c is not None:
                     _collect_pending(c, out)
-    for attr in ("child",):
+    for attr in (
+        "child", "body", "header", "footer", "above", "below",
+        "decoration", "source",
+    ):
         child = getattr(elem, attr, None)
-        if child is not None:
+        if isinstance(child, Element):
             _collect_pending(child, out)
     cols = getattr(elem, "columns", None)
     if isinstance(cols, list):
@@ -142,18 +152,24 @@ class _FlowResolver(Element):
             if isinstance(spec, Flow):
                 src = anchors.get(spec.src)
                 dst = anchors.get(spec.dst)
+                # A connector label needs a readable corridor in addition to
+                # the arrow shaft itself. Reserve that space automatically on
+                # the participating faces so the placer is not forced back
+                # onto either endpoint node.
+                flow_bump = m * (1.6 if spec.label else 1.0)
+                flow_auto = auto_m * (1.6 if spec.label else 1.0)
                 if src is not None:
                     if spec.src_side != "auto":
-                        src._bump_margin(spec.src_side, m)
+                        src._bump_margin(spec.src_side, flow_bump)
                     else:
                         for side in ("top", "bottom", "left", "right"):
-                            src._bump_margin(side, auto_m)
+                            src._bump_margin(side, flow_auto)
                 if dst is not None:
                     if spec.dst_side != "auto":
-                        dst._bump_margin(spec.dst_side, m)
+                        dst._bump_margin(spec.dst_side, flow_bump)
                     else:
                         for side in ("top", "bottom", "left", "right"):
-                            dst._bump_margin(side, auto_m)
+                            dst._bump_margin(side, flow_auto)
             elif isinstance(spec, Bus):
                 label_mul = 1.6 if spec.label else 1.0
                 bump = m * label_mul
@@ -224,53 +240,7 @@ class _FlowResolver(Element):
             spec._render(canvas, theme, my_registry)
 
     def _assign_edge_shares(self, pending: list, registry: dict) -> None:
-        flow_endpoints = []
-        for spec in pending:
-            flow = getattr(spec, "_flow", None) if not isinstance(spec, Flow) else spec
-            if flow is None:
-                continue
-            sb = registry.get(flow.src)
-            db = registry.get(flow.dst)
-            if sb is None or db is None:
-                continue
-            src_side = (flow._auto_side(sb, db)
-                        if flow.src_side == "auto" else flow.src_side)
-            dst_side = (flow._auto_side(db, sb)
-                        if flow.dst_side == "auto" else flow.dst_side)
-            flow_endpoints.append((flow, sb, db, src_side, dst_side))
-
-        buckets: dict = {}
-        for entry in flow_endpoints:
-            flow, sb, db, src_side, dst_side = entry
-            buckets.setdefault((flow.src, src_side), []).append(("src", entry))
-            buckets.setdefault((flow.dst, dst_side), []).append(("dst", entry))
-
-        for (anchor_name, side), members in buckets.items():
-            if len(members) <= 1:
-                for role, entry in members:
-                    flow = entry[0]
-                    if role == "src":
-                        flow._share_src_frac = 0.5
-                    else:
-                        flow._share_dst_frac = 0.5
-                continue
-
-            def sort_key(m):
-                role, entry = m
-                flow, sb, db, ssd, dsd = entry
-                other = db if role == "src" else sb
-                ox, oy, ow, oh = other
-                return (ox + ow / 2) if side in ("top", "bottom") else (oy + oh / 2)
-
-            members.sort(key=sort_key)
-            n = len(members)
-            for i, (role, entry) in enumerate(members):
-                flow = entry[0]
-                frac = (i + 1) / (n + 1)
-                if role == "src":
-                    flow._share_src_frac = frac
-                else:
-                    flow._share_dst_frac = frac
+        _assign_edge_shares(pending, registry)
 
 
 # Re-export the Anchor stack's context var so the resolver plays nicely

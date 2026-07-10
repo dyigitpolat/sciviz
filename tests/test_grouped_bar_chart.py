@@ -13,6 +13,8 @@ casing.  These tests pin that the chart accepts:
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from sciviz import (
@@ -130,6 +132,18 @@ def test_explicit_y_max_respected():
     assert chart._resolved_y_max() == 50.0
 
 
+def test_semantic_plot_sizes_scale_both_axes():
+    small = GroupedBarChart([("A", [1.0])], size="sm")
+    large = GroupedBarChart([("A", [1.0])], size="xl")
+    assert large.plot_width > small.plot_width
+    assert large.plot_height > small.plot_height
+
+
+def test_rejects_unknown_semantic_plot_size():
+    with pytest.raises(ValueError):
+        GroupedBarChart([("A", [1.0])], size="enormous")
+
+
 # ---- series styling ---------------------------------------------------------
 
 def test_series_tuples_and_strings_coerce():
@@ -167,6 +181,62 @@ def test_single_series_works():
     svg = _render(chart)
     assert "<rect" in svg
     assert svg.count("<text") >= 3       # titles at least
+
+
+def test_flat_single_series_uses_fitted_category_slots_and_exact_values():
+    """Flat categories must fit the axis and keep hundredth precision."""
+    chart = GroupedBarChart(
+        [BarGroup("Baseline", [4.56], color="#15803d"),
+         BarGroup("+IndexShare\n+KVShare", [5.10], color="#cbd1db"),
+         BarGroup("+End-to-end", [5.47], color="#3b82f6")],
+        y_max=6,
+        y_step=1,
+        show_cards=False,
+        show_target_line=False,
+        show_delta_arrow=False,
+    )
+    theme = Theme()
+    offset, panel_w, inter, bar_w, intra, pad = chart._group_geometry(
+        theme, chart.plot_width)
+    assert offset == 0.0
+    assert inter == 0.0
+    assert panel_w * len(chart.groups) == pytest.approx(chart.plot_width)
+    assert bar_w > 0 and pad >= 0
+    svg = _render(chart)
+    assert "4.56" in svg and "5.47" in svg
+    assert "#15803d" in svg.lower()
+    assert "+KVShare" in svg
+
+
+def test_flat_chart_defaults_to_quiet_horizontal_grid():
+    chart = GroupedBarChart(
+        [("A", [1.0]), ("B", [2.0])],
+        y_max=3, y_step=1,
+        show_cards=False, show_target_line=False,
+        show_delta_arrow=False,
+    )
+    svg = _render(chart)
+    assert 'opacity="0.18"' in svg
+
+
+def test_flat_annotation_stacks_above_value_without_collision():
+    chart = GroupedBarChart(
+        [BarGroup("Final", [5.47], annotation="+20%\nvs Baseline")],
+        y_max=6, y_step=1,
+        show_cards=False, show_target_line=False,
+        show_delta_arrow=False,
+    )
+    svg = _render(chart)
+
+    def text_y(text):
+        match = re.search(rf'<text[^>]*y="([0-9.]+)"[^>]*>{re.escape(text)}<',
+                          svg)
+        assert match, f"missing {text!r} in {svg}"
+        return float(match.group(1))
+
+    value_y = text_y("5.47")
+    annotation_bottom_y = text_y("vs Baseline")
+    assert value_y - annotation_bottom_y >= Theme().text_height("label")
 
 
 # ---- theme integration ------------------------------------------------------

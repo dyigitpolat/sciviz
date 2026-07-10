@@ -290,7 +290,7 @@ _PAPER_NAMED = {
     # ``Palette.accent_proc`` resolve to the same hex.
     "accent_proc":   "#fbe5a8",
     "accent_shared": "#c1e1c1",
-    "panel_soft":    "#c0cbd7",
+    "panel_soft":    "#eef1f5",
     "muted_label":   "#475569",
 }
 

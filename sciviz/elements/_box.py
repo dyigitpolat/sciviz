@@ -16,9 +16,22 @@ class Box(Element):
     explicit width/height is given.
     """
 
+    # Keep wrapping and intrinsic measurement on one outer-width contract.
+    # This is deliberately a theme-relative bearing, not a public per-box
+    # layout knob: paper nodes should remain balanced without author tuning.
+    _SIDE_PAD_UNITS = 1.2
+    _SIZE_FLOORS = {
+        "sm": (6.0, 4.0),
+        "md": (9.0, 6.0),
+        "lg": (13.0, 9.0),
+        "xl": (18.0, 13.0),
+        "2xl": (22.0, 16.0),
+    }
+
     def __init__(self, label: Optional[str] = None, *,
                  width: Optional[float] = None,
                  height: Optional[float] = None,
+                 size: Optional[str] = None,
                  min_width: Optional[float] = None,
                  min_height: Optional[float] = None,
                  fill: str = "none",
@@ -27,7 +40,7 @@ class Box(Element):
                  text_color: str = "auto",
                  text_size: Optional[Union[str, float]] = None,
                  text_weight: Optional[str] = None,
-                 radius: Optional[float] = None,
+                 radius: Optional[Union[str, float]] = None,
                  sub_label: Optional[str] = None,
                  sub_color: str = "muted",
                  badge: Optional[str] = None,
@@ -35,12 +48,17 @@ class Box(Element):
                  dashed: bool = False,
                  opacity: float = 1.0,
                  vertical_text: bool = False,
+                 aspect: Optional[str] = None,
                  shape_key: Optional[str] = None,
                  wrap: bool = False,
                  max_width: Optional[float] = None):
         self.label = label
         self.width = width
         self.height = height
+        if size is not None and size not in self._SIZE_FLOORS:
+            allowed = ", ".join(self._SIZE_FLOORS)
+            raise ValueError(f"Box.size must be one of {allowed} or None")
+        self.semantic_size = size
         self.min_width = min_width
         self.min_height = min_height
         self.fill = fill
@@ -59,6 +77,8 @@ class Box(Element):
             self.text_weight = "700" if vertical_text else "500"
         else:
             self.text_weight = text_weight
+        if isinstance(radius, str) and radius != "pill":
+            raise ValueError("Box.radius must be numeric, 'pill', or None")
         self.radius = radius
         self.sub_label = sub_label
         self.sub_color = sub_color
@@ -71,6 +91,11 @@ class Box(Element):
         self.dashed = dashed
         self.opacity = opacity
         self.vertical_text = vertical_text
+        if aspect not in (None, "square", "portrait", "landscape"):
+            raise ValueError(
+                "Box.aspect must be square, portrait, landscape, or None"
+            )
+        self.aspect = aspect
         self.wrap = bool(wrap)
         self.max_width = max_width
         self._wrap_cache = {}
@@ -85,6 +110,7 @@ class Box(Element):
             # an opaque Element).  Based on visual-style fields only.
             self.shape_key = (
                 f"box::{repr(self.fill)}::{self.text_size}::{int(self.dashed)}"
+                f"::{self.aspect or 'auto'}::{self.semantic_size or 'auto'}"
             )
         else:
             self.shape_key = shape_key
@@ -151,7 +177,8 @@ class Box(Element):
         if forced_w:
             sub_w, _ = self._sub_metrics(theme)
             sub_gap = theme.unit * 0.6 if self.sub_label else 0.0
-            forced_avail = (float(forced_w) - theme.unit * 1.6
+            forced_avail = (float(forced_w)
+                            - theme.unit * (2 * self._SIDE_PAD_UNITS)
                             - sub_w - sub_gap)
         out = []
         for line in raw:
@@ -231,8 +258,11 @@ class Box(Element):
             # never overlap, and a dedicated bottom strip so the main
             # label's bottom is clear of the sub's top.
             sub_gap = theme.unit * 0.6 if self.sub_label else 0.0
-            right_pad = theme.unit * 0.8
-            left_pad = theme.unit * 0.8
+            # Paper boxes need enough side bearing to survive rasterisation
+            # and print reduction.  The old 0.8-unit pad let wide title and
+            # monospace labels visually collide with their borders.
+            right_pad = theme.unit * self._SIDE_PAD_UNITS
+            left_pad = theme.unit * self._SIDE_PAD_UNITS
             reserved_bottom = (sub_h + theme.unit * 0.25) if self.sub_label else 0.0
             # Badge (top-right): reserve a top strip and make sure the
             # box is at least wide enough for the badge plus padding.
@@ -240,8 +270,48 @@ class Box(Element):
             badge_min_w = (badge_w + left_pad + right_pad) if self.badge else 0.0
             w = max(label_w + sub_gap + sub_w + left_pad + right_pad,
                     badge_min_w)
-            h = label_h + reserved_bottom + reserved_top + theme.unit * 0.9
-        return max(w, theme.unit * 6), max(h, theme.unit * 3.2)
+            # Paper nodes need enough vertical air to separate their text
+            # from the border after column-width reduction.  The historical
+            # 0.9-unit allowance made single-line nodes look like UI chips.
+            h = label_h + reserved_bottom + reserved_top + theme.unit * 1.35
+        w = max(w, theme.unit * 6)
+        h = max(h, theme.unit * 4.0)
+        landscape_ratio = 2.4
+        if self.semantic_size is not None:
+            floor_w, floor_h = self._SIZE_FLOORS[self.semantic_size]
+            if self.aspect == "landscape":
+                # Preserve the established long-axis scale while letting a
+                # large landscape stage grow *wider*, not UI-card taller.
+                # xl/2xl commonly hold equations or multi-clause workflow
+                # stages; their extra semantic size should buy line length.
+                landscape_ratio = (
+                    3.2 if self.semantic_size in ("xl", "2xl") else 2.4
+                )
+                long_floor = max(floor_w, floor_h * 2.4)
+                w = max(w, theme.unit * long_floor)
+                h = max(h, theme.unit * long_floor / landscape_ratio)
+            else:
+                w = max(w, theme.unit * floor_w)
+                h = max(h, theme.unit * floor_h)
+        # Semantic silhouettes replace repeated hand-authored width/height
+        # pairs. They are floors, so long labels still grow naturally.
+        if self.aspect == "square":
+            side = max(w, h, theme.unit * 6)
+            w = h = side
+        elif self.aspect == "portrait":
+            w = max(w, theme.unit * 7)
+            # A 5:4 card is technically taller than wide but does not read
+            # as a deliberate portrait silhouette after paper reduction.
+            # Use a clear 3:2 ratio so vertical links, device towers, and
+            # state lanes remain recognisably upright without pixel heights.
+            h = max(h, w * 1.5, theme.unit * 10.5)
+        elif self.aspect == "landscape":
+            h = max(h, theme.unit * 5)
+            # A semantic landscape stage should read as a workflow bar, not
+            # a nearly-square card. Larger tiers become broader rather than
+            # taller, using the ratio resolved with their semantic size.
+            w = max(w, h * landscape_ratio, theme.unit * 9)
+        return w, h
 
     def measure(self, theme: Theme) -> BBox:
         w, h = self._intrinsic(theme)
@@ -258,24 +328,38 @@ class Box(Element):
     def _resolved_text_color(self, theme: Theme) -> str:
         if self.text_color != "auto":
             return theme.color_of(self.text_color)
-        fill_hex = theme.color_of(self.fill)
+        fill_hex = theme.paint_of(self.fill)
         if fill_hex == "none" or fill_hex.startswith("rgb"):
             return theme.color_of("text")
         return theme.text_on(fill_hex)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         size = self.measure(theme)
-        r = self.radius if self.radius is not None else theme.panel_radius
+        if self.radius == "pill":
+            r = size.h / 2
+        else:
+            r = self.radius if self.radius is not None else theme.panel_radius
         dasharray = "3,2" if self.dashed else None
         sw = self.stroke_width if self.stroke_width is not None else theme.line
+        fill = theme.paint_of(self.fill)
+        stroke = theme.paint_of(self.stroke)
         canvas.rect(
             x, y, size.w, size.h,
-            fill=theme.color_of(self.fill),
-            stroke=theme.color_of(self.stroke),
+            fill=fill,
+            stroke=stroke,
             stroke_width=sw,
             rx=r, dasharray=dasharray, opacity=self.opacity,
         )
-        _register_implicit_obstacle(x, y, size.w, size.h)
+        if fill != "none" or stroke != "none":
+            if self._label_is_element():
+                # An element-labelled Box is a semantic container: routed
+                # anchors may legitimately live inside it. Publish ancestry
+                # instead of an uncrossable anonymous obstacle so a relation
+                # can enter the container boundary exactly once.
+                from ..core._routing_context import register_routing_region
+                register_routing_region(self, x, y, size.w, size.h)
+            else:
+                _register_implicit_obstacle(x, y, size.w, size.h)
         if self.badge:
             # Top-right corner chip. Same bump-in as sub_label on the
             # bottom so the box feels symmetric.
@@ -362,5 +446,3 @@ class Box(Element):
                     size=sub_sz, fill=theme.color_of(self.sub_color),
                     weight="normal", italic=True, anchor="end",
                 )
-
-

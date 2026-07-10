@@ -22,6 +22,12 @@ class Column(Element):
         centred within the column.
     """
 
+    # A Row that is itself stretched by a parent may contain a major stage
+    # Column beside a small accessory (cache, badge, legend). The stage is
+    # the child that should absorb cross-axis height; the accessory remains
+    # optically centred.
+    absorbs_cross_axis_stretch = True
+
     def __init__(self, *children: Element, gap: Union[str, float] = "md",
                  align: str = "center", equal_widths: bool = False):
         self.children: List[Element] = [c for c in children if c is not None]
@@ -33,15 +39,50 @@ class Column(Element):
         # Honoured in ``measure`` / ``render``; children retain their
         # alignment within the (possibly widened) column frame.
         self._min_width: float = 0.0
+        # Main-axis floor used by Row(align="stretch"). Structural panels
+        # inside the column absorb this height before we fall back to
+        # distributing it across gaps.
+        self._min_height: float = 0.0
 
     def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
-        """Grow the Column's outer width so a ``start``-aligned stack of
-        chips stays hugged to the left of the enclosing Box when the Box
-        is inflated to match a sibling. ``min_h`` is currently ignored --
-        Columns stretch in the main axis via child sizes, not a floor.
+        """Grow the Column's outer frame to a requested width and height.
+
+        Height is primarily absorbed by structural panel children (for
+        aligned architecture stages); any residual is distributed through
+        the existing gaps.  This keeps first/last stage landmarks aligned
+        without authors inserting pixel spacers.
         """
         if min_w > self._min_width:
             self._min_width = float(min_w)
+            # A parent may raise the floor after our intrinsic pass. Re-run
+            # equalisation so painted children, not just the column frame,
+            # receive the new shared width.
+            self._equalised = False
+        if min_h > self._min_height:
+            self._min_height = float(min_h)
+
+    def _apply_height_floor(self, theme: Theme) -> None:
+        """Offer surplus height to semantic structural children first."""
+        if self._min_height <= 0.0:
+            return
+        visible = self._visible_children()
+        if not visible:
+            return
+        g = theme.gap_px(self.gap)
+        sizes = [child.measure(theme) for child in visible]
+        natural = sum(size.h for size in sizes) + g * (len(visible) - 1)
+        surplus = self._min_height - natural
+        if surplus <= 0.5:
+            return
+        absorbers = [
+            child for child in visible
+            if getattr(child, "absorbs_main_axis_stretch", False)
+        ]
+        if not absorbers:
+            return
+        share = surplus / len(absorbers)
+        for child in absorbers:
+            child.inflate_to(0.0, child.measure(theme).h + share)
 
     def _visible_children(self):
         return [c for c in self.children
@@ -100,17 +141,16 @@ class Column(Element):
         # Only propagate when at least two children contribute column
         # widths — a single Row has nothing to align against, and
         # forcing slot widths on it changes centering semantics.
-        contributing = sum(1 for w in per_child if w)
+        contributing = sum(1 for widths in per_child if widths)
         if contributing < 2:
             return
-        max_cols = max((len(w) for w in per_child), default=0)
+        max_cols = max((len(widths) for widths in per_child), default=0)
         if max_cols == 0:
             return
         shared = [0.0] * max_cols
         for widths in per_child:
-            for i, w in enumerate(widths):
-                if w > shared[i]:
-                    shared[i] = w
+            for index, width in enumerate(widths):
+                shared[index] = max(shared[index], width)
         for child in self.children:
             apply = getattr(child, "_apply_shared_columns", None)
             if apply is not None:
@@ -118,6 +158,38 @@ class Column(Element):
                     apply(shared)
                 except Exception:
                     pass
+
+    def _shared_column_widths(self, theme: Theme) -> List[float]:
+        """Expose aggregate semantic columns from nested row children."""
+        per_child = []
+        for child in self.children:
+            probe = getattr(child, "_shared_column_widths", None)
+            if probe is None:
+                continue
+            try:
+                widths = [float(width) for width in probe(theme)]
+            except Exception:  # pragma: no cover - defensive wrapper
+                continue
+            if widths:
+                per_child.append(widths)
+        max_cols = max((len(widths) for widths in per_child), default=0)
+        shared = [0.0] * max_cols
+        for widths in per_child:
+            for index, width in enumerate(widths):
+                shared[index] = max(shared[index], width)
+        return shared
+
+    def _apply_shared_columns(self, widths) -> None:
+        for child in self.children:
+            apply = getattr(child, "_apply_shared_columns", None)
+            if apply is not None:
+                apply(widths)
+
+    def _stretch_visible_to_slots(self, widths) -> None:
+        for child in self.children:
+            stretch = getattr(child, "_stretch_visible_to_slots", None)
+            if stretch is not None:
+                stretch(widths)
 
     def _maybe_equalise_widths(self, theme: Theme) -> None:
         """Broadcast the widest child's width to siblings via ``inflate_to``.
@@ -129,7 +201,7 @@ class Column(Element):
         sizes = [c.measure(theme) for c in self._visible_children()]
         if not sizes:
             return
-        target = max(s.w for s in sizes)
+        target = max(max(s.w for s in sizes), self._min_width)
         for c in self._visible_children():
             c.inflate_to(target, 0.0)
 
@@ -139,25 +211,48 @@ class Column(Element):
         self._normalize_cross_child_shapes(theme)
         self._propagate_shared_widths(theme)
         self._maybe_equalise_widths(theme)
+        self._apply_height_floor(theme)
         sizes = [c.measure(theme) for c in self.children]
         visible = self._visible_children()
         vis_sizes = [c.measure(theme) for c in visible]
         g = theme.gap_px(self.gap)
         content = [c.content_bbox(theme) for c in self.children]
-        content_w = max(cb[2] for cb in content)
-        max_left = max(cb[0] for cb in content)
-        max_right = max(s.w - cb[0] - cb[2] for s, cb in zip(sizes, content))
-        w = max(content_w + max_left + max_right, max(s.w for s in sizes))
+        left_extent, right_extent = self._cross_extents(sizes, content)
+        w = left_extent + right_extent
         if self._min_width > w:
             w = self._min_width
         n_vis = max(len(visible), 1)
         h = sum(s.h for s in vis_sizes) + g * (n_vis - 1)
+        h = max(h, self._min_height)
         return BBox(w, h)
+
+    def _cross_extents(self, sizes, content) -> tuple[float, float]:
+        """Outer space required on each side of the shared content axis.
+
+        Computing independent maxima for content width, left decoration,
+        and right decoration over-counted space when those maxima belonged
+        to different children.  Expressing every child relative to the
+        actual alignment axis gives the exact union instead.
+        """
+        if self.align == "start":
+            left = max(cb[0] for cb in content)
+            right = max(size.w - cb[0]
+                        for size, cb in zip(sizes, content))
+        elif self.align == "end":
+            left = max(cb[0] + cb[2] for cb in content)
+            right = max(size.w - cb[0] - cb[2]
+                        for size, cb in zip(sizes, content))
+        else:
+            left = max(cb[0] + cb[2] / 2 for cb in content)
+            right = max(size.w - cb[0] - cb[2] / 2
+                        for size, cb in zip(sizes, content))
+        return left, right
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         if not self.children:
             return
         self._maybe_equalise_widths(theme)
+        self._apply_height_floor(theme)
         # Give cross-axis stretchers (horizontal separators etc.) the
         # column's full width so they render as full-width rules.
         W = self.measure(theme).w
@@ -167,20 +262,40 @@ class Column(Element):
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
         content = [c.content_bbox(theme) for c in self.children]
-        _content_w = max(cb[2] for cb in content)
-        _max_left = max(cb[0] for cb in content)
-        cy = y
+        left_extent, right_extent = self._cross_extents(sizes, content)
+        natural_w = left_extent + right_extent
+        # ``inflate_to`` widens the column's frame without widening its
+        # children.  Keep the natural content band centred inside that
+        # extra frame; otherwise all surplus width accumulates on the
+        # right and a centred stack appears left-aligned.
+        extra_cross_space = max(0.0, W - natural_w)
+        visible = self._visible_children()
+        natural_h = (
+            sum(c.measure(theme).h for c in visible)
+            + g * max(0, len(visible) - 1)
+        )
+        residual = max(0.0, self.measure(theme).h - natural_h)
+        effective_gap = g
+        if residual > 0.0 and len(visible) > 1:
+            effective_gap += residual / (len(visible) - 1)
+        cy = y + (residual / 2 if len(visible) == 1 else 0.0)
+        visible_index = 0
         for child, size, cb in zip(self.children, sizes, content):
             invisible = getattr(child, "is_layout_invisible", False)
             cb_x = cb[0]
             cb_w = cb[2]
             if self.align == "start":
-                cx = x - cb_x
+                axis_x = x + left_extent
+                cx = axis_x - cb_x
             elif self.align == "end":
-                cx = x + W - (cb_x + cb_w)
+                axis_x = x + extra_cross_space + left_extent
+                cx = axis_x - (cb_x + cb_w)
             else:
-                col_content_center_x = x + _max_left + _content_w / 2
-                cx = col_content_center_x - (cb_x + cb_w / 2)
+                axis_x = x + extra_cross_space / 2 + left_extent
+                cx = axis_x - (cb_x + cb_w / 2)
             child.render(canvas, cx, cy, theme)
             if not invisible:
-                cy += size.h + g
+                visible_index += 1
+                cy += size.h
+                if visible_index < len(visible):
+                    cy += effective_gap

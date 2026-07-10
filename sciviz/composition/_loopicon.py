@@ -76,7 +76,19 @@ class LoopIcon(Element):
         hx, hy = cx + r * _math.cos(hr), cy + r * _math.sin(hr)
         d = (f"M {tx:.2f},{ty:.2f} "
              f"A {r:.2f},{r:.2f} 0 1 0 {hx:.2f},{hy:.2f}")
-        canvas.path(d, stroke=stroke_col, fill="none", stroke_width=sw)
+        # The SVG arc command contains radii and flags as well as endpoint
+        # coordinates.  Canvas deliberately cannot infer a reliable bbox
+        # from that numeric stream, so publish the semantic footprint we
+        # already know.  Without this, a loop near the right edge can make
+        # its x coordinate look like a y coordinate to the conservative
+        # fallback and inflate an auto-trimmed paper canvas vertically.
+        canvas.path(
+            d,
+            stroke=stroke_col,
+            fill="none",
+            stroke_width=sw,
+            ink_bbox=(cx - r, cy - r, cx + r, cy + r),
+        )
 
         # Arrowhead at the head end.  The arc arrives at `head_deg`
         # travelling in the mathematically CCW direction, whose
@@ -96,6 +108,5 @@ class LoopIcon(Element):
         p2 = (bx - perp[0] * head_w / 2, by - perp[1] * head_w / 2)
         canvas.polygon([(tip_x, tip_y), p1, p2],
                        fill=stroke_col, stroke="none")
-
 
 

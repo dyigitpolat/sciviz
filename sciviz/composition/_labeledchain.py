@@ -26,7 +26,7 @@ class LabeledChain(Element):
     bottom_labels : sequence of Element, optional
         Same as ``top_labels`` but rendered below the items row.
     arrow : str or Element, optional
-        Either a short symbolic spec (``"->"``, ``"<-"``, ``"--"``) or an
+        Either a short symbolic spec (``"->"``, ``"<-"``, ``"<->"``, ``"--"``) or an
         explicit :class:`Element` to draw between successive items.
         Default ``None`` (no connector).  String specs lower to
         :class:`Connector` with sensible defaults.
@@ -71,10 +71,12 @@ class LabeledChain(Element):
                 return Connector(direction="right", length=22)
             if style == "<-":
                 return Connector(direction="left", length=22)
+            if style == "<->":
+                return Connector(direction="right", length=22, head="both")
             if style == "--":
                 return Connector(direction="right", length=22, head=False)
             raise ValueError(
-                f"arrow string spec must be one of '->', '<-', '--'; got {style!r}")
+                f"arrow string spec must be one of '->', '<-', '<->', '--'; got {style!r}")
         raise TypeError(f"arrow must be None, Element or str; got {type(self.arrow)}")
 
     def _items_row(self) -> Row:
@@ -164,5 +166,4 @@ class LabeledChain(Element):
             cur_y += lg
             self._render_label_band(self.bottom_labels, cx_list, canvas, x, cur_y,
                                     theme, align_bottom=False)
-
 
