@@ -1,8 +1,18 @@
-"""Icon: compact stroke-based pictogram drawn from the Lucide subset.
+"""Icon: compact stroke-based pictogram drawn from a bundled icon bank.
 
 Authors call ``Icon("camera")`` -- no SVG authoring required. The icon
 renders at the requested ``size`` square while preserving the linecap /
-linejoin look of the Lucide family.
+linejoin look of its source family.
+
+Two banks back the lookup, checked in order:
+
+1. :data:`sciviz._assets.LUCIDE_ICONS` -- a curated ~50-icon subset with
+   path data baked into a Python dict (see :mod:`sciviz._assets._lucide`).
+2. The Hugeicons stroke-rounded free bank (~5,500 icons, see
+   :mod:`sciviz._assets._hugeicons`) -- SVG files loaded from disk and
+   parsed lazily on first use. Search
+   ``sciviz/_assets/hugeicons/manifest.json`` (or
+   :func:`sciviz._assets.search_hugeicons`) to find a name by keyword.
 
 Unknown names raise with the full list of available icons so typos are
 self-diagnosing at measure time.
@@ -12,21 +22,29 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
-from typing import Union
+from typing import Optional, Union
 
-from .._assets import LUCIDE_ICONS, LUCIDE_VIEWBOX
+from .._assets import (
+    HUGEICONS_VIEWBOX,
+    LUCIDE_ICONS,
+    LUCIDE_VIEWBOX,
+    has_hugeicon,
+    hugeicons_names,
+    load_hugeicon_shapes,
+)
 from ..core import BBox, Canvas, Element, Theme
 
 
 class Icon(Element):
-    """A Lucide-family pictogram at a fixed square size.
+    """A pictogram at a fixed square size, resolved from the Lucide subset
+    or the larger Hugeicons bank.
 
     Parameters
     ----------
     name : str
-        Icon name (see :data:`sciviz._assets.LUCIDE_ICONS`). Unknown names
-        raise :class:`KeyError` at construction time with the available
-        set in the message.
+        Icon name. Checked against :data:`sciviz._assets.LUCIDE_ICONS`
+        first, then the Hugeicons bank. Unknown names raise
+        :class:`KeyError` at construction time with counts for both banks.
     size : float or str
         Side length in px, or a semantic size token resolved against the
         theme (``"small"``, ``"label"``, ``"title"``, ...). Defaults to
@@ -34,30 +52,40 @@ class Icon(Element):
     color : str or ColorRef
         Stroke color. Semantic tokens preferred (``"dark"``, ``"muted"``,
         ``"highlight"``, a palette role).
-    stroke_width : float
-        Stroke width in the *viewBox* coordinate system (24 units). The
-        default 1.75 mirrors Lucide's own.
+    stroke_width : float or None
+        Stroke width in the *viewBox* coordinate system (24 units). For
+        Lucide icons this is an absolute width (default 1.75, mirroring
+        Lucide's own). For Hugeicons icons, ``None`` (default) keeps each
+        shape's authored width -- some icons deliberately vary stroke
+        weight per shape (e.g. a bold dot) -- and an explicit value scales
+        every shape's width proportionally rather than replacing it.
     opacity : float
     """
 
     def __init__(self, name: str, *,
                  size: Union[float, str] = "label",
                  color: str = "dark",
-                 stroke_width: float = 1.75,
+                 stroke_width: Optional[float] = None,
                  fill: str = "none",
                  opacity: float = 1.0):
-        if name not in LUCIDE_ICONS:
-            options = ", ".join(sorted(LUCIDE_ICONS)[:10])
+        if name in LUCIDE_ICONS:
+            self._bank = "lucide"
+        elif has_hugeicon(name):
+            self._bank = "hugeicons"
+        else:
+            lucide_options = ", ".join(sorted(LUCIDE_ICONS)[:10])
             raise KeyError(
                 f"Unknown icon {name!r}. "
-                f"Available: {len(LUCIDE_ICONS)} icons, e.g. {options} ... "
-                f"(see sciviz._assets.LUCIDE_ICONS for the full list)."
+                f"Available: {len(LUCIDE_ICONS)} Lucide icons (e.g. {lucide_options} ...) "
+                f"+ {len(hugeicons_names())} Hugeicons icons. "
+                f"Search sciviz/_assets/hugeicons/manifest.json by keyword, or see "
+                f"sciviz._assets.LUCIDE_ICONS / sciviz._assets.hugeicons_names() for the full lists."
             )
         self.name = name
         self.size = size
         self.color = color
-        self.stroke_width = float(stroke_width)
-        # ``"none"`` (default) -- Lucide's pure-stroke look.
+        self.stroke_width = None if stroke_width is None else float(stroke_width)
+        # ``"none"`` (default) -- pure-stroke look.
         # ``"match"``          -- fill the shape with ``color`` (solid glyph).
         # Any colour string    -- explicit fill colour.
         self.fill = fill
@@ -203,10 +231,60 @@ class Icon(Element):
         y1 = min(vy + vh, max(ys) + pad)
         return (x0, y0, max(0.0, x1 - x0), max(0.0, y1 - y0))
 
+    @staticmethod
+    def _shape_points(tag: str, attrs: dict) -> list[tuple[float, float]]:
+        if tag == "path" and "d" in attrs:
+            return Icon._path_points(attrs["d"])
+        if tag == "circle":
+            cx, cy, r = float(attrs.get("cx", 0)), float(attrs.get("cy", 0)), float(attrs.get("r", 0))
+            return [(cx - r, cy - r), (cx + r, cy + r)]
+        if tag == "ellipse":
+            cx, cy = float(attrs.get("cx", 0)), float(attrs.get("cy", 0))
+            rx, ry = float(attrs.get("rx", 0)), float(attrs.get("ry", 0))
+            return [(cx - rx, cy - ry), (cx + rx, cy + ry)]
+        if tag == "rect":
+            x0, y0 = float(attrs.get("x", 0)), float(attrs.get("y", 0))
+            w, h = float(attrs.get("width", 0)), float(attrs.get("height", 0))
+            return [(x0, y0), (x0 + w, y0 + h)]
+        return []
+
+    @staticmethod
+    @lru_cache(maxsize=256)
+    def _hugeicon_bounds(name: str) -> tuple[float, float, float, float]:
+        """Approximate the visible shape bounds in Hugeicons viewBox units.
+
+        Falls back to the full viewBox for the rare icon using a shape
+        ``transform`` (matrices aren't applied here -- exact centering for
+        those icons trades off against the complexity of inverting an
+        arbitrary transform for what is only an alignment heuristic).
+        """
+        shapes = load_hugeicon_shapes(name)
+        points: list[tuple[float, float]] = []
+        for tag, attr_pairs in shapes:
+            attrs = dict(attr_pairs)
+            if "transform" in attrs:
+                return HUGEICONS_VIEWBOX
+            points.extend(Icon._shape_points(tag, attrs))
+        if not points:
+            return HUGEICONS_VIEWBOX
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        vx, vy, vw, vh = HUGEICONS_VIEWBOX
+        pad = 1.0
+        x0 = max(vx, min(xs) - pad)
+        y0 = max(vy, min(ys) - pad)
+        x1 = min(vx + vw, max(xs) + pad)
+        y1 = min(vy + vh, max(ys) + pad)
+        return (x0, y0, max(0.0, x1 - x0), max(0.0, y1 - y0))
+
     def content_bbox(self, theme: Theme) -> tuple[float, float, float, float]:
         s = self._size_px(theme)
-        vx, vy, vw, vh = LUCIDE_VIEWBOX
-        bx, by, bw, bh = self._viewbox_bounds(self.name)
+        if self._bank == "lucide":
+            vx, vy, vw, vh = LUCIDE_VIEWBOX
+            bx, by, bw, bh = self._viewbox_bounds(self.name)
+        else:
+            vx, vy, vw, vh = HUGEICONS_VIEWBOX
+            bx, by, bw, bh = self._hugeicon_bounds(self.name)
         sx = s / vw
         sy = s / vh
         return ((bx - vx) * sx, (by - vy) * sy, bw * sx, bh * sy)
@@ -220,12 +298,24 @@ class Icon(Element):
             fill = "none"
         else:
             fill = theme.color_of(self.fill)
-        canvas.svg_path(
-            x, y, s, s,
-            paths=LUCIDE_ICONS[self.name],
-            viewbox=LUCIDE_VIEWBOX,
-            stroke=stroke,
-            stroke_width=self.stroke_width,
-            fill=fill,
-            opacity=self.opacity,
-        )
+
+        if self._bank == "lucide":
+            canvas.svg_path(
+                x, y, s, s,
+                paths=LUCIDE_ICONS[self.name],
+                viewbox=LUCIDE_VIEWBOX,
+                stroke=stroke,
+                stroke_width=1.75 if self.stroke_width is None else self.stroke_width,
+                fill=fill,
+                opacity=self.opacity,
+            )
+        else:
+            canvas.svg_shapes(
+                x, y, s, s,
+                shapes=load_hugeicon_shapes(self.name),
+                viewbox=HUGEICONS_VIEWBOX,
+                color=stroke,
+                stroke_width=self.stroke_width,
+                fill=fill,
+                opacity=self.opacity,
+            )

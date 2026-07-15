@@ -392,6 +392,76 @@ class Canvas:
         self._body.append(f"<svg {' '.join(attrs)}>{inner}</svg>")
         self._mark_ink(x, y, x + w, y + h)
 
+    def svg_shapes(self, x: float, y: float, w: float, h: float, *,
+                   shapes: "tuple",
+                   viewbox: "tuple[float, float, float, float]" = (0.0, 0.0, 24.0, 24.0),
+                   color: str = "#0f172a", stroke_width: Optional[float] = None,
+                   fill: str = "none",
+                   opacity: float = 1.0) -> None:
+        """Place a heterogeneous set of SVG shapes inside an ``(x, y, w, h)`` box.
+
+        Unlike :meth:`svg_path`, each entry in ``shapes`` is a
+        ``(tag, attrs)`` pair (``tag`` one of ``path``/``circle``/``rect``/
+        ``ellipse``; ``attrs`` an iterable of ``(name, value)`` string
+        pairs) carrying its *own* stroke/fill/opacity/stroke-width, since
+        multi-tone icon families (e.g. Hugeicons) vary these per shape
+        rather than sharing one uniform stroke like Lucide's path-only
+        icons. ``"currentColor"`` in a shape's ``stroke``/``fill`` resolves
+        to ``color``; ``stroke-width`` is scaled (not replaced) by
+        ``stroke_width`` relative to the shape's authored weight so
+        intentionally thick/thin sub-strokes keep their proportions.
+
+        ``fill`` mirrors :class:`sciviz.Icon`'s parameter: shapes authored
+        with ``fill="none"`` stay unfilled unless the caller overrides with
+        ``"match"`` (fill = ``color``) or an explicit color; shapes
+        authored with a solid ``currentColor`` fill always resolve to
+        ``color`` since that's part of the icon's own design.
+        """
+        vx, vy, vw, vh = viewbox
+        svg_attrs = [
+            f'x="{_fmt(x)}"', f'y="{_fmt(y)}"',
+            f'width="{_fmt(w)}"', f'height="{_fmt(h)}"',
+            f'viewBox="{_fmt(vx)} {_fmt(vy)} {_fmt(vw)} {_fmt(vh)}"',
+            'fill="none"',
+        ]
+        inner_parts = []
+        for tag, attr_pairs in shapes:
+            attrs = dict(attr_pairs)
+            shape_opacity = float(attrs.pop("opacity", 1.0)) * opacity
+
+            shape_stroke = attrs.pop("stroke", None)
+            if shape_stroke == "currentColor":
+                attrs["stroke"] = color
+            elif shape_stroke is not None:
+                attrs["stroke"] = shape_stroke
+
+            shape_fill = attrs.pop("fill", None)
+            if shape_fill == "currentColor":
+                attrs["fill"] = color
+            elif shape_fill == "none":
+                if fill == "none":
+                    attrs["fill"] = "none"
+                elif fill == "match":
+                    attrs["fill"] = color
+                else:
+                    attrs["fill"] = fill
+            elif shape_fill is not None:
+                attrs["fill"] = shape_fill
+
+            if "stroke" in attrs and stroke_width is not None:
+                base_width = float(attrs.get("stroke-width", 1.5))
+                attrs["stroke-width"] = _fmt(base_width * (stroke_width / 1.5))
+
+            if shape_opacity < 1.0:
+                attrs["opacity"] = _fmt(shape_opacity)
+
+            attr_str = " ".join(f'{k}="{v}"' for k, v in attrs.items())
+            inner_parts.append(f"<{tag} {attr_str}/>")
+
+        inner = "".join(inner_parts)
+        self._body.append(f"<svg {' '.join(svg_attrs)}>{inner}</svg>")
+        self._mark_ink(x, y, x + w, y + h)
+
     def image(self, x: float, y: float, w: float, h: float, *,
               href: str,
               preserve_aspect_ratio: str = "xMidYMid meet",
