@@ -129,7 +129,7 @@ role = Region(
         Connect("samples", "train",
                 src_side="top", dst_side="top",
                 label="RL Training", label_color=RED,
-                color=RED, dashed=True, head="dst",
+                color=RED, dashed=True, head="end",
                 style="curve", curvature=0.35, detour=24.0),
         gap="xs", align="center",
     ),

@@ -53,7 +53,18 @@ d = Diagram.for_paper(Text("Captioned body"))
 This removes title/subtitle/footer chrome and uses a tighter content
 margin. SVG, PDF, and PNG preserve the theme's live font stack by default.
 Use `text_mode="outline"` only when a PDF toolchain cannot resolve the
-required fonts and glyph-path output is preferable.
+required fonts and glyph-path output is preferable. Outlining is
+weight- and style-faithful: the export registers the resolved family's
+bold / italic / bold-italic font files alongside the regular face and
+outlines each text run with the face matching its `font-weight` /
+`font-style`, so `weight="700"` and `italic=True` survive into the PDF
+exactly as they render in the PNG.
+
+Text measurement is metrics-based: `Theme.text_width` measures the
+actual glyph advance widths of the resolved theme font (selecting the
+real bold face for bold text), matching what the exporters render.
+Long bold values therefore centre symmetrically inside `Card` /
+`Column(align="center")` without per-figure padding workarounds.
 
 ## Layout primitives
 
@@ -62,6 +73,7 @@ Signatures at call sites:
 ```
 Row(*children, gap="md", align="center", equal_widths=False, balance_outer=False)
 Column(*children, gap="md", align="center")
+WrapRow(*children, gap="sm", max_width=..., line_align="start", hang=0.0)
 Panel(tag, title, child)
 Grid(*children, cols=..., col_align=...)
 AlignedStack(*children, axis="vertical", gap="md")
@@ -76,13 +88,17 @@ StepCell("Activation Quantization", visual, role=Palette.red)
 ```
 
 `Row` / `Column` filter out `None` children silently, so optional
-pieces read naturally. `align` takes `"start" | "center" | "end"`,
-plus `"stretch"` on `Row`: it inflates every child to the tallest
-child's height so side-by-side siblings (e.g. two `Panel`s) share one
-outer height, then top-aligns them. Children that can grow vertically
-(`Panel`, `Box`) do; leaf text is left at its natural height. Use it
-instead of padding shims when adjacent framed panels should line up
-top and bottom -- the shorter `Panel` centres its content in the
+pieces read naturally. `align` takes `"start" | "center" | "end" |
+"stretch"`; any other value raises `ValueError` (it used to degrade
+silently to centring). `"stretch"` stretches the cross axis: `Row`
+inflates every child to the tallest child's height so side-by-side
+siblings (e.g. two `Panel`s) share one outer height, then top-aligns
+them; `Column` inflates every child to the widest child's width so a
+stacked spine of `Card`s or `Box`es shares one outer width, then
+left-aligns them. Children that can grow (`Panel`, `Box`, `Card`) do;
+leaf text is left at its natural size. Use it instead of padding shims
+or hand-set uniform widths when adjacent framed siblings should line
+up edge to edge -- a stretched `Panel` centres its content in the
 enlarged box automatically.
 
 For a bilateral architecture or comparison with one semantic hub, use
@@ -138,6 +154,39 @@ per-column width, broadcasts the max back, and tells each child to
 re-measure with the shared widths. Participants are `Table`, `Row`,
 and the named-row `Grid`. Children that don't expose column widths
 simply stack normally.
+
+### WrapRow and Chip -- flowing runs of tags
+
+`WrapRow` is the flow complement of `Row`: children run left-to-right
+and wrap onto new lines within a width budget (`max_width`, defaulting
+to the theme's word-wrap budget), so a variable-length run of small
+peers consumes bounded width and grows downward instead of pushing the
+figure wider. The budget is a wrap threshold, not a clip: a child wider
+than the budget still gets its own line at natural width. `hang`
+indents every line after the first, marking continuations of the run
+above (e.g. citation chips that wrapped past their taxonomy leaf).
+
+`Chip` is the tag it usually carries: a compact pill that hugs its
+text. Where `Box` enforces a paper-node minimum silhouette so
+structural nodes survive print reduction, a `Chip` stays visually
+subordinate to the node it annotates -- citation tags, keywords,
+counts, states.
+
+```python
+from sciviz import Box, Chip, Diagram, Palette, WrapRow
+
+leaf = WrapRow(
+    Box("ANN-to-SNN conversion", fill=Palette.violet.soft(),
+        stroke=Palette.violet, text_size="small"),
+    Chip("Rueckauer 2017", color=Palette.violet),
+    Chip("QCFS", color=Palette.violet),
+    gap="xs", max_width=180.0, hang="lg",
+)
+d = Diagram(title="taxonomy leaf", body=leaf)
+```
+
+Unlike `Row`, a `WrapRow` performs no sibling shape equalisation:
+flow content keeps its intrinsic size so lines pack tightly.
 
 ### Semantic cards and step cells
 
@@ -317,10 +366,15 @@ full margin the router degrades it gradually instead of hugging card
 borders, wires never ride co-linearly on top of an earlier wire when a
 parallel lane exists, and perpendicular crossings render as hop arcs.
 Labels offset from the wire and dodge cards, other labels, and other
-wires automatically -- on short vertical hops where a rotated label
-cannot fit, a horizontal label beside the wire is used instead. If a
-label still collides, improve the semantic structure rather than
-nudging pixels.
+wires automatically. Orientation follows the wire: horizontal legs
+take horizontal labels, and a vertical leg takes a 90-degree rotated
+label only when the leg is long enough to genuinely carry the rotated
+text (leg length >= label width plus clearance). Short vertical hops
+-- the card-to-card gaps of a stacked column -- prefer a horizontal
+label beside the wire, so sibling edges in one spine share one reading
+direction regardless of label length; the other orientation remains a
+collision fallback either way. If a label still collides, improve the
+semantic structure rather than nudging pixels.
 
 **Auto-routing is on by default.** Every `Connect` — routed, bus, and
 inline — runs through the router by default (`auto_route=True`). Pass
@@ -452,12 +506,58 @@ VectorTiles(n, color="primary")
 StackedBoxes(children)
 Pyramid(levels=[...])
 Timeline([...])
-Scatter(points, x_range=..., y_range=..., grid=True)
+Scatter(points, x_range=..., y_range=..., grid=True, annotations=[Annotate(...)])
 LineChart([Series(points, ...), ...], x_label=..., y_label=..., annotations=[Annotate(...)])
+Slopegraph([(label, before, after), ...], left_title=..., right_title=...)
 BarChart(rows, orientation="horizontal")
+GroupedBarChart([(title, [values], annotation), ...], series=[BarSeries(...), ...])
 Table(rows, col_align=..., gap_x="md")
 AlignedColumns(*groups, ...)
 Tree(TreeNode(...))
+```
+
+### Grouped bars with negative, missing, or qualified values
+
+`GroupedBarChart` group values accept plain numbers, `None`, or `Bar`.
+Negative values grow downward from the zero baseline (extend the axis floor
+with `y_min`, auto-derived when omitted); `None` renders an empty slot so a
+series without a measurement keeps its slot alignment across groups; and
+`Bar(value, caveat=True)` renders the *qualified* style — lightened fill with
+a dashed series-coloured outline — for numbers that are not directly
+comparable to their neighbours (subset evaluations, simulated rather than
+measured results, projections). Pair a caveat bar with a `Legend` entry that
+explains the qualifier.
+
+```python
+from sciviz import Bar, BarSeries, Diagram, GroupedBarChart
+
+chart = GroupedBarChart(
+    [("small model", [0.4, -0.1]),
+     ("large model", [Bar(5.2), Bar(14.3, caveat=True)])],
+    series=[BarSeries(name="method A", color="#1d3557"),
+            BarSeries(name="method B", color="#e07a30")],
+    y_min=-2.0, y_max=16.0, y_step=4.0,
+    y_label="accuracy gap (percentage points)",
+    show_cards=False, show_target_line=False, show_delta_arrow=False,
+)
+d = Diagram.for_paper(chart)
+```
+
+Pass `log_y=True` when the values span several orders of magnitude. Bars then
+grow from the axis floor (`y_min`) with heights proportional to `log10(value)`,
+ticks land on each decade, and `y_min`/`y_max` default to the decades that
+bracket the data. All plotted values and targets must be strictly positive
+(negative bars have no log); a positive `y_min` is required and accepted.
+
+```python
+GroupedBarChart(
+    [("CIFAR-10", [61.9, 35.2, 6.92, 0.069]),
+     ("CIFAR-100", [81.5, 258.0, 25.1, 0.084])],
+    series=[BarSeries(color=c) for c in ("#b91c1c", "#b45309", "#0f766e", "#3b5fa0")],
+    log_y=True, y_min=0.01, y_max=1000.0,
+    y_label="spikes / inference (millions, log)",
+    show_cards=False, show_target_line=False, show_delta_arrow=False,
+)
 ```
 
 ### Structured matrices and shared color scales
@@ -490,12 +590,67 @@ paper-scale matrix small multiples, while larger tokens leave room for richer
 cell labels. Dense and categorical matrices retain contiguous square cells at
 every token size.
 
+`MatrixGroup` labels wrap to their own span (and shrink, with a floor, when a
+single word cannot fit), so long group names claim extra header rows instead
+of colliding with the neighbouring group.
+
+Row labels may contain newlines: the first line is the label proper and
+continuation lines render smaller and muted — sublabels for units,
+provenance, or grounding detail (`"Fan-out per core\nLoihi: 4096 edges"`),
+the same convention as multiline `Scatter` point labels. This keeps long
+annotations from widening the label column at full label size. Column labels
+stay single-line (they rotate instead).
+
+### Coverage matrices with `HarveyBall`
+
+For categorical coverage / completion judgments (full, partial, absent), put a
+`HarveyBall` in each cell's `mark`: a fraction-filled disc that reads as a
+solid dot at `1.0`, a half disc at `0.5`, and a quiet hollow ring at `0.0`.
+Any fraction in `[0, 1]` works, so quarter states need no special casing.
+Pair the glyphs with a `Legend` that reuses the exact same elements.
+
+```python
+from sciviz import Diagram, HarveyBall, Legend, LegendItem, Matrix, MatrixCell, Palette
+
+def coverage(fraction):
+    quiet = fraction == 0.0
+    return HarveyBall(fraction, size=12.0,
+                      color=Palette.gray if quiet else Palette.success,
+                      ring=Palette.gray.soft() if quiet else Palette.success)
+
+matrix = Matrix(
+    [[MatrixCell(mark=coverage(f)) for f in row]
+     for row in [[1.0, 0.5, 0.0], [0.0, 1.0, 1.0]]],
+    row_labels=["constraint A", "constraint B"],
+    col_labels=["m1", "m2", "m3"],
+    cell_size="sm",
+)
+legend = Legend(
+    LegendItem(coverage(1.0), "modeled"),
+    LegendItem(coverage(0.5), "proxied"),
+    LegendItem(coverage(0.0), "not reported"),
+)
+```
+
 ### Relational line charts and part-to-whole charts
 
 Key line series when another encoding refers to them. `FillBetween` derives a
 band over the shared domain and can derive a label at every shared sample from
 the paired values. Markers, exact ticks, semantic plot sizes, and in-plot
-legend placement remain series/chart data.
+legend placement remain series/chart data. `Series(marker_fill="hollow")`
+draws open markers (the conventional encoding for derived/projected points
+next to solid measured ones) and `Series(show_line=False)` makes a marker-only
+overlay series, so one visible line can carry mixed point provenance;
+`Annotate(..., dot=False)` pins a label to an existing marker without
+stamping a second anchor dot; set `dot=False` also for free-floating notes
+that reference no single datum. `Annotate` text may contain newlines
+(lines stack downward) and `anchor="start"|"middle"|"end"` sets the text
+anchor of every line. `Scatter` accepts the same `annotations` list, so
+the two charts annotate as one family. A `Scatter` point label may also
+contain newlines: the first line renders in the text colour and
+continuation lines render muted — per-point detail (a measured value, a
+caveat) under the point's name — and the whole block participates in
+collision-aware placement.
 `DonutChart` derives slice geometry and group summaries directly from `Part`
 values.
 
@@ -527,6 +682,30 @@ mix = DonutChart(
 d = Diagram.for_paper(mix)
 ```
 
+### Slopegraphs (one measurement, two conditions)
+
+`Slopegraph` compares paired values across exactly two conditions
+(claimed/measured, before/after) with direct endpoint labels instead of
+a y-axis. Per-record `color` / `dash` / `marker` encode record classes
+(e.g. simulated vs measured evidence), `SlopeReference` draws a dotted
+level such as an equivalence bound, and endpoint labels dodge
+vertically -- coincident duplicates collapse into one.
+
+```python
+from sciviz import Diagram, SlopeRecord, SlopeReference, Slopegraph
+
+chart = Slopegraph(
+    [SlopeRecord("measured on silicon", 92.5, 91.9, color="blue"),
+     SlopeRecord("cycle-accurate simulation", 94.1, 85.1,
+                 color="amber", dash="4,3", marker="diamond",
+                 annotation="(-9.0 pt)")],
+    left_title="pre-deployment", right_title="deployed",
+    value_format=".1f",
+    references=[SlopeReference(90.0, label="target")],
+)
+d = Diagram.for_paper(chart)
+```
+
 ### Semantic flow graphs and detail callouts
 
 `FlowGraph` is for a whole DAG whose ranks, groups, ports, and exact edge
@@ -543,6 +722,31 @@ flow = FlowGraph(
      FlowNode("report", "Report", shape="document")],
     [FlowEdge("db", "run"), FlowEdge("run", "report")],
     groups=[FlowGroup("sim", label="Simulator")],
+)
+d = Diagram.for_paper(flow)
+```
+
+Pass `lanes=[...]` (with `direction="right"`) when the DAG has parallel tracks
+that should read as straight horizontal bands rather than centred ranks: each
+node's `lane` pins it to a band, empty `(lane, rank)` slots become air, and a
+`lane=None` node spans the whole band stack -- the natural home for a shared
+root or sink. `lane_labels` writes each band's name in the left gutter. This is
+the form for lineage maps, roadmaps, and two-track comparisons.
+
+```python
+from sciviz import Diagram, FlowEdge, FlowGraph, FlowNode, Palette
+
+flow = FlowGraph(
+    [FlowNode("root", "Origin", lane=None, rank="r0", role=Palette.gray),
+     FlowNode("a1", "Track A: step 1", lane="A", rank="r1", role=Palette.blue),
+     FlowNode("a2", "Track A: step 2", lane="A", rank="r2", role=Palette.blue),
+     FlowNode("b1", "Track B: step 1", lane="B", rank="r1", role=Palette.success),
+     FlowNode("m", "Merge of A and B", lane="mid", rank="r2", role=Palette.violet)],
+    [FlowEdge("root", "a1"), FlowEdge("root", "b1"), FlowEdge("a1", "a2"),
+     FlowEdge("a1", "m"), FlowEdge("b1", "m")],
+    lanes=["A", "mid", "B"],
+    lane_labels={"A": "track A", "B": "track B"},
+    rank_order=("r0", "r1", "r2"),
 )
 d = Diagram.for_paper(flow)
 ```
@@ -596,6 +800,25 @@ tree = Tree(Tree.node(
 d = Diagram(title="Tree", body=tree)
 ```
 
+`Tree` grows top-down by default; pass `orientation="right"` to grow
+left-to-right (root at the left, deeper levels advancing rightward) — the
+natural form for taxonomies whose node labels are wide text. `level_gap`
+then spaces depths horizontally and `page_gap` stacks siblings vertically;
+`level_labels` bands become vertical columns labelled along their top edge.
+
+```python
+from sciviz import Tree, Box, Diagram
+
+taxonomy = Tree(
+    Tree.node(Box("problem"), children=[
+        Tree.node(Box("axis A"), children=[Tree.node(Box("family A1"))]),
+        Tree.node(Box("axis B"), children=[Tree.node(Box("family B1"))]),
+    ]),
+    orientation="right",
+)
+d = Diagram(title="Taxonomy", body=taxonomy)
+```
+
 `NodeTree` stays available for compact multi-cell tree pages
 (e.g. a B+-tree diagram); reach for it when the "node" is really a
 row of cells. For arbitrary element nodes, prefer `Tree`.
@@ -645,6 +868,7 @@ Avoid it. Ninety-five percent of the time the answer is:
 * "I want two things at the same vertical axis" -> `Column(align="center")`.
 * "I want equal-width cells" -> `Row(..., equal_widths=True)` or `LabeledChain`.
 * "I want side-by-side panels the same height" -> `Row(..., align="stretch")`.
+* "I want stacked cards the same width" -> `Column(..., align="stretch")`.
 * "I want shared column widths across rows" -> `Grid`.
 * "I want shared column widths across *different parents*" -> `AlignedStack`.
 * "I want a rule between sections" -> `Separator`.
@@ -702,6 +926,15 @@ equalisation re-wrap their labels to the width they were actually
 given, so equalised cells fill rather than centre a narrow text
 column. The trial measurements are ink-aware -- routed wires, their
 labels, and margin detours count toward the footprint.
+
+Legibility is checked absolutely, not just on overflow: with
+`target_width_pt` set, the smallest text on the canvas is compared
+against `min_effective_font_pt` (default 6 pt) at its effective printed
+size, and a `UserWarning` fires when authored text sits below the floor
+*even when the figure already fits the target width*. Theme size tokens
+all clear the default floor -- `micro` is 7 pt, one point below `tiny`
+on the same ladder -- so the warning only ever points at explicit raw
+sizes.
 
 `target_aspect` (height/width, a `(lo, hi)` range or a single
 height-cap float) additionally balances the layout toward the printed

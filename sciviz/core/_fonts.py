@@ -9,11 +9,29 @@ honour embedded fonts consistently across machines.
 from __future__ import annotations
 
 import base64
+import functools
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+
+def _weight_is_bold(weight) -> bool:
+    """Classify a CSS ``font-weight`` value as bold (>= 600)."""
+    if weight is None:
+        return False
+    w = str(weight).strip().lower()
+    if w in {"bold", "bolder"}:
+        return True
+    try:
+        return float(w) >= 600.0
+    except ValueError:
+        return False
+
+
+def _style_is_italic(style) -> bool:
+    return str(style).strip().lower() in {"italic", "oblique"}
 
 
 @dataclass(frozen=True)
@@ -25,6 +43,9 @@ class FontAsset:
     ttf_path: Path
     woff2_path: Optional[Path] = None
     weight_range: str = "100 900"
+    # Face classification: which requested (weight, style) this file serves.
+    bold: bool = False
+    italic: bool = False
 
     @property
     def svg_path(self) -> Path:
@@ -69,6 +90,11 @@ class FontRegistry:
 
         Resolve the theme's family stack first so older figures keep their
         intended typography. Fall back to matplotlib's bundled DejaVu Sans.
+
+        Beyond the regular face, the bold / italic / bold-italic variants
+        of the resolved family are registered too (when they exist as
+        distinct font files), so exports select real faces per text weight
+        and style instead of silently flattening everything to regular.
         """
         resolved = cls._resolve_family(font_family)
         if resolved is None:
@@ -81,14 +107,59 @@ class FontRegistry:
                 "Could not locate a usable font. sciviz PDF-safe export "
                 "requires matplotlib font data or a system font."
             )
-        name = font_path.stem.replace(" ", "-").lower()
-        return cls([
-            FontAsset(
-                name=name,
+        variants = cls._variant_paths(css_family, font_path)
+        has_bold = (True, False) in variants or (True, True) in variants
+        fonts: list[FontAsset] = []
+        for (bold, italic), path in variants.items():
+            if has_bold:
+                weight_range = "600 900" if bold else "100 500"
+            else:
+                weight_range = "100 900"
+            fonts.append(FontAsset(
+                name=path.stem.replace(" ", "-").lower(),
                 css_family=css_family,
-                ttf_path=font_path,
-            )
-        ])
+                ttf_path=path,
+                weight_range=weight_range,
+                bold=bold,
+                italic=italic,
+            ))
+        return cls(fonts)
+
+    @classmethod
+    def _variant_paths(cls, css_family: str,
+                       regular_path: Path) -> "dict[tuple[bool, bool], Path]":
+        """Map ``(bold, italic)`` to the distinct font files of a family.
+
+        The regular face is always present. Variant lookups that fail or
+        alias back to an already-registered file are skipped, so a family
+        shipping only one file degrades to the previous single-face
+        behaviour.
+        """
+        variants: dict[tuple[bool, bool], Path] = {(False, False): regular_path}
+        try:
+            from matplotlib import font_manager
+            from matplotlib.font_manager import FontProperties
+        except Exception:
+            return variants
+        for bold, italic in ((True, False), (False, True), (True, True)):
+            try:
+                prop = FontProperties(
+                    family=css_family,
+                    weight="bold" if bold else "normal",
+                    style="italic" if italic else "normal",
+                )
+                path = Path(font_manager.findfont(
+                    prop, fallback_to_default=False,
+                ))
+            except Exception:
+                continue
+            if (not path.is_file()
+                    or path.suffix.lower() not in {".ttf", ".otf", ".ttc"}):
+                continue
+            if any(path == known for known in variants.values()):
+                continue
+            variants[(bold, italic)] = path
+        return variants
 
     @staticmethod
     def _family_candidates(font_family: Optional[str]) -> list[str]:
@@ -147,9 +218,31 @@ class FontRegistry:
     def primary(self) -> FontAsset:
         return self.fonts[0]
 
+    def face_for(self, weight="normal", style="normal") -> FontAsset:
+        """The registered face closest to a CSS ``(weight, style)`` pair.
+
+        Exact matches win; a weight match outranks a style match (dropping
+        bold is far more visible in print than dropping the slant); the
+        primary (regular) face is the final fallback.
+        """
+        want_bold = _weight_is_bold(weight)
+        want_italic = _style_is_italic(style)
+        best = self.fonts[0]
+        best_score = -1
+        for font in self.fonts:
+            score = (2 * (font.bold == want_bold)
+                     + (font.italic == want_italic))
+            if score > best_score:
+                best, best_score = font, score
+        return best
+
     @property
     def root_font_family(self) -> str:
-        families = [f'"{font.css_family}"' for font in self.fonts]
+        families: list[str] = []
+        for font in self.fonts:
+            quoted = f'"{font.css_family}"'
+            if quoted not in families:
+                families.append(quoted)
         return ", ".join(families + ["sans-serif"])
 
     def css(self) -> str:
@@ -164,11 +257,88 @@ class FontRegistry:
                 f"src: url(data:{font.mime};base64,{data}) "
                 f"format(\"{font.svg_format}\"); "
                 f"font-weight: {font.weight_range}; "
-                "font-style: normal; "
+                f"font-style: {'italic' if font.italic else 'normal'}; "
                 "font-display: block; "
                 "}"
             )
         return "\n".join(rules)
+
+
+# ---------------------------------------------------------------------------
+# Text measurement (shared by Theme.text_width)
+# ---------------------------------------------------------------------------
+# Layout code measures text constantly; both export renderers (resvg for
+# PNG, the outline pass for PDF) resolve the same theme font stack, so
+# measuring with the *actual* glyph advance widths of that font keeps
+# centering symmetric for every weight. Results are cached at a reference
+# size (advances scale linearly for scalable fonts).
+
+_REF_SIZE = 100.0
+_registry_cache: dict[str, Optional[FontRegistry]] = {}
+
+
+def _registry_for(font_family: Optional[str]) -> Optional[FontRegistry]:
+    key = font_family or ""
+    if key not in _registry_cache:
+        try:
+            _registry_cache[key] = FontRegistry.default(font_family)
+        except Exception:
+            _registry_cache[key] = None
+    return _registry_cache[key]
+
+
+@functools.lru_cache(maxsize=None)
+def _text_to_path():
+    from matplotlib.textpath import TextToPath
+    return TextToPath()
+
+
+@functools.lru_cache(maxsize=65536)
+def _ref_advance_width(text: str, fname: str) -> Optional[float]:
+    """Advance width of ``text`` at ``_REF_SIZE`` pt in the given font file."""
+    try:
+        import warnings
+
+        from matplotlib.font_manager import FontProperties
+
+        prop = FontProperties(fname=fname, size=_REF_SIZE)
+        with warnings.catch_warnings():
+            # Codepoints outside the measuring face still advance (via
+            # .notdef here, via resvg's glyph-level fallback at render
+            # time); matplotlib's per-glyph warning is just noise.
+            warnings.simplefilter("ignore")
+            w, _h, _d = _text_to_path().get_text_width_height_descent(
+                text, prop, False)
+        return float(w)
+    except Exception:
+        return None
+
+
+def measure_text_width(text: str, size_px: float,
+                       font_family: Optional[str] = None, *,
+                       bold: bool = False,
+                       italic: bool = False) -> Optional[float]:
+    """Measured advance width of one text line in px, or ``None``.
+
+    Uses the same font files the exporters embed/outline, selecting the
+    face per requested weight and style. Returns ``None`` when no usable
+    font (or matplotlib) is available so callers can fall back to a
+    heuristic estimate.
+    """
+    if not text:
+        return 0.0
+    registry = _registry_for(font_family)
+    if registry is None:
+        return None
+    face = registry.face_for("bold" if bold else "normal",
+                             "italic" if italic else "normal")
+    widths = []
+    for line in text.split("\n"):
+        w = _ref_advance_width(line, str(face.ttf_path)) if line else 0.0
+        if w is None:
+            return None
+        widths.append(w)
+    return max(widths) * (float(size_px) / _REF_SIZE)
 
 
 def _strip_namespace(tag: str) -> str:
@@ -220,13 +390,16 @@ def outline_svg_text(svg_source: str, registry: Optional[FontRegistry] = None,
     from matplotlib.textpath import TextPath, TextToPath
 
     registry = registry or FontRegistry.default(font_family)
-    font = registry.primary
     ttp = TextToPath()
     root = ET.fromstring(svg_source)
 
     def _prop(size, weight, style):
-        return FontProperties(fname=str(font.ttf_path), size=size,
-                              weight=weight, style=style)
+        # ``fname`` makes matplotlib bypass family/weight/style resolution
+        # entirely, so the face must be picked here: registry.face_for
+        # returns the bold / italic file matching the requested run style
+        # instead of flattening every run onto the regular face.
+        face = registry.face_for(weight, style)
+        return FontProperties(fname=str(face.ttf_path), size=size)
 
     for parent in list(root.iter()):
         replacements: list[tuple[ET.Element, ET.Element]] = []

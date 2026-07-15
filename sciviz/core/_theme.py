@@ -85,7 +85,10 @@ class Theme:
     font_label: float = 10.0
     font_small: float = 9.0
     font_tiny: float = 8.0
-    font_micro: float = 6.5
+    # ``micro`` follows the same 1pt ladder as label/small/tiny: at the
+    # old 6.5pt it printed as by far the least legible text in a paper
+    # figure while every sibling token stayed comfortably readable.
+    font_micro: float = 7.0
     font_math: float = 11.0
 
     # -- spacing -----------------------------------------------------------
@@ -473,14 +476,22 @@ class Theme:
     _NARROW = set(".,;:'!|il1[](){}")
 
     def text_width(self, s: str, size: Union[str, float], bold: bool = False) -> float:
-        """Conservative estimate of rendered text width in px.
+        """Rendered text width in px, weight-aware.
 
-        This is an approximation — real width depends on the installed font.
-        Tuned slightly large so layouts stay safe even with wider fonts.
+        Measured with the actual glyph advance widths of the resolved
+        theme font (the same files the PNG/PDF exporters embed and
+        outline), selecting the real bold face for ``bold=True`` -- so
+        centering stays symmetric instead of bold labels overflowing
+        their measured box. Falls back to a per-character heuristic when
+        no usable font is available.
         """
         if s is None or s == "":
             return 0.0
         sz = self.size_px(size)
+        from ._fonts import measure_text_width
+        measured = measure_text_width(s, sz, self.font_family, bold=bold)
+        if measured is not None:
+            return max(measured, 4.0)
         factor = 0.59 if bold else 0.56
         base = len(s) * sz * factor
         base += sum(sz * 0.18 for c in s if c in self._WIDE)

@@ -160,6 +160,77 @@ def test_group_validation_and_bounds():
         FlowGraph([FlowNode("x", "X", group="missing")], [])
 
 
+def test_lanes_align_nodes_into_named_bands_with_a_spanning_root():
+    from sciviz.grid import Grid
+
+    graph = FlowGraph(
+        [
+            FlowNode("root", "Root", lane=None, rank="y0"),
+            FlowNode("conv1", "Conv 1", lane="conversion", rank="y1"),
+            FlowNode("conv2", "Conv 2", lane="conversion", rank="y2"),
+            FlowNode("dir1", "Direct 1", lane="direct", rank="y1"),
+            FlowNode("bridge", "Bridge", lane="hybrid", rank="y2"),
+        ],
+        [
+            FlowEdge("root", "conv1"), FlowEdge("root", "dir1"),
+            FlowEdge("conv1", "conv2"), FlowEdge("conv1", "bridge"),
+            FlowEdge("dir1", "bridge"),
+        ],
+        lanes=["conversion", "hybrid", "direct"],
+        lane_labels={"conversion": "ANN-to-SNN conversion",
+                     "direct": "direct training"},
+        rank_order=("y0", "y1", "y2"),
+    )
+    grid = graph.child.children[0].child
+    assert isinstance(grid, Grid)
+    assert grid.rows == ["conversion", "hybrid", "direct"]
+    # The lane=None root occupies a single cell spanning every band.
+    root_column = grid.columns[0]
+    assert tuple(grid.rows) in root_column
+    svg = Diagram.for_paper(graph).render()
+    assert "ANN-to-SNN conversion" in svg
+    assert svg.count("<line") >= len(graph.edges)  # every builds-on edge drawn
+
+
+def test_downward_lanes_put_ranks_on_rows_and_lanes_on_columns():
+    from sciviz.grid import Grid
+
+    graph = FlowGraph(
+        [
+            FlowNode("root", "Root", lane="mid", rank="y0"),
+            FlowNode("conv1", "Conv 1", lane="conversion", rank="y1"),
+            FlowNode("dir1", "Direct 1", lane="direct", rank="y1"),
+        ],
+        [FlowEdge("root", "conv1"), FlowEdge("root", "dir1")],
+        lanes=["conversion", "mid", "direct"],
+        lane_labels={"conversion": "conversion", "direct": "direct"},
+        rank_labels={"y0": "1996", "y1": "2018"},
+        rank_order=("y0", "y1"),
+        direction="down",
+    )
+    grid = graph.child.children[0].child
+    assert isinstance(grid, Grid)
+    assert grid.rows == ["y0", "y1"]                     # ranks are rows
+    assert len(grid.columns) == 3                        # lanes are columns
+    assert grid.columns[0].get("_panel") == "conversion"  # lane heads its column
+    assert grid.row_labels.get("y0") == "1996"          # rank labels caption rows
+    assert "1996" in Diagram.for_paper(graph).render()
+
+
+def test_lane_misuse_fails_eagerly():
+    with pytest.raises(ValueError, match="unknown lane"):
+        FlowGraph([FlowNode("a", "A", lane="ghost")], [], lanes=["real"])
+    with pytest.raises(ValueError, match="direction='right'"):
+        FlowGraph([FlowNode("a", "A", lane=None, rank="r")], [], lanes=["l"],
+                  direction="down")
+    with pytest.raises(ValueError, match="spanning"):
+        FlowGraph(
+            [FlowNode("a", "A", lane="l", rank="r"),
+             FlowNode("b", "B", lane=None, rank="r")],
+            [], lanes=["l"],
+        )
+
+
 def test_unknown_nodes_and_forward_cycles_fail_eagerly():
     with pytest.raises(ValueError, match="unknown node"):
         FlowGraph([FlowNode("a", "A")], [FlowEdge("a", "missing")])

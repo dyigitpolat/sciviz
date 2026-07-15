@@ -214,6 +214,12 @@ class Matrix(Element):
     :class:`MatrixCell`, ``scale``, or ``selections`` activates the structured
     path without changing legacy ``highlight_rows`` / ``highlight_cols`` or
     ``mask`` behavior.
+
+    Row labels may contain newlines: the first line is the label proper and
+    continuation lines render smaller and muted — sublabels for units,
+    provenance, or grounding detail (the same convention as multiline
+    Scatter point labels).  Column labels stay single-line because they can
+    rotate.
     """
 
     _CELL_SIZES = {
@@ -385,12 +391,29 @@ class Matrix(Element):
             ]
         return list(labels)
 
+    @staticmethod
+    def _row_label_lines(label: str) -> List[str]:
+        """Split a row label into its main line and sublabel lines.
+
+        Row labels may contain newlines: the first line is the label proper
+        and continuation lines render smaller and muted — the same
+        name-plus-detail convention Scatter point labels use.  Column labels
+        stay single-line (they rotate).
+        """
+        return label.splitlines() or [label]
+
     def _label_space(self, theme: Theme, which: str) -> float:
         labels = self._resolve_labels(which)
         if not labels:
             return 0.0
         if which == "row":
-            return max(theme.text_width(lbl, "small") for lbl in labels) + theme.unit
+            width = 0.0
+            for lbl in labels:
+                lines = self._row_label_lines(lbl)
+                width = max(width, theme.text_width(lines[0], "small"))
+                for sub in lines[1:]:
+                    width = max(width, theme.text_width(sub, "tiny"))
+            return width + theme.unit
         if abs(self.col_label_angle) < 0.5:
             return theme.text_height("small") + theme.unit * 0.5
         angle = math.radians(abs(self.col_label_angle))
@@ -401,13 +424,50 @@ class Matrix(Element):
         )
         return rotated_h + theme.unit * 0.6
 
+    def _group_label_layout(
+        self, theme: Theme, which: str
+    ) -> Tuple[List[List[str]], float, float]:
+        """Wrap each axis-group label to its span.
+
+        Group labels annotate a fixed extent of cells, so unlike row/column
+        labels they cannot claim more room sideways: neighbouring groups
+        would collide.  Wrap words to the span first; if an unbreakable
+        word still overflows, shrink one shared font so every group stays
+        typographically consistent.  Returns per-group wrapped lines, the
+        resolved font size, and the line advance.
+        """
+        groups = self.row_groups if which == "row" else self.col_groups
+        preferred = theme.size_px("small")
+        if not groups:
+            return [], preferred, theme.text_height("small")
+        c = self._cell_px(theme)
+        pad = theme.unit * 0.8
+        spans = [max((g.stop - g.start) * c - pad, c) for g in groups]
+        lines_per_group = [
+            self._wrap_label(group.label, theme, span)
+            for group, span in zip(groups, spans)
+        ]
+        ratio = 1.0
+        for span, lines in zip(spans, lines_per_group):
+            for line in lines:
+                width = theme.text_width(line, "small")
+                if width > span:
+                    ratio = min(ratio, span / width)
+        floor = theme.size_px("micro") / preferred
+        ratio = max(ratio, floor)
+        font = preferred * ratio
+        line_h = theme.text_height("small") * ratio
+        return lines_per_group, font, line_h
+
     def _group_space(self, theme: Theme, which: str) -> float:
         groups = self.row_groups if which == "row" else self.col_groups
         if not groups:
             return 0.0
+        lines_per_group, _font, line_h = self._group_label_layout(theme, which)
+        depth = max(len(lines) for lines in lines_per_group) * line_h
         if which == "row":
-            return theme.text_height("small") + theme.unit * 1.25
-        return theme.text_height("small") + theme.unit * 1.15
+            return depth + theme.unit * 1.25
+        return depth + theme.unit * 1.15
 
     @staticmethod
     def _cell_value(cell) -> Optional[float]:
@@ -495,8 +555,9 @@ class Matrix(Element):
         # move the annotation outside, where it cannot obscure selected data.
         return "top" if widest <= available else "left"
 
-    def _side_label_lines(self, label: str, theme: Theme) -> list[str]:
-        target = theme.unit * 7.0
+    @staticmethod
+    def _wrap_label(label: str, theme: Theme, target: float) -> list[str]:
+        """Greedy word-wrap of ``label`` to ``target`` pixels at small size."""
         lines: list[str] = []
         for paragraph in label.splitlines():
             words = paragraph.split()
@@ -513,6 +574,9 @@ class Matrix(Element):
                     current = word
             lines.append(current)
         return lines
+
+    def _side_label_lines(self, label: str, theme: Theme) -> list[str]:
+        return self._wrap_label(label, theme, theme.unit * 7.0)
 
     def _selection_side_space(self, theme: Theme, side: str) -> float:
         labels = [
@@ -926,8 +990,12 @@ class Matrix(Element):
         col_band = self._group_space(theme, "col")
         tick = theme.unit * 0.45
         if self.col_groups:
+            lines_per_group, font, line_h = self._group_label_layout(
+                theme, "col"
+            )
+            n_max = max(len(lines) for lines in lines_per_group)
             line_y = y + col_band - theme.unit * 0.35
-            for group in self.col_groups:
+            for group, lines in zip(self.col_groups, lines_per_group):
                 start = mx + group.start * c
                 stop = mx + group.stop * c
                 color = theme.color_of(group.role)
@@ -937,18 +1005,26 @@ class Matrix(Element):
                             stroke=color, stroke_width=theme.line)
                 canvas.line(stop, line_y - tick, stop, line_y + tick,
                             stroke=color, stroke_width=theme.line)
-                canvas.text(
-                    (start + stop) / 2,
-                    y + theme.size_px("small") * 0.85,
-                    group.label,
-                    size=theme.size_px("small"),
-                    fill=color,
-                    weight="700",
-                    anchor="middle",
-                )
+                # Bottom-align each stack so every group's last line sits
+                # just above its extent bracket.
+                for index, line in enumerate(lines):
+                    canvas.text(
+                        (start + stop) / 2,
+                        y + font * 0.85
+                        + (n_max - len(lines) + index) * line_h,
+                        line,
+                        size=font,
+                        fill=color,
+                        weight="700",
+                        anchor="middle",
+                    )
         if self.row_groups:
+            lines_per_group, font, line_h = self._group_label_layout(
+                theme, "row"
+            )
+            n_max = max(len(lines) for lines in lines_per_group)
             line_x = x + row_band - theme.unit * 0.35
-            for group in self.row_groups:
+            for group, lines in zip(self.row_groups, lines_per_group):
                 start = my + group.start * c
                 stop = my + group.stop * c
                 color = theme.color_of(group.role)
@@ -958,17 +1034,20 @@ class Matrix(Element):
                             stroke=color, stroke_width=theme.line)
                 canvas.line(line_x - tick, stop, line_x + tick, stop,
                             stroke=color, stroke_width=theme.line)
-                canvas.text(
-                    x + theme.size_px("small") * 0.6,
-                    (start + stop) / 2,
-                    group.label,
-                    size=theme.size_px("small"),
-                    fill=color,
-                    weight="700",
-                    anchor="middle",
-                    baseline="middle",
-                    rotate=-90,
-                )
+                # Rotated stacks advance rightward toward the bracket.
+                for index, line in enumerate(lines):
+                    canvas.text(
+                        x + font * 0.6
+                        + (n_max - len(lines) + index) * line_h,
+                        (start + stop) / 2,
+                        line,
+                        size=font,
+                        fill=color,
+                        weight="700",
+                        anchor="middle",
+                        baseline="middle",
+                        rotate=-90,
+                    )
 
     def _render_partitions(self, canvas: Canvas, mx: float, my: float,
                            c: float, theme: Theme) -> None:
@@ -1038,18 +1117,29 @@ class Matrix(Element):
         row_labels = self._resolve_labels("row")
         if row_labels:
             sz = theme.size_px("small")
+            sub_sz = theme.size_px("tiny")
+            sub_advance = sub_sz * 1.3
             for i, lbl in enumerate(row_labels):
-                baseline = my + i * c + c / 2 + sz * 0.35
+                lines = self._row_label_lines(lbl)
                 is_hl = i in self.highlight_rows
-                canvas.text(
-                    mx - theme.unit * 0.7,
-                    baseline,
-                    lbl,
-                    size=sz,
-                    fill=theme.color_of("highlight" if is_hl else "light"),
-                    weight="700" if is_hl else "500",
-                    anchor="end",
+                # Centre the whole line block on the row, not just line one.
+                baseline = (
+                    my + i * c + c / 2 + sz * 0.35
+                    - (len(lines) - 1) * sub_advance / 2
                 )
+                for k, line in enumerate(lines):
+                    canvas.text(
+                        mx - theme.unit * 0.7,
+                        baseline + k * sub_advance,
+                        line,
+                        size=sz if k == 0 else sub_sz,
+                        fill=theme.color_of(
+                            "highlight" if is_hl
+                            else ("light" if k == 0 else "faint")
+                        ),
+                        weight="700" if is_hl else ("500" if k == 0 else "400"),
+                        anchor="end",
+                    )
 
         for i in range(self.rows):
             for j in range(self.cols):

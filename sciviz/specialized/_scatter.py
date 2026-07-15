@@ -6,6 +6,7 @@ import math as _m
 from typing import List, Optional, Sequence, Tuple, Union
 
 from ..core import BBox, Canvas, Element, Theme
+from ._linechart import Annotate
 
 
 class Scatter(Element):
@@ -13,8 +14,12 @@ class Scatter(Element):
 
     Parameters
     ----------
-    points : list of (x, y, label?, color?, size?)
-        Each point may specify label/color/size individually.
+    points : list of (x, y, label?, color?, size?, anchor_hint?)
+        Each point may specify label/color/size individually. A label may
+        contain newlines: the first line renders in the text colour, and
+        continuation lines render muted — use them for per-point detail
+        (a measured value, a caveat) under the point's name. The whole
+        block participates in collision-aware placement.
     lines : list of (pts, color, dash?, width?), optional
         Separate line series drawn as polylines behind the scatter.  Each
         ``pts`` is a list of ``(x, y)`` pairs.  This lets you draw reference
@@ -28,6 +33,10 @@ class Scatter(Element):
     connect : bool
         Connect the *scatter* points in order.  For cleaner figures, use
         the ``lines`` argument instead and leave this off.
+    annotations : list of :class:`Annotate`, optional
+        In-plot notes pinned to data coordinates — the same annotation
+        type :class:`LineChart` uses, so the two charts read as one
+        family. Keep annotations inside the plot area.
     """
 
     def __init__(self, points: Sequence[tuple], *,
@@ -39,9 +48,11 @@ class Scatter(Element):
                  log_x: bool = False, log_y: bool = False,
                  grid: bool = True,
                  connect: bool = False,
-                 connect_color: str = "primary"):
+                 connect_color: str = "primary",
+                 annotations: Optional[Sequence[Annotate]] = None):
         self.points = list(points)
         self.lines = list(lines) if lines else []
+        self.annotations = list(annotations) if annotations else []
         self.x_range = x_range
         self.y_range = y_range
         self.width = width
@@ -160,16 +171,12 @@ class Scatter(Element):
                        size=theme.size_px("small"),
                        fill=theme.color_of("text"), anchor="middle")
         if self.y_label:
-            yl_x = plot_x - 34
-            yl_y = plot_y + self.height / 2
-            canvas.raw(
-                f'<text x="{yl_x:.2f}" y="{yl_y:.2f}" '
-                f'font-size="{theme.size_px("small"):.1f}" '
-                f'fill="{theme.color_of("text")}" '
-                f'text-anchor="middle" '
-                f'transform="rotate(-90 {yl_x:.2f} {yl_y:.2f})">'
-                f'{self.y_label}</text>'
-            )
+            # canvas.text (not raw SVG) so the rotated label's ink is
+            # tracked -- otherwise auto-trim can crop the y-axis title.
+            canvas.text(plot_x - 34, plot_y + self.height / 2,
+                        self.y_label, size=theme.size_px("small"),
+                        fill=theme.color_of("text"),
+                        anchor="middle", rotate=-90)
 
         # separate line series (drawn before markers so markers are on top)
         for lspec in self.lines:
@@ -257,50 +264,43 @@ class Scatter(Element):
         placed_rects = []
         sz = theme.size_px("tiny")
         asc, desc = sz * 0.85, sz * 0.15
+        line_h = sz * 1.18   # baseline-to-baseline step for multi-line labels
         gap = 2.0   # tight gap between marker edge and label edge
 
-        def _place_at(name, cx, cy, r, tw):
-            """Return (text_anchor, lx, baseline_y, bbox) for a given anchor name."""
-            if name == "ne":
-                bl = cy - r - gap
+        def _place_at(name, cx, cy, r, tw, th):
+            """Return (text_anchor, lx, top_y, bbox) for a given anchor name.
+
+            ``top_y`` is the top edge of the (possibly multi-line) text
+            block; the i-th line's baseline sits at
+            ``top_y + asc + i * line_h``. ``tw``/``th`` are the block's
+            width and height.
+            """
+            if name in ("ne", "nw", "n"):
+                top = cy - r - gap - th
+            elif name in ("se", "sw", "s"):
+                top = cy + r + gap
+            else:  # "e", "w": centre the block on the marker
+                top = cy - th / 2
+            if name in ("ne", "se", "e"):
                 lx = cx + r + gap
-                return "start", lx, bl, (lx, bl - asc, lx + tw, bl + desc)
-            if name == "nw":
-                bl = cy - r - gap
+                return "start", lx, top, (lx, top, lx + tw, top + th)
+            if name in ("nw", "sw", "w"):
                 lx = cx - r - gap
-                return "end", lx, bl, (lx - tw, bl - asc, lx, bl + desc)
-            if name == "se":
-                bl = cy + r + gap + asc
-                lx = cx + r + gap
-                return "start", lx, bl, (lx, bl - asc, lx + tw, bl + desc)
-            if name == "sw":
-                bl = cy + r + gap + asc
-                lx = cx - r - gap
-                return "end", lx, bl, (lx - tw, bl - asc, lx, bl + desc)
-            if name == "e":
-                bl = cy + sz * 0.33
-                lx = cx + r + gap
-                return "start", lx, bl, (lx, bl - asc, lx + tw, bl + desc)
-            if name == "w":
-                bl = cy + sz * 0.33
-                lx = cx - r - gap
-                return "end", lx, bl, (lx - tw, bl - asc, lx, bl + desc)
-            if name == "n":
-                bl = cy - r - gap
-                return "middle", cx, bl, (cx - tw/2, bl - asc, cx + tw/2, bl + desc)
-            # "s"
-            bl = cy + r + gap + asc
-            return "middle", cx, bl, (cx - tw/2, bl - asc, cx + tw/2, bl + desc)
+                return "end", lx, top, (lx - tw, top, lx, top + th)
+            # "n", "s"
+            return "middle", cx, top, (cx - tw / 2, top, cx + tw / 2, top + th)
 
         # candidate order: corners first (visually best), then cardinals
         all_candidates = ["ne", "nw", "se", "sw", "e", "w", "n", "s"]
 
         for cx, cy, label, fill, r, hint in plotted:
-            tw = theme.text_width(label, "tiny")
+            label_lines = label.split("\n")
+            tw = max(theme.text_width(ln, "tiny") for ln in label_lines)
+            th = asc + desc + (len(label_lines) - 1) * line_h
             cands = [hint.lower()] if hint is not None else all_candidates
             chosen = None
             for name in cands:
-                anchor, lx, baseline_y, bbox = _place_at(name, cx, cy, r, tw)
+                anchor, lx, top_y, bbox = _place_at(name, cx, cy, r, tw, th)
                 # off-plot
                 inside = (bbox[0] >= plot_left - 4 and bbox[2] <= plot_right + 4
                           and bbox[1] >= plot_top - 4 and bbox[3] <= plot_bottom + 4)
@@ -327,11 +327,32 @@ class Scatter(Element):
                         if _seg_rect_intersect(x1, y1, x2, y2, *bbox):
                             hit = True; break
                 if not hit or hint is not None:
-                    chosen = (anchor, lx, baseline_y, bbox); break
+                    chosen = (anchor, lx, top_y, bbox); break
             if chosen is None:
-                chosen = _place_at("ne", cx, cy, r, tw)   # fallback
-            anchor, lx, baseline_y, bbox = chosen
+                chosen = _place_at("ne", cx, cy, r, tw, th)   # fallback
+            anchor, lx, top_y, bbox = chosen
             placed_rects.append(bbox)
-            canvas.text(lx, baseline_y, label, size=sz,
-                       fill=theme.color_of("text"), anchor=anchor)
+            # First line in the text colour; continuation lines muted
+            # (per-point detail under the point's name).
+            for i, line in enumerate(label_lines):
+                canvas.text(lx, top_y + asc + i * line_h, line, size=sz,
+                           fill=theme.color_of("text" if i == 0 else "muted"),
+                           anchor=anchor)
+
+        # in-plot annotations pinned to data coordinates (Annotate family,
+        # shared with LineChart)
+        for ann in self.annotations:
+            ax = plot_x + self._x_to_px(ann.x)
+            ay = plot_y + self._y_to_px(ann.y)
+            if ann.dot:
+                canvas.circle(ax, ay, 2.0, fill=theme.color_of("muted"),
+                             stroke="none")
+            ann_line_h = theme.text_height(ann.size)
+            for line_index, line in enumerate(
+                    ann.text.splitlines() or [ann.text]):
+                canvas.text(ax + ann.dx, ay + ann.dy + line_index * ann_line_h,
+                            line,
+                            size=theme.size_px(ann.size),
+                            fill=theme.color_of(ann.color),
+                            anchor=ann.anchor)
 

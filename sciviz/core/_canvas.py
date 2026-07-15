@@ -52,7 +52,7 @@ class Canvas:
     # thick connectors -- matching the tight arrowheads in paper figures.
     ARROW_HEAD_SCALE: float = 4.5
 
-    def __init__(self):
+    def __init__(self, default_font_family: Optional[str] = None):
         self._defs: List[str] = []
         self._styles: List[str] = []
         self._body: List[str] = []
@@ -60,6 +60,11 @@ class Canvas:
         self._next_id: int = 0
         self._ink_bbox: Optional[tuple[float, float, float, float]] = None
         self._min_text_size: Optional[float] = None
+        #: Font family used to ink-account text runs with real glyph
+        #: metrics (set by :class:`sciviz.diagram.Diagram` from the
+        #: theme). ``None`` falls back to a conservative per-character
+        #: estimate.
+        self._default_font_family = default_font_family
 
     @property
     def ink_bbox(self) -> Optional[tuple[float, float, float, float]]:
@@ -309,8 +314,23 @@ class Canvas:
         inner = _build_text_runs(content)
         self._body.append(f"<text {' '.join(parts)}>{inner}</text>")
         self._mark_text_size(size)
-        # Conservative text ink estimate. y is the baseline.
-        width = len(content) * size * 0.62
+        # Text ink accounting. y is the baseline. Prefer real glyph
+        # metrics (the same font files the exporters embed) so long
+        # labels do not inflate the canvas; fall back to a conservative
+        # per-character estimate when no usable font is available.
+        width = None
+        family = font_family or self._default_font_family
+        if family is not None:
+            from ._fonts import measure_text_width
+            try:
+                heavy = weight in ("bold", "bolder") or (
+                    weight.isdigit() and int(weight) >= 600)
+            except AttributeError:  # numeric weight
+                heavy = float(weight) >= 600
+            width = measure_text_width(content, size, family,
+                                       bold=heavy, italic=italic)
+        if width is None:
+            width = len(content) * size * 0.62
         if anchor == "middle":
             x0, x1 = x - width / 2, x + width / 2
         elif anchor == "end":

@@ -88,6 +88,7 @@ from .layout import (
     Column,
     Panel,
     AlignedStack,
+    WrapRow,
 )
 
 # ----- generic elements ----------------------------------------------------
@@ -96,6 +97,7 @@ from .elements import (
     TextBlock,
     Span,
     Box,
+    Chip,
     Matrix,
     MatrixCell,
     MatrixGroup,
@@ -108,6 +110,7 @@ from .elements import (
     ConditionGlyph,
     Cylinder,
     Document,
+    HarveyBall,
     Mux,
     TokenRow,
     Icon,
@@ -125,9 +128,10 @@ from .charts import (
 
 # ----- specialized ---------------------------------------------------------
 from .specialized import (
-    Annotate, BarGroup, BarSeries, FillBetween, GroupedBarChart, LineChart, Pyramid,
+    Annotate, Bar, BarGroup, BarSeries, FillBetween, GroupedBarChart, LineChart, Pyramid,
     MiniGraph, MiniMatrix, MiniRaster, MiniTimeline, Scatter, Series,
-    SeriesDelta, SparkLine, Sparkline, Timeline,
+    SeriesDelta, SlopeRecord, SlopeReference, Slopegraph, SparkLine, Sparkline,
+    Timeline,
 )
 
 # ----- structures (high-level layout primitives) --------------------------
@@ -197,10 +201,11 @@ __all__ = [
     "FontAsset", "FontRegistry",
     # layout
     "Spacer", "FixedSize", "Row", "Column", "Grid", "Panel", "AlignedStack",
+    "WrapRow",
     # elements
-    "Text", "TextBlock", "Span", "Box",
+    "Text", "TextBlock", "Span", "Box", "Chip",
     "Matrix", "MatrixCell", "MatrixGroup", "MatrixSelection", "ColorScale", "ColorBar",
-    "Legend", "LegendItem", "Caption", "ConditionGlyph", "Cylinder", "Document", "Mux", "TokenRow",
+    "Legend", "LegendItem", "Caption", "ConditionGlyph", "Cylinder", "Document", "HarveyBall", "Mux", "TokenRow",
     "Icon", "Image", "Separator",
     # math
     "Math",
@@ -209,7 +214,8 @@ __all__ = [
     # specialized
     "Pyramid", "Timeline", "Scatter", "LineChart", "Series", "FillBetween",
     "SeriesDelta", "Annotate",
-    "GroupedBarChart", "BarGroup", "BarSeries", "SparkLine", "Sparkline",
+    "GroupedBarChart", "Bar", "BarGroup", "BarSeries", "SparkLine", "Sparkline",
+    "Slopegraph", "SlopeRecord", "SlopeReference",
     "MiniMatrix", "MiniGraph", "MiniTimeline", "MiniRaster",
     # structures
     "Section", "BlockGroup",

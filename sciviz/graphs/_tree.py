@@ -39,7 +39,11 @@ class TreeNode:
 
 
 class Tree(Element):
-    """Generic top-down tree rendered from :class:`TreeNode`-structured data.
+    """Generic tree rendered from :class:`TreeNode`-structured data.
+
+    Grows top-down by default; ``orientation="right"`` grows left-to-right
+    (root at the left, deeper levels to the right), the natural form for
+    taxonomies whose node labels are wide text.
 
     Each edge can be individually styled via its edge dict:
 
@@ -51,10 +55,15 @@ class Tree(Element):
     Parameters
     ----------
     root : TreeNode
+    orientation : str
+        ``"down"`` (default) or ``"right"``: the direction in which deeper
+        tree levels advance.
     level_gap : float
-        Vertical spacing between tree depths.
+        Spacing between tree depths (vertical for ``"down"``, horizontal
+        for ``"right"``).
     page_gap : float
-        Horizontal spacing between sibling subtrees.
+        Spacing between sibling subtrees (horizontal for ``"down"``,
+        vertical for ``"right"``).
     edge_padding : float
         Distance in px the edge keeps away from each node's bbox, so the
         line doesn't visually kiss the border.
@@ -62,13 +71,21 @@ class Tree(Element):
         Theme size token for edge labels.
     """
 
+    _ORIENTATIONS = ("down", "right")
+
     def __init__(self, root: TreeNode, *,
+                 orientation: str = "down",
                  level_gap: Union[str, float] = "auto",
                  page_gap: Union[str, float] = "auto",
                  edge_padding: Union[str, float] = "auto",
                  label_size: str = "small",
                  level_labels: Optional[Mapping[int, str]] = None):
+        if orientation not in self._ORIENTATIONS:
+            raise ValueError(
+                f"Tree.orientation must be one of {self._ORIENTATIONS}; "
+                f"got {orientation!r}")
         self.root = root
+        self.orientation = orientation
         self.level_gap = level_gap
         self.page_gap = page_gap
         self.edge_padding = edge_padding
@@ -134,7 +151,10 @@ class Tree(Element):
     # ---- measurement ----------------------------------------------------
 
     def _subtree_w(self, node: TreeNode, theme: Theme) -> float:
-        own = node.content.measure(theme).w
+        """Cross-axis extent of a subtree: width when growing down,
+        height when growing right."""
+        size = node.content.measure(theme)
+        own = size.w if self.orientation == "down" else size.h
         if not node.children:
             return own
         kids_w = sum(self._subtree_w(c, theme) for c, _ in node.children)
@@ -148,15 +168,26 @@ class Tree(Element):
 
     def _row_metrics(self, node: TreeNode, theme: Theme,
                      metrics: List[List[float]], depth: int = 0) -> None:
+        """Per-depth main-axis face metrics: (lead, face extent, trail).
+
+        For ``"down"`` the main axis is y (top, face height, bottom); for
+        ``"right"`` it is x (left, face width, right).
+        """
         size = node.content.measure(theme)
-        _fx, fy, _fw, fh = self._node_face(node, theme)
-        top = fy
-        bottom = size.h - fy - fh
+        fx, fy, fw, fh = self._node_face(node, theme)
+        if self.orientation == "down":
+            top = fy
+            face = fh
+            bottom = size.h - fy - fh
+        else:
+            top = fx
+            face = fw
+            bottom = size.w - fx - fw
         if depth >= len(metrics):
-            metrics.append([top, fh, bottom])
+            metrics.append([top, face, bottom])
         else:
             metrics[depth][0] = max(metrics[depth][0], top)
-            metrics[depth][1] = max(metrics[depth][1], fh)
+            metrics[depth][1] = max(metrics[depth][1], face)
             metrics[depth][2] = max(metrics[depth][2], bottom)
         for c, _ in node.children:
             self._row_metrics(c, theme, metrics, depth + 1)
@@ -168,12 +199,16 @@ class Tree(Element):
              for label in self.level_labels.values()),
             default=0.0,
         )
-        w = max(tree_w, band_w)
         metrics: List[List[float]] = []
         self._row_metrics(self.root, theme, metrics)
         heights = [top + face + bottom for top, face, bottom in metrics]
-        h = sum(heights) + self._level_gap(theme) * (len(heights) - 1)
-        return BBox(w, h)
+        main = sum(heights) + self._level_gap(theme) * (len(heights) - 1)
+        if self.orientation == "down":
+            # A band label lies along the cross axis: it can widen the tree.
+            return BBox(max(tree_w, band_w), main)
+        # Growing right, a band label lies along the main axis: it can widen
+        # its own depth column, so guarantee the total main extent fits it.
+        return BBox(max(main, band_w), tree_w)
 
     # ---- rendering ------------------------------------------------------
 
@@ -202,21 +237,70 @@ class Tree(Element):
                     f"{len(row_heights) - 1}"
                 )
             top = max(0.0, row_starts[depth] - inset)
-            bottom = min(total.h, row_starts[depth] + row_heights[depth] + inset)
-            canvas.rect(
-                x, y + top, total.w, bottom - top,
-                fill="none", stroke=color,
-                stroke_width=theme.hairline,
-                rx=max(theme.panel_radius, theme.unit * 0.55),
-                dasharray="4,3",
-            )
             size = theme.size_px("small")
-            canvas.text(
-                x + theme.unit,
-                y + (top + bottom) / 2.0 + size * 0.33,
-                label,
-                size=size, fill=color, weight="700", anchor="start",
-            )
+            if self.orientation == "down":
+                bottom = min(total.h,
+                             row_starts[depth] + row_heights[depth] + inset)
+                canvas.rect(
+                    x, y + top, total.w, bottom - top,
+                    fill="none", stroke=color,
+                    stroke_width=theme.hairline,
+                    rx=max(theme.panel_radius, theme.unit * 0.55),
+                    dasharray="4,3",
+                )
+                canvas.text(
+                    x + theme.unit,
+                    y + (top + bottom) / 2.0 + size * 0.33,
+                    label,
+                    size=size, fill=color, weight="700", anchor="start",
+                )
+            else:
+                # Growing right, a depth is a vertical column band; the
+                # label reads horizontally along its top edge.
+                right = min(total.w,
+                            row_starts[depth] + row_heights[depth] + inset)
+                canvas.rect(
+                    x + top, y, right - top, total.h,
+                    fill="none", stroke=color,
+                    stroke_width=theme.hairline,
+                    rx=max(theme.panel_radius, theme.unit * 0.55),
+                    dasharray="4,3",
+                )
+                canvas.text(
+                    x + (top + right) / 2.0,
+                    y + theme.unit + size * 0.66,
+                    label,
+                    size=size, fill=color, weight="700", anchor="middle",
+                )
+
+    @staticmethod
+    def _edge_paint(edge: Dict[str, Any], theme: Theme):
+        """Resolve an edge dict to ``(stroke color, dasharray, width)``."""
+        color = theme.color_of(edge.get("color", "text"))
+        style = edge.get("style", "solid")
+        dash = None
+        if style == "dashed":
+            dash = "4,3"
+        elif style == "dotted":
+            dash = "1,2"
+        if "width" in edge:
+            width = edge["width"]
+            if isinstance(width, str):
+                try:
+                    sw = float(getattr(theme, width))
+                except (AttributeError, TypeError, ValueError) as exc:
+                    raise ValueError(
+                        "Tree edge width token must name a numeric Theme field"
+                    ) from exc
+            else:
+                sw = float(width)
+        else:
+            # A semantically coloured route is normally the selected or
+            # exceptional path. Give it one automatic visual-weight step
+            # so authors declare meaning, not a copied stroke pixel.
+            sw = theme.thick if edge.get("color", "text") != "text" \
+                else theme.line
+        return color, dash, sw
 
     def _render_rec(self, canvas: Canvas, node: TreeNode,
                     x: float, y: float, theme: Theme,
@@ -257,30 +341,7 @@ class Tree(Element):
                 child_ny + cfy,
             )
 
-            color = theme.color_of(edge.get("color", "text"))
-            style = edge.get("style", "solid")
-            dash = None
-            if style == "dashed":
-                dash = "4,3"
-            elif style == "dotted":
-                dash = "1,2"
-            if "width" in edge:
-                width = edge["width"]
-                if isinstance(width, str):
-                    try:
-                        sw = float(getattr(theme, width))
-                    except (AttributeError, TypeError, ValueError) as exc:
-                        raise ValueError(
-                            "Tree edge width token must name a numeric Theme field"
-                        ) from exc
-                else:
-                    sw = float(width)
-            else:
-                # A semantically coloured route is normally the selected or
-                # exceptional path. Give it one automatic visual-weight step
-                # so authors declare meaning, not a copied stroke pixel.
-                sw = theme.thick if edge.get("color", "text") != "text" \
-                    else theme.line
+            color, dash, sw = self._edge_paint(edge, theme)
 
             # Edge endpoints with padding off the node faces.
             edge_padding = self._edge_padding(theme)
@@ -302,12 +363,80 @@ class Tree(Element):
                              row_starts, row_metrics, depth + 1)
             cursor += kw + page_gap
 
+    def _render_rec_right(self, canvas: Canvas, node: TreeNode,
+                          x: float, y: float, theme: Theme,
+                          row_starts: List[float],
+                          row_metrics: List[List[float]],
+                          depth: int = 0) -> None:
+        """Transposed twin of :meth:`_render_rec`: depths advance in x,
+        siblings stack in y; ``y`` is the top of this node's subtree band."""
+        subtree_h = self._subtree_w(node, theme)
+        fx, fy, fw, fh = self._node_face(node, theme)
+        # Centre the semantic face within its subtree band (vertically) and
+        # within its depth column (horizontally).
+        ny = y + subtree_h / 2.0 - (fy + fh / 2.0)
+        max_lead, max_face_w, _max_trail = row_metrics[depth]
+        nx = (x + row_starts[depth] + max_lead + max_face_w / 2.0
+              - (fx + fw / 2.0))
+        node.content.render(canvas, nx, ny, theme)
+
+        if not node.children:
+            return
+
+        # Parent anchor: right-centre of THIS node's face.
+        parent_anchor = (nx + fx + fw, ny + fy + fh / 2.0)
+
+        kid_heights = [self._subtree_w(c, theme) for c, _ in node.children]
+        page_gap = self._page_gap(theme)
+        total_kids = sum(kid_heights) + page_gap * (len(kid_heights) - 1)
+        start_y = y + (subtree_h - total_kids) / 2
+        cursor = start_y
+
+        for (child, edge), kh in zip(node.children, kid_heights):
+            cfx, cfy, cfw, cfh = self._node_face(child, theme)
+            child_ny = cursor + kh / 2.0 - (cfy + cfh / 2.0)
+            clead, cface_w, _ctrail = row_metrics[depth + 1]
+            child_nx = (x + row_starts[depth + 1] + clead + cface_w / 2.0
+                        - (cfx + cfw / 2.0))
+            # Child anchor: left-centre of the child's face.
+            child_anchor = (
+                child_nx + cfx,
+                child_ny + cfy + cfh / 2.0,
+            )
+
+            color, dash, sw = self._edge_paint(edge, theme)
+
+            edge_padding = self._edge_padding(theme)
+            p1 = (parent_anchor[0] + edge_padding, parent_anchor[1])
+            p2 = (child_anchor[0] - edge_padding, child_anchor[1])
+            canvas.line(p1[0], p1[1], p2[0], p2[1],
+                        stroke=color, stroke_width=sw, dasharray=dash)
+
+            label = edge.get("label")
+            if label:
+                mx = (p1[0] + p2[0]) / 2
+                my = (p1[1] + p2[1]) / 2
+                canvas.text(mx, my - 4,
+                            label, size=theme.size_px(self.label_size),
+                            fill=theme.color_of(edge.get("label_color",
+                                                         "muted")),
+                            anchor="middle")
+
+            self._render_rec_right(canvas, child, x, cursor, theme,
+                                   row_starts, row_metrics, depth + 1)
+            cursor += kh + page_gap
+
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         row_starts, row_metrics = self._row_starts(theme)
         row_heights = [sum(metric) for metric in row_metrics]
         size = self.measure(theme)
         tree_w = self._subtree_w(self.root, theme)
-        tree_x = x + (size.w - tree_w) / 2.0
         self._render_level_bands(canvas, x, y, theme, row_starts, row_heights)
-        self._render_rec(canvas, self.root, tree_x, y, theme,
-                         row_starts, row_metrics)
+        if self.orientation == "down":
+            tree_x = x + (size.w - tree_w) / 2.0
+            self._render_rec(canvas, self.root, tree_x, y, theme,
+                             row_starts, row_metrics)
+        else:
+            tree_y = y + (size.h - tree_w) / 2.0
+            self._render_rec_right(canvas, self.root, x, tree_y, theme,
+                                   row_starts, row_metrics)

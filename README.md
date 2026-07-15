@@ -54,10 +54,10 @@ aligned stacks, structured text runs, and the rest of the vocabulary.
 ```
 sciviz/
   core/           Element, BBox, Canvas, Theme
-  layout/         Row, Column, Panel, Spacer, FixedSize, AlignedStack
+  layout/         Row, Column, WrapRow, Panel, Spacer, FixedSize, AlignedStack
   elements/       Text, TextBlock, Span, Box, Matrix (+ structured cells,
                   selections, ColorScale/ColorBar), Legend, Caption,
-                  TokenRow, Icon, Image, Separator
+                  HarveyBall, TokenRow, Chip, Icon, Image, Separator
   composition/    Inline, Captioned, Badge, Brace (+ Brace.spanning),
                   Card, EqualGrid, Stripe, StepCell, SoftLegend,
                   Group, Region (label_position/annotations/corner_badge),
@@ -67,7 +67,7 @@ sciviz/
   charts/         Table, AlignedColumns, BarChart, DonutChart
   primitives/     Heatmap, Histogram, MeshArray, VectorTiles, StackedBoxes
   specialized/    Pyramid, Timeline, Scatter, LineChart, Series, FillBetween,
-                  Annotate,
+                  Annotate, Slopegraph, SlopeRecord, SlopeReference,
                   Sparkline, MiniGraph, MiniMatrix, MiniTimeline, MiniRaster
   structures/     Section, BlockGroup
   graphs/         Tree, TreeNode, NodeTree, Token, Tokens, Sequence,
@@ -153,9 +153,12 @@ or block regions without altering their data.
 `LineChart` supports keyed `Series`, semantic markers and plot sizes, exact tick
 sequences, in-plot legends, and `FillBetween` bands with derived gap labels.
 Structured matrices can place column labels above or below the grid and use
-semantic cell-size tokens. `DonutChart` is the part-to-whole primitive: `Part`
-values drive slice geometry and `GroupSummary` derives center totals instead of
-duplicating them in author code.
+semantic cell-size tokens; `MatrixGroup` axis labels wrap to their own span.
+`HarveyBall` is the categorical coverage glyph: a fraction-filled disc (solid /
+half / hollow) for judgment matrices, placed in a `MatrixCell` `mark` and
+reused verbatim in a `Legend`. `DonutChart` is the part-to-whole primitive:
+`Part` values drive slice geometry and `GroupSummary` derives center totals
+instead of duplicating them in author code.
 
 Use `DetailCallout(overview, detail, source="anchor")` when a specific nested
 component is expanded elsewhere; placement and the leader are measured and

@@ -125,6 +125,77 @@ def test_tree_level_label_draws_measured_rank_band():
     assert 'stroke-dasharray="4,3"' in svg
 
 
+def test_tree_rejects_bad_orientation():
+    with pytest.raises(ValueError):
+        Tree(_simple_tree(), orientation="up")
+
+
+def test_tree_right_orientation_transposes_bbox():
+    """With square nodes and explicit gaps, growing right is the exact
+    transpose of growing down."""
+    def square_tree():
+        return Tree.node(Box("r", width=30, height=30), children=[
+            Tree.node(Box("a", width=30, height=30)),
+            Tree.node(Box("b", width=30, height=30)),
+        ])
+
+    down = Tree(square_tree(), level_gap=10.0, page_gap=6.0)
+    right = Tree(square_tree(), orientation="right",
+                 level_gap=10.0, page_gap=6.0)
+    db = down.measure(DEFAULT_THEME)
+    rb = right.measure(DEFAULT_THEME)
+    assert (rb.w, rb.h) == (db.h, db.w)
+
+
+def test_tree_right_orientation_width_increases_with_depth():
+    shallow = Tree(Tree.node(Box("r"), children=[Tree.node(Box("a"))]),
+                   orientation="right")
+    deeper = Tree(
+        Tree.node(Box("r"), children=[
+            Tree.node(Box("a"), children=[Tree.node(Box("x"))]),
+        ]),
+        orientation="right")
+    assert deeper.measure(DEFAULT_THEME).w > shallow.measure(DEFAULT_THEME).w
+
+
+def test_tree_right_orientation_edges_run_horizontally():
+    t = Tree(
+        Tree.node(Box("r", width=40, height=20), children=[
+            Tree.node(Box("a", width=40, height=20)),
+        ]),
+        orientation="right")
+    c = Canvas()
+    t.render(c, 0, 0, DEFAULT_THEME)
+    svg = c.to_svg(400, 400)
+
+    import re
+    lines = re.findall(
+        r'<line x1="([-\d.]+)" y1="([-\d.]+)" x2="([-\d.]+)" y2="([-\d.]+)"',
+        svg)
+    assert len(lines) == 1
+    x1, y1, x2, y2 = (float(v) for v in lines[0])
+    assert y1 == y2           # a single child sits level with its parent
+    assert x2 > x1            # and the edge advances rightward
+
+
+def test_tree_right_orientation_level_band():
+    tree = Tree(
+        Tree.node(Box("root"), children=[
+            Tree.node(Box("left")),
+            Tree.node(Box("right")),
+        ]),
+        orientation="right",
+        level_labels={1: "children"},
+    )
+    size = tree.measure(DEFAULT_THEME)
+    canvas = Canvas()
+    tree.render(canvas, 0.0, 0.0, DEFAULT_THEME)
+    svg = canvas.to_svg(size.w, size.h)
+
+    assert ">children<" in svg
+    assert 'stroke-dasharray="4,3"' in svg
+
+
 def test_tree_auto_spacing_resolves_from_theme_density():
     tree = Tree(_simple_tree())
     dense = DEFAULT_THEME.with_overrides(unit=DEFAULT_THEME.unit * 0.5)

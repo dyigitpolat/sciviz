@@ -140,11 +140,15 @@ def place_polyline_label(points: Sequence[Point], label: LabelBox,
     perpendicular leg of its own wire.
 
     Orientation follows the wire: horizontal legs take horizontal
-    labels; vertical legs prefer a 90-degree rotated label that reads
-    along the wire, but when the rotated label cannot find a
-    collision-free slot (typically a short vertical hop between two
-    stacked cards) a horizontal label beside the leg is tried as a
-    fallback and the lower-overlap orientation wins.
+    labels. Vertical legs prefer a 90-degree rotated label that reads
+    along the wire only when the leg is long enough to genuinely carry
+    the rotated text (leg length >= label width plus clearance); short
+    vertical hops -- e.g. the card-to-card gaps of a stacked column --
+    prefer a horizontal label beside the leg, so one short edge in a
+    stack never reads top-to-bottom while its sibling edges read
+    left-to-right merely because its label happened to fit rotated.
+    Either way the non-preferred orientation remains a fallback and the
+    lower-overlap orientation wins when the preferred one collides.
     """
     if len(points) < 2:
         raise ValueError("place_polyline_label requires at least two points")
@@ -178,7 +182,16 @@ def place_polyline_label(points: Sequence[Point], label: LabelBox,
         is_horizontal = abs(p2[0] - p1[0]) >= abs(p2[1] - p1[1])
         attempts: list[Tuple[int, float]] = [(0, 0.0)]  # (pref_pen, rotation)
         if not is_horizontal and allow_rotation:
-            attempts = [(0, 90.0), (1, 0.0)]
+            # A rotated label reads *along* its wire, which only earns the
+            # reader's head-tilt when the leg genuinely carries the text.
+            # Short vertical hops keep horizontal preference so their
+            # orientation stays consistent with sibling edges in the same
+            # stack (whose longer labels resolve horizontal anyway).
+            carries_rotated = length >= label.width + 2.0 * gap
+            if carries_rotated:
+                attempts = [(0, 90.0), (1, 0.0)]
+            else:
+                attempts = [(0, 0.0), (1, 90.0)]
         for pref_pen, rotation in attempts:
             if rotation:
                 rect, anchor, overlap = _try_place(

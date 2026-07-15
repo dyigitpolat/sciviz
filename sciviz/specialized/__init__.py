@@ -5,19 +5,22 @@
 * :class:`Scatter`  -- 2D scatter plot with axes and gridlines.
 * :class:`LineChart`-- multi-series line plot with inline :class:`Annotate`.
 * :class:`GroupedBarChart` -- paired vertical bars with gain arrows per group.
+* :class:`Slopegraph` -- two-rail before/after comparison with direct labels.
 """
 
-from ._groupedbars import BarGroup, BarSeries, GroupedBarChart
+from ._groupedbars import Bar, BarGroup, BarSeries, GroupedBarChart
 from ._linechart import Annotate, FillBetween, LineChart, Series, SeriesDelta
 from ._mini import MiniGraph, MiniMatrix, MiniRaster, MiniTimeline, SparkLine, Sparkline
 from ._pyramid import Pyramid
 from ._scatter import Scatter
+from ._slopegraph import SlopeRecord, SlopeReference, Slopegraph
 from ._timeline import Timeline
 
 __all__ = [
     "Pyramid", "Timeline", "Scatter", "LineChart", "Series", "FillBetween",
     "SeriesDelta", "Annotate",
-    "GroupedBarChart", "BarGroup", "BarSeries",
+    "GroupedBarChart", "Bar", "BarGroup", "BarSeries",
+    "Slopegraph", "SlopeRecord", "SlopeReference",
     "SparkLine", "Sparkline", "MiniMatrix", "MiniGraph",
     "MiniTimeline", "MiniRaster",
 ]

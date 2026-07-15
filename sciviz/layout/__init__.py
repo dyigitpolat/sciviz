@@ -17,7 +17,9 @@ from ._panel import Panel
 from ._row import Row
 from ._simple_grid import Grid
 from ._spacer import FixedSize, Spacer
+from ._wraprow import WrapRow
 
 __all__ = [
     "Spacer", "FixedSize", "Row", "Column", "Grid", "Panel", "AlignedStack",
+    "WrapRow",
 ]

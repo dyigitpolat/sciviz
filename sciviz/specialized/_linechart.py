@@ -32,6 +32,16 @@ class Series:
         SVG ``stroke-dasharray`` string, e.g. ``"4,3"``.
     width : float, optional
         Stroke width. Defaults to ``theme.line``.
+    marker_fill : str
+        ``"solid"`` (default) fills markers with the series colour;
+        ``"hollow"`` draws open markers (background fill, series-colour
+        outline). The conventional encoding for measured vs.
+        derived/projected points: overlay a hollow marker-only series on
+        the same line.
+    show_line : bool
+        When ``False`` the connecting polyline is suppressed and only
+        markers render — a marker-only overlay series. The legend sample
+        then shows just the marker.
     """
 
     points: Sequence[Tuple[float, float]]
@@ -42,6 +52,8 @@ class Series:
     key: Optional[str] = None
     marker: Optional[str] = None
     marker_size: Union[str, float] = "xs"
+    marker_fill: str = "solid"
+    show_line: bool = True
 
 
 @dataclass(frozen=True)
@@ -69,13 +81,21 @@ class Annotate:
     x, y : float
         Data-space position of the anchor.
     text : str
-        Label.
+        Label. May contain newlines; lines are stacked downward.
     dx, dy : float
         Pixel offset of the text from the anchor (to avoid overlap).
     color : str
         Text color; default "muted".
     size : str
         Text size token; default "small".
+    dot : bool
+        Draw the small anchor dot at ``(x, y)``. Set ``False`` when the
+        annotation is pinned to an existing series marker, or when the
+        note is free-floating and references no single datum (a dot
+        would read as a data point).
+    anchor : str
+        SVG text anchor applied to every line: ``"start"`` (default),
+        ``"middle"``, or ``"end"``.
     """
 
     x: float
@@ -85,6 +105,8 @@ class Annotate:
     dy: float = -10.0
     color: str = "muted"
     size: str = "small"
+    dot: bool = True
+    anchor: str = "start"
 
 
 @dataclass(frozen=True)
@@ -224,6 +246,9 @@ class LineChart(Element):
             if series.marker not in (None, "circle", "square", "triangle", "diamond"):
                 raise ValueError(
                     "Series.marker must be circle, square, triangle, diamond, or None")
+            if series.marker_fill not in ("solid", "hollow"):
+                raise ValueError(
+                    "Series.marker_fill must be 'solid' or 'hollow'")
 
     # ---- projection helpers ---------------------------------------------
 
@@ -323,24 +348,33 @@ class LineChart(Element):
         return theme.unit * factors[marker_size]
 
     def _draw_marker(self, canvas: Canvas, marker: str, px: float, py: float,
-                     radius: float, color: str, theme: Theme) -> None:
+                     radius: float, color: str, theme: Theme,
+                     fill_mode: str = "solid") -> None:
+        if fill_mode == "hollow":
+            fill = theme.color_of("bg")
+            stroke = color
+            sw = theme.line
+        else:
+            fill = color
+            stroke = "white"
+            sw = theme.hairline
         if marker == "circle":
-            canvas.circle(px, py, radius, fill=color, stroke="white",
-                          stroke_width=theme.hairline)
+            canvas.circle(px, py, radius, fill=fill, stroke=stroke,
+                          stroke_width=sw)
         elif marker == "square":
             canvas.rect(px - radius, py - radius, 2 * radius, 2 * radius,
-                        fill=color, stroke="white", stroke_width=theme.hairline)
+                        fill=fill, stroke=stroke, stroke_width=sw)
         elif marker == "triangle":
             canvas.polygon([(px, py - radius),
                             (px + radius, py + radius),
                             (px - radius, py + radius)],
-                           fill=color, stroke="white",
-                           stroke_width=theme.hairline)
+                           fill=fill, stroke=stroke,
+                           stroke_width=sw)
         elif marker == "diamond":
             canvas.polygon([(px, py - radius), (px + radius, py),
                             (px, py + radius), (px - radius, py)],
-                           fill=color, stroke="white",
-                           stroke_width=theme.hairline)
+                           fill=fill, stroke=stroke,
+                           stroke_width=sw)
 
     # ---- layout ----------------------------------------------------------
 
@@ -422,15 +456,11 @@ class LineChart(Element):
                         self.x_label, size=theme.size_px("label"),
                         fill=text_col, anchor="middle")
         if self.y_label:
-            cx = plot_x - 36.0
-            cy = plot_y + self.height / 2
-            canvas.raw(
-                f'<text x="{cx:.2f}" y="{cy:.2f}" '
-                f'font-size="{theme.size_px("label"):.2f}" '
-                f'fill="{text_col}" text-anchor="middle" '
-                f'transform="rotate(-90 {cx:.2f} {cy:.2f})">'
-                f'{self.y_label}</text>'
-            )
+            # canvas.text (not raw SVG) so the rotated label's ink is
+            # tracked -- otherwise auto-trim can crop the y-axis title.
+            canvas.text(plot_x - 36.0, plot_y + self.height / 2,
+                        self.y_label, size=theme.size_px("label"),
+                        fill=text_col, anchor="middle", rotate=-90)
 
         # relational fills are painted beneath all line work.
         series_by_key = {
@@ -463,7 +493,7 @@ class LineChart(Element):
             pts = [(plot_x + self._x_to_px(vx),
                     plot_y + self._y_to_px(vy))
                    for vx, vy in ser.points]
-            if len(pts) >= 2:
+            if len(pts) >= 2 and ser.show_line:
                 d = f"M {pts[0][0]:.2f} {pts[0][1]:.2f}" + "".join(
                     f" L {px:.2f} {py:.2f}" for px, py in pts[1:])
                 canvas.path(d, fill="none", stroke=stroke, stroke_width=sw,
@@ -472,7 +502,7 @@ class LineChart(Element):
                 radius = self._marker_radius(ser.marker_size, theme)
                 for px, py in pts:
                     self._draw_marker(canvas, ser.marker, px, py, radius,
-                                      stroke, theme)
+                                      stroke, theme, ser.marker_fill)
 
         # A fill owns relational labels because their values and positions are
         # derived from both series.  Authors provide only the formatter.
@@ -532,6 +562,22 @@ class LineChart(Element):
             )
             source_y = plot_y + self._y_to_px(source_value)
             target_y = plot_y + self._y_to_px(target_value)
+            # When the endpoints draw markers and the arrow runs in the
+            # marker's column, stop at the marker edge instead of its
+            # centre so the arrowhead never occludes the data point.
+            if abs(arrow_x - data_x) < 1e-6 and target_y != source_y:
+                direction = 1.0 if target_y > source_y else -1.0
+
+                def _marker_r(ser: Series) -> float:
+                    if not ser.marker:
+                        return 0.0
+                    return self._marker_radius(ser.marker_size, theme)
+
+                src_r = _marker_r(source)
+                tgt_r = _marker_r(target)
+                if abs(target_y - source_y) > src_r + tgt_r + theme.unit:
+                    source_y += direction * src_r
+                    target_y -= direction * (tgt_r + theme.hairline)
             delta_color = theme.color_of(delta.color)
             marker = canvas.define_arrow_marker(
                 color=delta_color,
@@ -577,10 +623,16 @@ class LineChart(Element):
         for ann in self.annotations:
             ax = plot_x + self._x_to_px(ann.x)
             ay = plot_y + self._y_to_px(ann.y)
-            canvas.circle(ax, ay, 2.0, fill=axis_color, stroke="none")
-            canvas.text(ax + ann.dx, ay + ann.dy, ann.text,
-                        size=theme.size_px(ann.size),
-                        fill=theme.color_of(ann.color))
+            if ann.dot:
+                canvas.circle(ax, ay, 2.0, fill=axis_color, stroke="none")
+            ann_line_h = theme.text_height(ann.size)
+            for line_index, line in enumerate(
+                    ann.text.splitlines() or [ann.text]):
+                canvas.text(ax + ann.dx, ay + ann.dy + line_index * ann_line_h,
+                            line,
+                            size=theme.size_px(ann.size),
+                            fill=theme.color_of(ann.color),
+                            anchor=ann.anchor)
 
         # legend
         if self.legend:
@@ -628,15 +680,16 @@ class LineChart(Element):
                 color_name = s.color if s.color != "auto" else theme.role_for_index(i)
                 stroke = theme.color_of(color_name)
                 cy = ly + line_h * 0.5
-                canvas.line(
-                    lx + pad,
-                    cy,
-                    lx + pad + sample_w,
-                    cy,
-                    stroke=stroke,
-                    stroke_width=s.width if s.width is not None else theme.line,
-                    dasharray=s.dash,
-                )
+                if s.show_line:
+                    canvas.line(
+                        lx + pad,
+                        cy,
+                        lx + pad + sample_w,
+                        cy,
+                        stroke=stroke,
+                        stroke_width=s.width if s.width is not None else theme.line,
+                        dasharray=s.dash,
+                    )
                 if s.marker:
                     self._draw_marker(
                         canvas,
@@ -646,6 +699,7 @@ class LineChart(Element):
                         self._marker_radius(s.marker_size, theme),
                         stroke,
                         theme,
+                        s.marker_fill,
                     )
                 canvas.text(
                     lx + pad + sample_w + theme.unit,
@@ -662,13 +716,16 @@ class LineChart(Element):
             for i, s in items:
                 color_name = s.color if s.color != "auto" else theme.role_for_index(i)
                 stroke = theme.color_of(color_name)
-                canvas.line(lx, ly + line_h * 0.5, lx + 16, ly + line_h * 0.5,
-                            stroke=stroke, stroke_width=theme.line,
-                            dasharray=s.dash)
+                if s.show_line:
+                    canvas.line(lx, ly + line_h * 0.5, lx + 16,
+                                ly + line_h * 0.5,
+                                stroke=stroke, stroke_width=theme.line,
+                                dasharray=s.dash)
                 if s.marker:
                     self._draw_marker(
                         canvas, s.marker, lx + 8, ly + line_h * 0.5,
-                        self._marker_radius(s.marker_size, theme), stroke, theme)
+                        self._marker_radius(s.marker_size, theme), stroke,
+                        theme, s.marker_fill)
                 canvas.text(lx + 22, ly + line_h * 0.75, s.label,
                             size=theme.size_px(legend_size),
                             fill=theme.color_of("text"))
@@ -682,13 +739,16 @@ class LineChart(Element):
             for i, s in items:
                 color_name = s.color if s.color != "auto" else theme.role_for_index(i)
                 stroke = theme.color_of(color_name)
-                canvas.line(lx, ly + line_h * 0.5, lx + 16, ly + line_h * 0.5,
-                            stroke=stroke, stroke_width=theme.line,
-                            dasharray=s.dash)
+                if s.show_line:
+                    canvas.line(lx, ly + line_h * 0.5, lx + 16,
+                                ly + line_h * 0.5,
+                                stroke=stroke, stroke_width=theme.line,
+                                dasharray=s.dash)
                 if s.marker:
                     self._draw_marker(
                         canvas, s.marker, lx + 8, ly + line_h * 0.5,
-                        self._marker_radius(s.marker_size, theme), stroke, theme)
+                        self._marker_radius(s.marker_size, theme), stroke,
+                        theme, s.marker_fill)
                 canvas.text(lx + 22, ly + line_h * 0.75, s.label,
                             size=theme.size_px(legend_size),
                             fill=theme.color_of("text"))

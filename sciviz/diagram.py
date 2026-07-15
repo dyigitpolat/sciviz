@@ -150,6 +150,7 @@ class Diagram:
         # fitting); ``None`` until the first measure/render resolves it.
         self._fitted_theme: Optional[Theme] = None
         self._fit_warned = False
+        self._floor_warned = False
         self._last_render_size: Optional[BBox] = None
 
     @classmethod
@@ -361,7 +362,7 @@ class Diagram:
         # canvas and widen the trial by any overflow so the fitter
         # optimises the true footprint.
         try:
-            scratch = Canvas()
+            scratch = Canvas(default_font_family=theme.font_family)
             body.render(scratch, 0.0, 0.0, theme)
             ink = scratch.ink_bbox
         except Exception:  # pragma: no cover -- unrenderable trial copy
@@ -511,6 +512,7 @@ class Diagram:
         author can reduce content instead.
         """
         target = float(self.target_width_pt)
+        warned_overflow = False
         if size.w <= target + 0.5:
             # Snap to exactly the target: an under-target canvas is
             # widened (body stays centred); a canvas a hair over -- the
@@ -525,6 +527,7 @@ class Diagram:
                                              offset_y=offset_y)
         elif size.w > target * self._FIT_TOLERANCE and not self._fit_warned:
             self._fit_warned = True
+            warned_overflow = True
             scale = target / size.w
             smallest = canvas.min_text_size
             detail = ""
@@ -545,6 +548,26 @@ class Diagram:
                 f"fewer columns) or raise target_width_pt.",
                 UserWarning, stacklevel=3,
             )
+        # Absolute legibility floor: authored sizes below the floor are a
+        # defect even when the canvas already fits the target width (the
+        # overflow warning above only fires on a scale-down, which let
+        # sub-floor authored text ship silently).
+        if not warned_overflow and not self._floor_warned:
+            scale = min(1.0, target / size.w)
+            smallest = canvas.min_text_size
+            if (smallest is not None
+                    and smallest * scale < self.min_effective_font_pt - 1e-6):
+                self._floor_warned = True
+                warnings.warn(
+                    f"The smallest text in this figure is authored at "
+                    f"{smallest:g}pt and prints at ~{smallest * scale:.1f}pt "
+                    f"at target_width_pt={target:g} -- below the "
+                    f"min_effective_font_pt={self.min_effective_font_pt:g} "
+                    f"legibility floor. Raise the authored size (theme "
+                    f"tokens: micro and up print legibly) or lower "
+                    f"min_effective_font_pt if this is deliberate.",
+                    UserWarning, stacklevel=3,
+                )
         return size, canvas
 
     def _body_for_render(self) -> Element:
@@ -570,8 +593,8 @@ class Diagram:
 
     def _render_canvas(self, size: BBox, *, offset_x: float = 0.0,
                        offset_y: float = 0.0) -> Canvas:
-        canvas = Canvas()
         theme = self._layout_theme()
+        canvas = Canvas(default_font_family=theme.font_family)
         m = self._margin()
         # paper: title left-aligned at content origin
         body_for_render = self._body_for_render()

@@ -51,6 +51,7 @@ class FlowNode:
     group: Optional[str] = None
     role: Any = "primary"
     ports: Sequence[FlowPort] = ()
+    lane: Optional[str] = None
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -359,7 +360,10 @@ class FlowGraph(Element):
 
     def __init__(self, nodes: Sequence[FlowNode], edges: Sequence[FlowEdge], *,
                  groups: Sequence[FlowGroup] = (), direction: str = "right",
-                 rank_order: Optional[Sequence[str]] = None) -> None:
+                 rank_order: Optional[Sequence[str]] = None,
+                 lanes: Optional[Sequence[str]] = None,
+                 lane_labels: Optional[dict] = None,
+                 rank_labels: Optional[dict] = None) -> None:
         self.nodes = tuple(nodes)
         self.edges = tuple(edges)
         self.groups = tuple(groups)
@@ -367,6 +371,16 @@ class FlowGraph(Element):
             raise ValueError("FlowGraph.direction must be 'right' or 'down'")
         self.direction = direction
         self.rank_order = tuple(rank_order) if rank_order is not None else None
+        # Lanes are an OPTIONAL cross-flow banding: instead of centring each
+        # rank, nodes are aligned into named horizontal bands (rows) that
+        # stay straight across every rank. A node with ``lane=None`` under an
+        # active lane set spans the whole band stack (a shared root/sink).
+        self.lanes = tuple(lanes) if lanes is not None else None
+        self.lane_labels = dict(lane_labels) if lane_labels else None
+        # ``rank_labels`` writes a per-rank caption in the gutter that runs
+        # along the flow (the left gutter for ``direction="down"``). Lane
+        # labels then head each track band/column instead.
+        self.rank_labels = dict(rank_labels) if rank_labels else None
         self._node_by_id = self._validate()
         self._ranks = self._assign_ranks()
         self._connectors: list[Connect] = []
@@ -424,6 +438,25 @@ class FlowGraph(Element):
             missing = known_ranks - set(self.rank_order)
             if missing:
                 raise ValueError(f"rank_order omits ranks: {sorted(missing)}")
+        if self.lanes is not None:
+            if len(self.lanes) != len(set(self.lanes)):
+                raise ValueError("FlowGraph lanes must be unique")
+            lane_set = set(self.lanes)
+            for node in self.nodes:
+                if node.lane is None and self.direction == "down":
+                    # A ``lane=None`` node spans the whole band stack; that
+                    # is only a well-defined cell when bands are rows
+                    # (``direction="right"``).
+                    raise ValueError(
+                        "lane=None spanning nodes require direction='right'; "
+                        f"give FlowNode {node.id!r} an explicit lane")
+                if node.lane is not None and node.lane not in lane_set:
+                    raise ValueError(
+                        f"FlowNode {node.id!r} uses unknown lane {node.lane!r}")
+            if self.lane_labels:
+                for name in self.lane_labels:
+                    if name not in lane_set:
+                        raise ValueError(f"lane_labels names unknown lane {name!r}")
         return node_by_id
 
     def _assign_ranks(self) -> dict[str, int]:
@@ -494,7 +527,7 @@ class FlowGraph(Element):
         node = self._node_by_id[ref.node]
         return next(port.side for port in node.ports if port.name == ref.port)
 
-    def _build(self) -> Element:
+    def _build_ranked_bands(self) -> Element:
         rank_values = sorted(set(self._ranks.values()))
         bands = []
         for rank in rank_values:
@@ -517,9 +550,92 @@ class FlowGraph(Element):
         # lands on either node.  This replaces both failure modes: the old
         # double endpoint margin (too loose) and a bare ``xs`` gap (overlap).
         rank_gap = "lg" if has_forward_labels else "md"
-        ranked = (Row(*bands, gap=rank_gap, align="center")
-                  if self.direction == "right"
-                  else Column(*bands, gap=rank_gap, align="center"))
+        return (Row(*bands, gap=rank_gap, align="center")
+                if self.direction == "right"
+                else Column(*bands, gap=rank_gap, align="center"))
+
+    def _build_lane_grid(self) -> Element:
+        """Cross-flow banding via the named-row :class:`Grid`.
+
+        Corresponding lanes stay on one straight band across every rank and
+        empty ``(lane, rank)`` slots read as air. Orientation follows the
+        flow ``direction``:
+
+        * ``"right"`` -- lanes are horizontal rows, ranks advance rightward
+          as columns, and a ``lane=None`` node spans the whole band stack
+          (the natural home for a shared root or sink).
+        * ``"down"`` -- ranks are rows advancing downward (``rank_labels``
+          caption the left gutter), lanes are side-by-side columns, and each
+          named lane heads its column via a labelled enclosure.
+        """
+        from ..grid import Grid
+
+        lanes = list(self.lanes)
+        ranks = sorted(set(self._ranks.values()))
+        elements = {node.id: self._node_element(node) for node in self.nodes}
+
+        def _cell(elems):
+            if len(elems) == 1:
+                return elems[0]
+            return Column(*elems, gap="sm", align="center")
+
+        def _nodes_at(rank, lane):
+            return [elements[n.id] for n in self.nodes
+                    if self._ranks[n.id] == rank and n.lane == lane]
+
+        if self.direction == "right":
+            columns: list[dict] = []
+            for rank in ranks:
+                here = [n for n in self.nodes if self._ranks[n.id] == rank]
+                per_lane: dict[str, list] = {}
+                spanning: list = []
+                for node in here:
+                    if node.lane is None:
+                        spanning.append(elements[node.id])
+                    else:
+                        per_lane.setdefault(node.lane, []).append(elements[node.id])
+                column: dict = {lane: _cell(es) for lane, es in per_lane.items()}
+                if spanning:
+                    if per_lane:
+                        raise ValueError(
+                            "a rank cannot mix lane nodes with a lane=None "
+                            "spanning node")
+                    column[tuple(lanes)] = _cell(spanning)
+                columns.append(column)
+            return Grid(rows=lanes, columns=columns,
+                        row_labels=self.lane_labels or None,
+                        row_gap="lg", col_gap="lg")
+
+        # direction == "down": ranks are rows, lanes are columns. Ranks are
+        # keyed by their author-given name (``rank_labels``/``rank_order`` use
+        # those names) rather than the internal integer index.
+        index_name = {self._ranks[node.id]: node.rank
+                      for node in self.nodes if node.rank is not None}
+        row_name = {rank: index_name.get(rank, str(rank)) for rank in ranks}
+        row_names = [row_name[rank] for rank in ranks]
+        columns = []
+        for lane in lanes:
+            col: dict = {}
+            for rank in ranks:
+                here = _nodes_at(rank, lane)
+                if here:
+                    col[row_name[rank]] = _cell(here)
+            if self.lane_labels and lane in self.lane_labels:
+                col["_panel"] = self.lane_labels[lane]
+            columns.append(col)
+        row_labels = None
+        if self.rank_labels:
+            row_labels = {row_name[rank]: self.rank_labels[name]
+                          for rank in ranks
+                          if (name := index_name.get(rank)) in self.rank_labels}
+        return Grid(rows=row_names, columns=columns, row_labels=row_labels,
+                    row_gap="lg", col_gap="xl")
+
+    def _build(self) -> Element:
+        if self.lanes is not None:
+            ranked = self._build_lane_grid()
+        else:
+            ranked = self._build_ranked_bands()
 
         members = {
             group.id: tuple(node.id for node in self.nodes if node.group == group.id)

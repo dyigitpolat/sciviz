@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import List, Union
 
 from ..core import BBox, Canvas, Element, Theme
-from ._row import Row
+from ._row import Row, _validate_align
 
 
 class Column(Element):
@@ -13,6 +13,14 @@ class Column(Element):
 
     Parameters
     ----------
+    align : str
+        Cross-axis (horizontal) placement of children: ``"start"``,
+        ``"center"``, ``"end"``, or ``"stretch"``. ``"stretch"`` first
+        inflates every child to the widest child's width (via
+        ``inflate_to``) so stacked siblings -- e.g. a spine of ``Card``\\ s
+        -- share one outer width, then left-aligns them; leaf children
+        that cannot grow horizontally are left at their natural width.
+        Mirrors ``Row(align="stretch")``, which stretches heights.
     equal_widths : bool
         If True, every visible child is inflated to the widest child's
         intrinsic width via :meth:`Element.inflate_to`, so siblings like
@@ -32,9 +40,11 @@ class Column(Element):
                  align: str = "center", equal_widths: bool = False):
         self.children: List[Element] = [c for c in children if c is not None]
         self.gap = gap
-        self.align = align
+        self.align = _validate_align("Column", align)
         self.equal_widths = equal_widths
         self._equalised = False
+        # Whether align="stretch" has broadcast the widest width to children.
+        self._stretched = False
         # Floor on the column's rendered width, set by ``inflate_to``.
         # Honoured in ``measure`` / ``render``; children retain their
         # alignment within the (possibly widened) column frame.
@@ -55,9 +65,10 @@ class Column(Element):
         if min_w > self._min_width:
             self._min_width = float(min_w)
             # A parent may raise the floor after our intrinsic pass. Re-run
-            # equalisation so painted children, not just the column frame,
-            # receive the new shared width.
+            # equalisation / stretching so painted children, not just the
+            # column frame, receive the new shared width.
             self._equalised = False
+            self._stretched = False
         if min_h > self._min_height:
             self._min_height = float(min_h)
 
@@ -205,12 +216,43 @@ class Column(Element):
         for c in self._visible_children():
             c.inflate_to(target, 0.0)
 
+    def _maybe_stretch_widths(self, theme: Theme) -> None:
+        """For ``align="stretch"``: grow every child to the widest child's
+        width (cross-axis stretch) so stacked siblings share one outer
+        width. Mirrors :meth:`Row._maybe_stretch_heights`; idempotent per
+        instance. Children without a width-honouring ``inflate_to`` (most
+        leaf elements) are simply left unaffected.
+
+        The target is expressed per child as *content* width plus that
+        child's own decoration (outer minus content).  Transparent
+        wrappers such as :class:`Anchor` consume part of an outer request
+        as margin -- flow-connected anchors carry side-margin bumps for
+        wire lanes -- so handing every child the same outer width would
+        leave margined cards visibly narrower than their unmargined
+        siblings.  Equalising the painted faces is the point of stretch.
+        """
+        if self.align != "stretch" or self._stretched or not self.children:
+            return
+        self._stretched = True
+        contents = [c.content_bbox(theme) for c in self.children]
+        sizes = [c.measure(theme) for c in self.children]
+        target_w = max(
+            self._min_width,
+            max((cb[2] for cb in contents), default=0.0),
+        )
+        if target_w <= 0.0:
+            return
+        for c, cb, size in zip(self.children, contents, sizes):
+            decoration = max(0.0, size.w - cb[2])
+            c.inflate_to(target_w + decoration, 0.0)
+
     def measure(self, theme: Theme) -> BBox:
         if not self.children:
             return BBox(0, 0)
         self._normalize_cross_child_shapes(theme)
         self._propagate_shared_widths(theme)
         self._maybe_equalise_widths(theme)
+        self._maybe_stretch_widths(theme)
         self._apply_height_floor(theme)
         sizes = [c.measure(theme) for c in self.children]
         visible = self._visible_children()
@@ -234,7 +276,7 @@ class Column(Element):
         to different children.  Expressing every child relative to the
         actual alignment axis gives the exact union instead.
         """
-        if self.align == "start":
+        if self.align in ("start", "stretch"):
             left = max(cb[0] for cb in content)
             right = max(size.w - cb[0]
                         for size, cb in zip(sizes, content))
@@ -252,6 +294,7 @@ class Column(Element):
         if not self.children:
             return
         self._maybe_equalise_widths(theme)
+        self._maybe_stretch_widths(theme)
         self._apply_height_floor(theme)
         # Give cross-axis stretchers (horizontal separators etc.) the
         # column's full width so they render as full-width rules.
@@ -284,7 +327,7 @@ class Column(Element):
             invisible = getattr(child, "is_layout_invisible", False)
             cb_x = cb[0]
             cb_w = cb[2]
-            if self.align == "start":
+            if self.align in ("start", "stretch"):
                 axis_x = x + left_extent
                 cx = axis_x - cb_x
             elif self.align == "end":

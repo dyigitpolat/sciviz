@@ -13,8 +13,10 @@ too but are hidden from the public API; authors reach for
 from ._arrow import Arrow, Connector
 from ._box import Box
 from ._caption import Caption
+from ._chip import Chip
 from ._condition_glyph import ConditionGlyph
 from ._cylinder import Cylinder
+from ._harvey_ball import HarveyBall
 from ._document import Document
 from ._mux import Mux
 from ._icon import Icon
@@ -34,9 +36,9 @@ from ._text import Span, Text, TextBlock
 from ._tokenrow import TokenRow
 
 __all__ = [
-    "Text", "TextBlock", "Span", "Box", "Matrix", "MatrixCell",
+    "Text", "TextBlock", "Span", "Box", "Chip", "Matrix", "MatrixCell",
     "MatrixSelection", "MatrixGroup", "ColorScale", "ColorBar", "Legend", "LegendItem",
-    "Caption", "ConditionGlyph", "Cylinder", "Document", "Mux", "TokenRow", "Icon", "Image", "Separator",
+    "Caption", "ConditionGlyph", "Cylinder", "Document", "HarveyBall", "Mux", "TokenRow", "Icon", "Image", "Separator",
     # Internal; kept for backwards-compatible intra-package imports.
     "Arrow", "Connector",
 ]

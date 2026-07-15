@@ -11,6 +11,20 @@ from typing import List, Union
 
 from ..core import BBox, Canvas, Element, Theme
 
+#: Align values understood by :class:`Row` and :class:`Column`.  Anything
+#: else used to degrade silently to centring, which shipped figures where
+#: the author believed e.g. ``align="stretch"`` was active when it wasn't.
+VALID_ALIGN = ("start", "center", "end", "stretch")
+
+
+def _validate_align(container: str, align: str) -> str:
+    if align not in VALID_ALIGN:
+        raise ValueError(
+            f"{container}(align={align!r}) is not a recognised align value; "
+            f"expected one of: {', '.join(repr(v) for v in VALID_ALIGN)}"
+        )
+    return align
+
 
 class Row(Element):
     """Horizontal container.
@@ -49,7 +63,7 @@ class Row(Element):
                  balance_outer: bool = False):
         self.children: List[Element] = [c for c in children if c is not None]
         self.gap = gap
-        self.align = align
+        self.align = _validate_align("Row", align)
         self.equal_widths = equal_widths
         self.balance_outer = bool(balance_outer)
         if self.balance_outer and self.equal_widths:

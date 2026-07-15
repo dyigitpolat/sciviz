@@ -1,10 +1,13 @@
 """Connector-label placement along multi-segment polylines.
 
 ``place_polyline_label`` generalises the single-segment placer: it
-offsets the label from whichever wire leg admits a collision-free slot,
-treats the wire's other legs as obstacles, and falls back to a
-horizontal label beside a short vertical leg when the rotated label
-cannot avoid the surrounding cards.
+offsets the label from whichever wire leg admits a collision-free slot
+and treats the wire's other legs as obstacles.  Orientation follows the
+wire, but a vertical leg only prefers the 90-degree rotated label when
+it is long enough to genuinely carry the text; short vertical hops
+prefer a horizontal label beside the wire (so sibling edges in one
+stacked spine share one reading direction), with the other orientation
+kept as a collision fallback in both cases.
 """
 from __future__ import annotations
 
@@ -58,6 +61,33 @@ def test_long_vertical_leg_keeps_rotated_label():
     path = [(50.0, 0.0), (50.0, 200.0)]
     placed = place_polyline_label(path, LBL, [], gap=3.0)
     assert placed.rotation == 90.0
+
+
+def test_short_vertical_hop_prefers_horizontal_even_in_open_space():
+    # Regression: a short vertical hop whose label is small enough that
+    # the ROTATED placement is collision-free. The old rotate-first
+    # preference let that one edge read top-to-bottom while sibling
+    # edges in the same stack (with longer labels) read left-to-right.
+    # A leg shorter than the label's rotated extent must prefer the
+    # horizontal orientation even when the rotated one would fit.
+    path = [(50.0, 30.0), (50.0, 55.0)]  # 25px hop < 40px label width
+    placed = place_polyline_label(path, LBL, [], gap=3.0)
+    assert placed.rotation == 0.0, placed
+
+
+def test_short_vertical_hop_falls_back_to_rotated_when_horizontal_blocked():
+    # When walls hem in both sides of a short hop so tightly that no
+    # horizontal slot exists (corridor narrower than the label width but
+    # wide enough for the rotated label), the rotated orientation must
+    # remain available as a fallback.
+    path = [(50.0, 30.0), (50.0, 55.0)]
+    walls = [
+        (-200.0, -200.0, 36.0, 300.0),   # wall left of the wire
+        (64.0, -200.0, 300.0, 300.0),    # wall right of the wire
+    ]
+    placed = place_polyline_label(path, LBL, walls, gap=3.0)
+    assert placed.rotation == 90.0, placed
+    assert _overlaps(placed.rect, walls) == 0.0, placed
 
 
 def test_readable_horizontal_leg_beats_longer_vertical_leg():

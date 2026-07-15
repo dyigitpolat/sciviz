@@ -393,3 +393,113 @@ def test_narrow_selection_auto_moves_label_to_side_extent_annotation():
     svg = canvas.to_svg(size.w, size.h)
     assert ">Active<" in svg and ">window<" in svg
     assert "selection-extent" in svg
+
+
+def test_wide_column_group_labels_wrap_to_their_span():
+    theme = Theme()
+    grid = [[MatrixCell(role="primary_soft") for _ in range(8)]
+            for _ in range(2)]
+    short = Matrix(
+        grid,
+        row_labels=None,
+        col_labels=None,
+        cell_size="sm",
+        col_groups=[MatrixGroup("A", 0, 4), MatrixGroup("B", 4, 8)],
+    )
+    wrapped = Matrix(
+        grid,
+        row_labels=None,
+        col_labels=None,
+        cell_size="sm",
+        col_groups=[
+            MatrixGroup("Quantization and conversion", 0, 4),
+            MatrixGroup("Mapping and architecture search", 4, 8),
+        ],
+    )
+    # Long labels must claim extra rows above the grid, not spill sideways
+    # into the neighbouring group.
+    assert wrapped._group_space(theme, "col") > short._group_space(theme, "col")
+
+    svg, _theme, _size, _canvas = _render(wrapped)
+    assert ">Quantization<" in svg or ">Quantization and<" in svg
+    assert ">search<" in svg or ">architecture search<" in svg
+    # Every rendered line fits inside a four-cell span.
+    span = 4 * wrapped._cell_px(theme) - theme.unit * 0.8
+    lines, font, _line_h = wrapped._group_label_layout(theme, "col")
+    for group_lines in lines:
+        for line in group_lines:
+            assert theme.text_width(line, "small") * (
+                font / theme.size_px("small")
+            ) <= span + 1e-6
+
+
+def test_single_line_group_labels_keep_compact_band():
+    theme = Theme()
+    matrix = Matrix(
+        [[MatrixCell(role="primary_soft") for _ in range(4)]
+         for _ in range(4)],
+        row_labels=None,
+        col_labels=None,
+        cell_size="sm",
+        row_groups=[MatrixGroup("Q", 0, 2), MatrixGroup("K", 2, 4)],
+        col_groups=[MatrixGroup("A", 0, 2), MatrixGroup("B", 2, 4)],
+    )
+    assert matrix._group_space(theme, "col") == pytest.approx(
+        theme.text_height("small") + theme.unit * 1.15
+    )
+    assert matrix._group_space(theme, "row") == pytest.approx(
+        theme.text_height("small") + theme.unit * 1.25
+    )
+
+
+def test_unbreakable_group_word_shrinks_shared_font_with_floor():
+    theme = Theme()
+    matrix = Matrix(
+        [[MatrixCell(role="primary_soft") for _ in range(2)]
+         for _ in range(2)],
+        row_labels=None,
+        col_labels=None,
+        cell_size="sm",
+        col_groups=[MatrixGroup("Hyperparameterization", 0, 2)],
+    )
+    _lines, font, _line_h = matrix._group_label_layout(theme, "col")
+    assert font < theme.size_px("small")
+    assert font >= theme.size_px("micro")
+
+
+def test_multiline_row_labels_render_muted_tiny_sublabels():
+    grid = [[MatrixCell() for _ in range(2)] for _ in range(2)]
+    matrix = Matrix(
+        grid,
+        row_labels=["Fan-out per core\nLoihi: 4096 edges", "Weight precision"],
+        col_labels=None,
+        cell_size="sm",
+    )
+    svg, theme, _size, _canvas = _render(matrix)
+
+    assert ">Fan-out per core<" in svg and ">Loihi: 4096 edges<" in svg
+    # Sublabel renders at the tiny size in the faint text colour; the main
+    # line keeps the usual small size and light colour.
+    tiny, small = theme.size_px("tiny"), theme.size_px("small")
+    assert f'font-size="{tiny:g}"' in svg
+    assert theme.color_of("faint") in svg
+    assert theme.color_of("light") in svg
+    assert small != tiny
+
+
+def test_multiline_row_label_space_counts_widest_line_at_its_own_size():
+    theme = Theme()
+    grid = [[MatrixCell() for _ in range(2)] for _ in range(2)]
+    plain = Matrix(grid, row_labels=["A", "B"], col_labels=None,
+                   cell_size="sm")
+    sub = Matrix(
+        grid,
+        row_labels=["A\na very long grounding sublabel", "B"],
+        col_labels=None,
+        cell_size="sm",
+    )
+    assert sub._label_space(theme, "row") == pytest.approx(
+        theme.text_width("a very long grounding sublabel", "tiny")
+        + theme.unit
+    )
+    assert sub.measure(theme).w > plain.measure(theme).w

@@ -107,12 +107,124 @@ def test_series_delta_interpolates_and_draws_directed_relation():
     assert ">3×<" in svg and ">lower<" in svg
 
 
+def test_series_delta_stops_at_target_marker_edge():
+    """The delta arrowhead must land on the target marker's edge, not
+    its centre, so it never occludes the data point."""
+    import re
+
+    def arrow_end_y(marked: bool) -> float:
+        chart = LineChart(
+            [
+                Series([(0, 0.2), (1, 0.2)], label="low"),
+                Series([(0, 0.9), (1, 0.9)], label="high",
+                       marker="diamond" if marked else None,
+                       marker_size="md"),
+            ],
+            deltas=[SeriesDelta(x=0.5, source="low", target="high",
+                                label="up")],
+        )
+        canvas = Canvas()
+        chart.render(canvas, 0, 0, DEFAULT_THEME)
+        svg = canvas.to_svg(500, 300)
+        m = re.search(r'<line [^>]*y2="([0-9.]+)"[^>]*marker-end', svg)
+        assert m is not None
+        return float(m.group(1))
+
+    # Arrow points upward (smaller y). With a marker on the target the
+    # arrow must stop short -- at a larger y than the marker centre.
+    assert arrow_end_y(marked=True) > arrow_end_y(marked=False)
+
+
 def test_series_delta_rejects_unknown_series():
     with pytest.raises(ValueError):
         LineChart(
             [Series([(0, 0), (1, 1)], label="known")],
             deltas=[SeriesDelta(1, "known", "missing", "delta")],
         )
+
+
+def test_series_hollow_marker_uses_background_fill():
+    chart = LineChart(
+        series=[Series(points=[(0, 0), (1, 1)], marker="circle",
+                       marker_fill="hollow", color="blue")],
+        x_range=(0, 1), y_range=(0, 1),
+    )
+    c = Canvas()
+    chart.render(c, 0, 0, DEFAULT_THEME)
+    svg = c.to_svg(400, 300)
+    bg = DEFAULT_THEME.color_of("bg")
+    blue = DEFAULT_THEME.color_of("blue")
+    # Hollow markers: background fill, series-colour outline.
+    assert f'fill="{bg}" stroke="{blue}"' in svg
+
+
+def test_series_show_line_false_draws_markers_only():
+    chart = LineChart(
+        series=[Series(points=[(0, 0), (0.5, 0.5), (1, 1)], marker="circle",
+                       show_line=False)],
+        x_range=(0, 1), y_range=(0, 1),
+    )
+    c = Canvas()
+    chart.render(c, 0, 0, DEFAULT_THEME)
+    svg = c.to_svg(400, 300)
+    assert svg.count("<path ") == 0        # no connecting polyline
+    assert svg.count("<circle") == 3       # one marker per point
+
+
+def test_series_marker_only_legend_sample_has_no_line():
+    chart = LineChart(
+        series=[Series(points=[(0, 0), (1, 1)], marker="circle",
+                       show_line=False, label="derived")],
+        x_range=(0, 1), y_range=(0, 1),
+        legend="right",
+    )
+    c = Canvas()
+    chart.render(c, 0, 0, DEFAULT_THEME)
+    svg = c.to_svg(500, 300)
+    assert ">derived<" in svg
+    # The chart body draws only axes/grid <line> elements; the legend
+    # sample for a marker-only series must not add a sample stroke line
+    # beyond the marker itself, so markers = points + legend sample.
+    assert svg.count("<circle") == 3
+
+
+def test_series_rejects_bad_marker_fill():
+    with pytest.raises(ValueError):
+        LineChart(series=[Series(points=[(0, 0), (1, 1)],
+                                 marker="circle", marker_fill="open")])
+
+
+def test_annotate_dot_false_suppresses_anchor_dot():
+    chart = LineChart(
+        series=[Series(points=[(0, 0), (1, 1)])],
+        x_range=(0, 1), y_range=(0, 1),
+        annotations=[Annotate(x=0.5, y=0.5, text="pinned", dot=False)],
+    )
+    c = Canvas()
+    chart.render(c, 0, 0, DEFAULT_THEME)
+    svg = c.to_svg(400, 300)
+    assert "pinned" in svg
+    assert "<circle" not in svg
+
+
+def test_rotated_y_label_ink_is_tracked():
+    """The rotated y-axis title must feed the ink bbox, or auto-trim
+    (Diagram.for_paper) crops it off the left edge."""
+    chart = LineChart(
+        series=[Series(points=[(0, 0), (1, 1)])],
+        x_range=(0, 1), y_range=(0, 1),
+        y_label="membrane share (%)",
+    )
+    c = Canvas()
+    chart.render(c, 0, 0, DEFAULT_THEME)
+    assert c.ink_bbox is not None
+    x0 = c.ink_bbox[0]
+    # Without the label, ink starts at the tick labels (> 10px in). The
+    # rotated title sits further left, so tracked ink must reach there.
+    c2 = Canvas()
+    LineChart(series=[Series(points=[(0, 0), (1, 1)])],
+              x_range=(0, 1), y_range=(0, 1)).render(c2, 0, 0, DEFAULT_THEME)
+    assert x0 < c2.ink_bbox[0]
 
 
 def test_line_chart_log_scale():
