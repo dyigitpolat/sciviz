@@ -182,16 +182,30 @@ class _FlowResolver(Element):
             elif isinstance(spec, Bus):
                 label_mul = 1.6 if spec.label else 1.0
                 bump = m * label_mul
+                # Arrowheads land on the SINKS, and the gap one arrows
+                # into must be able to hold a visible arrow: head plus
+                # shaft. Without this floor the spine lands a point or
+                # two from the sink's edge and the fan-in terminates in
+                # a triangle glued to the border. Sources carry no head,
+                # so they keep the thin spine clearance -- reserving the
+                # stub on every member would pay for arrows that are
+                # never drawn.
+                stub = theme.arrow_stub_px if spec.arrow else 0.0
                 if spec.orientation == "auto":
                     light = m * (0.6 if spec.label else 0.3)
                     sides = ("top", "bottom", "left", "right")
-                    for name in list(spec.sources) + list(spec.sinks):
+                    for name in spec.sources:
                         a = anchors.get(name)
-                        if a is None:
-                            continue
-                        for side in sides:
-                            a._bump_margin(side, light)
+                        if a is not None:
+                            for side in sides:
+                                a._bump_margin(side, light)
+                    for name in spec.sinks:
+                        a = anchors.get(name)
+                        if a is not None:
+                            for side in sides:
+                                a._bump_margin(side, max(light, stub))
                 elif spec.orientation == "horizontal":
+                    sink_bump = max(bump, stub)
                     for name in spec.sources:
                         a = anchors.get(name)
                         if a is None:
@@ -202,9 +216,10 @@ class _FlowResolver(Element):
                         a = anchors.get(name)
                         if a is None:
                             continue
-                        a._bump_margin("left", bump)
-                        a._bump_margin("right", bump)
+                        a._bump_margin("left", sink_bump)
+                        a._bump_margin("right", sink_bump)
                 else:  # vertical
+                    sink_bump = max(bump, stub)
                     for name in spec.sources:
                         a = anchors.get(name)
                         if a is None:
@@ -215,8 +230,8 @@ class _FlowResolver(Element):
                         a = anchors.get(name)
                         if a is None:
                             continue
-                        a._bump_margin("top", bump)
-                        a._bump_margin("bottom", bump)
+                        a._bump_margin("top", sink_bump)
+                        a._bump_margin("bottom", sink_bump)
 
     def measure(self, theme: Theme) -> BBox:
         self._apply_flow_margins(theme)

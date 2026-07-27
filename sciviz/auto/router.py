@@ -112,6 +112,15 @@ class CrossPolicy:
     stub so the arrow visibly leaves the box rather than terminating
     flush against it.
 
+    ``head_len`` is the length the arrowhead marker will occupy along
+    that stub.  An arrowhead drawn on a stub no longer than itself
+    reads as a triangle glued to the border, not as an arrow arriving:
+    the shaft has to be visible behind the head.  The planner therefore
+    treats ``min_tap + head_len`` as the endpoint's stub floor wherever
+    a head is drawn, so the buffer scales with the theme's arrow size
+    instead of being a constant that silently stops working when the
+    marker grows.
+
     The planner is strictly orthogonal: opposite-face endpoints with
     a non-zero parallel-axis misalignment are always routed via a
     two-corner Z, never as a diagonal segment. The historical
@@ -119,6 +128,7 @@ class CrossPolicy:
     compatibility with callers that still pass it -- it is now ignored.
     """
     min_tap: float = 4.0
+    head_len: float = 0.0
     prefer_fewer_corners: bool = True
     corner_radius: float = 0.0
     tolerance: float = 0.5
@@ -140,6 +150,7 @@ def plan_path(src: Endpoint, dst: Endpoint, *,
               policy: CrossPolicy = DEFAULT_POLICY,
               label_extent: Optional[Tuple[float, float]] = None,
               label_gap: float = 6.0,
+              label_rotatable: bool = False,
               owner: str = "") -> Plan:
     """Compute an orthogonal path from ``src`` to ``dst``.
 
@@ -198,7 +209,8 @@ def plan_path(src: Endpoint, dst: Endpoint, *,
         plan = _plan_path_impl(src, dst, anchors=anchors, regions=regions,
                                existing_segments=existing_segments,
                                policy=policy, obstacle_pad=pad,
-                               label_extent=extent, label_gap=label_gap)
+                               label_extent=extent, label_gap=label_gap,
+                               label_rotatable=label_rotatable)
         if plan is not None:
             _emit_route(owner, src, dst, anchors, regions, plan,
                         retried_without_clearance=retried,
@@ -208,7 +220,8 @@ def plan_path(src: Endpoint, dst: Endpoint, *,
     plan = _plan_path_impl(src, dst, anchors=anchors, regions=regions,
                            existing_segments=existing_segments,
                            policy=policy, obstacle_pad=0.0,
-                           label_extent=None, label_gap=label_gap)
+                           label_extent=None, label_gap=label_gap,
+                           label_rotatable=label_rotatable)
     assert plan is not None, "planner failed to return a path"
     _emit_route(owner, src, dst, anchors, regions, plan,
                 retried_without_clearance=retried,
@@ -255,7 +268,8 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
                     policy: CrossPolicy,
                     obstacle_pad: float,
                     label_extent: Optional[Tuple[float, float]] = None,
-                    label_gap: float = 6.0) -> Optional[Plan]:
+                    label_gap: float = 6.0,
+                    label_rotatable: bool = False) -> Optional[Plan]:
     tol = policy.tolerance
 
     src_anchor = src.anchor
@@ -368,7 +382,7 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
             return False
         if label_extent is not None and not _label_home_exists(
                 path, label_extent, label_gap, raw_obstacles,
-                src_anchor, dst_anchor, tol):
+                src_anchor, dst_anchor, tol, label_rotatable):
             # An arm too short (or too boxed-in) to carry its own
             # caption makes the whole candidate invalid: labels are
             # part of the route contract, not an afterthought.
@@ -424,29 +438,73 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
     #     in a different slab can replace one whose candidate path
     #     happens to be blocked by a two-dimensional obstacle layout
     #     that the 1-D free-interval filter does not see.
-    if src_dir[0] == 0 and dst_dir[0] == 0:
-        for bridge_y in _bridge_y_candidates(
-                src_tap, dst_tap, src_dir, dst_dir, sx, dx, obstacles,
-                forbidden_regions, src_anchor, dst_anchor,
-                required_region_names, tol):
-            cand = [(sx, sy), src_tap,
-                    (sx, bridge_y), (dx, bridge_y),
-                    dst_tap, (dx, dy)]
+    # Taking the FIRST clean bridge here is what made a long run cut
+    # straight through a short one parked in the shallow lane: the
+    # shallowest bridge is always "clean" in the obstacle sense, so the
+    # search stopped before it ever asked what the route would cross.
+    # Same-side pairs also contribute their common-lane ladder, so a
+    # deeper lane is genuinely on the table.
+    def _best_bridge(cands):
+        """The preferred bridge, unless a proportionate one crosses less.
+
+        The generators emit candidates in a deliberate preference order,
+        so the first clean one is the baseline and is kept whenever it is
+        already crossing-free -- the historical behaviour, unchanged.
+        Taking that baseline unconditionally is what made a long run cut
+        through a short one parked in the shallow lane: the search
+        stopped before asking what the route would cross. So a later
+        candidate may win, but only by strictly removing crossings and
+        only while its detour stays within
+        :data:`_MAX_DETOUR_RATIO` of the baseline's length -- dodging a
+        wire is worth a longer arm, never an excursion.
+        """
+        baseline = None
+        best = None
+        for cand in cands:
             cand = _simplify(cand, tol)
-            if clean(cand):
-                return Plan(cand, crossings, "U", src_side, dst_side)
+            if not clean(cand):
+                continue
+            cross = _crossing_count(cand, existing_segments, tol)
+            length = _path_length(cand)
+            if baseline is None:
+                baseline = (cross, length, cand)
+                best = baseline
+                if cross == 0:
+                    break
+                continue
+            if cross < best[0] and length <= baseline[1] * _MAX_DETOUR_RATIO:
+                best = (cross, length, cand)
+                if cross == 0:
+                    break
+        return best[2] if best is not None else None
+
+    if src_dir[0] == 0 and dst_dir[0] == 0:
+        bridges = list(_bridge_y_candidates(
+            src_tap, dst_tap, src_dir, dst_dir, sx, dx, obstacles,
+            forbidden_regions, src_anchor, dst_anchor,
+            required_region_names, tol))
+        if src_dir[1] == dst_dir[1] and src_dir[1] != 0:
+            bridges += _common_lane_candidates(
+                src_tap[1], dst_tap[1], src_dir[1], sx, dx,
+                existing_segments, policy)
+        cand = _best_bridge([[(sx, sy), src_tap, (sx, b), (dx, b),
+                              dst_tap, (dx, dy)] for b in bridges])
+        if cand is not None:
+            return Plan(cand, crossings, "U", src_side, dst_side)
 
     if src_dir[1] == 0 and dst_dir[1] == 0:
-        for bridge_x in _bridge_x_candidates(
-                src_tap, dst_tap, src_dir, dst_dir, sy, dy, obstacles,
-                forbidden_regions, src_anchor, dst_anchor,
-                required_region_names, tol):
-            cand = [(sx, sy), src_tap,
-                    (bridge_x, sy), (bridge_x, dy),
-                    dst_tap, (dx, dy)]
-            cand = _simplify(cand, tol)
-            if clean(cand):
-                return Plan(cand, crossings, "U", src_side, dst_side)
+        bridges = list(_bridge_x_candidates(
+            src_tap, dst_tap, src_dir, dst_dir, sy, dy, obstacles,
+            forbidden_regions, src_anchor, dst_anchor,
+            required_region_names, tol))
+        if src_dir[0] == dst_dir[0] and src_dir[0] != 0:
+            bridges += _common_lane_candidates(
+                src_tap[0], dst_tap[0], src_dir[0], sy, dy,
+                existing_segments, policy, axis="x")
+        cand = _best_bridge([[(sx, sy), src_tap, (b, sy), (b, dy),
+                              dst_tap, (dx, dy)] for b in bridges])
+        if cand is not None:
+            return Plan(cand, crossings, "U", src_side, dst_side)
 
     # 2b. Mixed-direction single corner: one axis exit and one axis
     #     entry.  Both elbow positions were already tried above, but we
@@ -468,31 +526,7 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
     #    segments the candidate crosses -- paths that avoid going over
     #    already-drawn connectors are preferred when length is similar.
     def _count_crossings(cand: Sequence[Tuple[float, float]]) -> int:
-        if not existing_segments:
-            return 0
-        n = 0
-        for i in range(len(cand) - 1):
-            ax, ay = cand[i]; bx, by = cand[i + 1]
-            horiz = abs(ay - by) < tol
-            vert = abs(ax - bx) < tol
-            if horiz == vert:
-                continue
-            for (ex1, ey1, ex2, ey2) in existing_segments:
-                eh = abs(ey1 - ey2) < tol
-                ev = abs(ex1 - ex2) < tol
-                if eh == ev:
-                    continue
-                if horiz and ev:
-                    x_lo, x_hi = sorted((ax, bx))
-                    y_lo, y_hi = sorted((ey1, ey2))
-                    if x_lo < ex1 < x_hi and y_lo < ay < y_hi:
-                        n += 1
-                elif vert and eh:
-                    y_lo, y_hi = sorted((ay, by))
-                    x_lo, x_hi = sorted((ex1, ex2))
-                    if y_lo < ey1 < y_hi and x_lo < ax < x_hi:
-                        n += 1
-        return n
+        return _crossing_count(cand, existing_segments, tol)
 
     def _score(cand: Sequence[Tuple[float, float]]) -> float:
         length = 0.0
@@ -520,7 +554,7 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
             return False
         if label_extent is not None and not _label_home_exists(
                 cand, label_extent, label_gap, raw_obstacles,
-                src_anchor, dst_anchor, tol):
+                src_anchor, dst_anchor, tol, label_rotatable):
             return False
         return True
 
@@ -549,6 +583,28 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
                     if score < best_score:
                         best_score = score
                         best_cand = cand
+        # Same-side pairs (both stubs leaving downward, or both upward)
+        # also get COMMON-LANE candidates: extend both stubs to a shared
+        # depth and cross the gap on one straight run. The two-depth Z
+        # above is forced to step between the endpoints' own tap depths,
+        # which is exactly what drives a long run through whatever
+        # shorter wire already occupies the shallow lane. Offering
+        # deeper lanes lets the crossing term in ``_score`` buy its way
+        # around an obstruction with a longer outgoing arm -- the fix a
+        # human would make by hand.
+        if src_dir[1] == dst_dir[1] and src_dir[1] != 0:
+            for lane_y in _common_lane_candidates(
+                    src_tap[1], dst_tap[1], src_dir[1],
+                    src_tap[0], dst_tap[0],
+                    existing_segments, policy):
+                cand = [(sx, sy), (src_tap[0], lane_y),
+                        (dst_tap[0], lane_y), (dx, dy)]
+                cand = _simplify(cand, tol)
+                if _ok_stair(cand):
+                    score = _score(cand)
+                    if score < best_score:
+                        best_score = score
+                        best_cand = cand
     elif src_dir[1] == 0 and dst_dir[1] == 0:
         bridge_x_cands = _bridge_x_candidates(
             src_tap, dst_tap, src_dir, dst_dir,
@@ -566,6 +622,22 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
                 cand = [(sx, sy), src_tap,
                         (src_tap[0], bridge_y), (dst_tap[0], bridge_y),
                         dst_tap, (dx, dy)]
+                cand = _simplify(cand, tol)
+                if _ok_stair(cand):
+                    score = _score(cand)
+                    if score < best_score:
+                        best_score = score
+                        best_cand = cand
+        # Common-lane candidates for two stubs leaving the same way
+        # (both left, or both right) -- the horizontal mirror of the
+        # vertical case above.
+        if src_dir[0] == dst_dir[0] and src_dir[0] != 0:
+            for lane_x in _common_lane_candidates(
+                    src_tap[0], dst_tap[0], src_dir[0],
+                    src_tap[1], dst_tap[1],
+                    existing_segments, policy, axis="x"):
+                cand = [(sx, sy), (lane_x, src_tap[1]),
+                        (lane_x, dst_tap[1]), (dx, dy)]
                 cand = _simplify(cand, tol)
                 if _ok_stair(cand):
                     score = _score(cand)
@@ -768,6 +840,126 @@ def _region_ancestors(anchor: Box, regions: Sequence[Box]) -> List[Box]:
 
 
 # ---------------------------------------------------------------------------
+# Crossing arithmetic
+# ---------------------------------------------------------------------------
+
+def _crossing_count(path: Sequence[Tuple[float, float]],
+                    existing_segments: Sequence[
+                        Tuple[float, float, float, float]],
+                    tol: float) -> int:
+    """How many already-drawn wires ``path`` cuts across."""
+    if not existing_segments:
+        return 0
+    n = 0
+    for i in range(len(path) - 1):
+        ax, ay = path[i]
+        bx, by = path[i + 1]
+        horiz = abs(ay - by) < tol
+        vert = abs(ax - bx) < tol
+        if horiz == vert:
+            continue
+        for (ex1, ey1, ex2, ey2) in existing_segments:
+            eh = abs(ey1 - ey2) < tol
+            ev = abs(ex1 - ex2) < tol
+            if eh == ev:
+                continue
+            if horiz and ev:
+                x_lo, x_hi = sorted((ax, bx))
+                y_lo, y_hi = sorted((ey1, ey2))
+                if x_lo < ex1 < x_hi and y_lo < ay < y_hi:
+                    n += 1
+            elif vert and eh:
+                y_lo, y_hi = sorted((ay, by))
+                x_lo, x_hi = sorted((ex1, ex2))
+                if y_lo < ey1 < y_hi and x_lo < ax < x_hi:
+                    n += 1
+    return n
+
+
+def _path_length(path: Sequence[Tuple[float, float]]) -> float:
+    return sum(abs(path[i + 1][0] - path[i][0])
+               + abs(path[i + 1][1] - path[i][1])
+               for i in range(len(path) - 1))
+
+
+# ---------------------------------------------------------------------------
+# Same-side common lanes
+# ---------------------------------------------------------------------------
+
+#: How much longer than the preferred route a crossing-avoiding
+#: alternative may be. Dodging a wire is worth a longer arm; it is not
+#: worth an excursion across the page.
+_MAX_DETOUR_RATIO = 2.0
+
+#: How far past the deepest stub a common lane may sit, as a multiple of
+#: one lane step. The planner's crossing penalty is deliberately huge, so
+#: an unbounded ladder would let it buy a page-long excursion to dodge a
+#: single wire; a detour has to stay a detour.
+_MAX_LANE_STEPS = 4
+
+
+def _common_lane_candidates(src_depth: float, dst_depth: float,
+                            sign: int,
+                            span_lo: float, span_hi: float,
+                            existing_segments: Sequence[
+                                Tuple[float, float, float, float]],
+                            policy: CrossPolicy,
+                            axis: str = "y") -> List[float]:
+    """Shared depths at which two same-side stubs can meet on one run.
+
+    Two endpoints leaving their boxes the same way (both downward, say)
+    can be joined by extending both stubs to a common depth and crossing
+    the gap on one straight segment. Which depth is right depends on
+    what is already there, so this offers a short ladder: the shallowest
+    lane that clears both stubs, a few steps deeper, and a lane just
+    past any wire already drawn *across this span*.
+
+    Two bounds keep the ladder honest. Only wires that actually overlap
+    the span between the two endpoints are worth clearing -- a wire
+    elsewhere in the figure is not in the way. And no lane may sit more
+    than :data:`_MAX_LANE_STEPS` steps past the deepest stub, so the
+    crossing term can buy a longer outgoing arm but never an excursion.
+    """
+    step = max(policy.min_clearance, policy.min_tap * 2.0, 6.0)
+    start = max(src_depth * sign, dst_depth * sign)
+    # Two reaches. Speculative lanes -- offered even with nothing in the
+    # way -- stay within a few steps, because a detour nobody asked for
+    # should be small. Lanes derived from a wire that genuinely crosses
+    # this span may go as deep as that wire, bounded by the span itself:
+    # routing under an obstruction is worth a proportionate arm, and the
+    # span bound keeps "proportionate" tied to the figure's own scale
+    # rather than to an absolute constant that stops working when the
+    # diagram grows.
+    reach = step * _MAX_LANE_STEPS
+    lo, hi = min(span_lo, span_hi), max(span_lo, span_hi)
+    obstructed_reach = max(reach, 0.5 * (hi - lo))
+    lanes = [start + step * k for k in range(0, _MAX_LANE_STEPS + 1)]
+    for (x1, y1, x2, y2) in existing_segments:
+        if axis == "y" and abs(y1 - y2) <= 0.5:
+            seg_lo, seg_hi = sorted((x1, x2))
+            depth = y1 * sign
+        elif axis == "x" and abs(x1 - x2) <= 0.5:
+            seg_lo, seg_hi = sorted((y1, y2))
+            depth = x1 * sign
+        else:
+            continue
+        if seg_hi < lo or seg_lo > hi:
+            continue                      # not across our span at all
+        candidate = depth + step
+        if start <= candidate <= start + obstructed_reach:
+            lanes.append(candidate)
+    seen: set = set()
+    out: List[float] = []
+    for lane in sorted(lanes):
+        key = round(lane, 2)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(lane * sign)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Tap clamping
 # ---------------------------------------------------------------------------
 
@@ -804,15 +996,15 @@ def _clamp_tap(anchor: Box, direction: Tuple[int, int],
         limit = nearest - edge - 2 if nearest is not None else base_tap
     else:
         limit = base_tap
-    # ``min_tap`` is the visible-stub floor: we'd like at least this
-    # much perpendicular travel so the arrow visibly leaves the
-    # anchor's edge. ``base_tap`` is the configured/desired stub. The
-    # obstacle ``limit`` is a hard cap (the stub cannot impale a
-    # neighbour). The final stub is the largest of ``min_tap`` and
-    # whatever the geometry allows -- never exceeding the geometric
-    # limit, never going negative.
+    # ``base_tap`` is the configured/desired stub and the obstacle
+    # ``limit`` caps how much of it the geometry can afford. The
+    # visible floor then wins over that cap: a stub crowded to nothing
+    # by a close neighbour produces an arrowhead sitting flush on the
+    # border with no shaft behind it, which stops reading as a
+    # connector at all. Coming a few points nearer a neighbour is a far
+    # smaller defect than an invisible arrow, so the floor is a floor.
     geometry_upper = max(0.0, min(base_tap, limit))
-    visible_floor = min(policy.min_tap, geometry_upper)
+    visible_floor = policy.min_tap + max(0.0, policy.head_len)
     return max(visible_floor, geometry_upper)
 
 
@@ -1289,7 +1481,8 @@ def _label_home_exists(path: Sequence[Tuple[float, float]],
                        gap: float,
                        obstacles: Sequence[Box],
                        src_anchor: Box, dst_anchor: Box,
-                       tol: float) -> bool:
+                       tol: float,
+                       rotatable: bool = False) -> bool:
     """Can some arm of ``path`` carry a caption of ``extent`` = (w, h)?
 
     The caption may sit beside a horizontal arm (above/below), beside a
@@ -1299,6 +1492,13 @@ def _label_home_exists(path: Sequence[Tuple[float, float]],
     along-axis extent plus a ``gap`` at each end, and the caption
     rectangle must not cover any real obstacle (including the route's
     own endpoints).
+
+    ``rotatable`` says the placer is willing to turn this caption 90
+    degrees (single-line captions only). The planner must know: if it
+    judges homes by the horizontal form alone while the layout reserved
+    corridor for the rotated one, every short candidate is rejected and
+    the route escapes into open space to find an arm long enough for
+    text that was never going to be set that way.
     """
     w, h = extent
     if w <= 0.0 or h <= 0.0:
@@ -1325,6 +1525,10 @@ def _label_home_exists(path: Sequence[Tuple[float, float]],
         forms = []
         if horiz:
             forms.append((w, w, h, "y"))          # beside / on a horizontal arm
+            if rotatable:
+                # Rotated caption beside a horizontal arm: it needs only
+                # its line height along the wire and its length across.
+                forms.append((h, h, w, "y"))
         else:
             forms.append((h, w, h, "x"))          # horizontal text beside a vertical arm
             forms.append((w, h, w, "x"))          # rotated along a vertical arm

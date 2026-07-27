@@ -1188,8 +1188,30 @@ loop winds; `shape="auto"` enters the reflow search, a pinned
 `(rows, cols)` opts out. Pre-wrapped `Anchor` children keep their names
 so feedback connectors declared elsewhere can address any stage.
 
-Corridor economics are worth knowing before writing edge labels: a
-caption on a *facing* pair (a right side toward a left side) reserves
-half its **width** on both cards, while a caption on a top/bottom pair
-reserves half its **height**. Words on side-by-side hand-offs are
-therefore the most expensive words in a wide figure.
+Corridor economics are worth knowing before writing edge labels. A
+caption on a top/bottom pair reserves half its **height** on both
+cards. On a *facing* pair (a right side toward a left side) a
+**single-line** caption is costed at the cheaper of its two
+orientations, because the placer will rotate it into a narrow corridor
+rather than lose it; a multi-line caption stays horizontal (a rotated
+block reads as parallel columns of tilted text) and so reserves half
+its width. The practical rule: keep hand-off captions to one line and
+they stay cheap in any direction. Never delete words to make a figure
+fit -- if a caption cannot be placed, that is a layout bug worth
+reporting, not an editorial decision.
+
+Two connector rules the router enforces so wires read as wires:
+
+- **Arrow stubs.** Every arrowed endpoint keeps a stub longer than the
+  arrowhead drawn on it (`Theme.arrow_stub_px`, derived from
+  `arrow_size` and the connector stroke). A head sitting flush on a
+  border reads as a triangle glued to a box, so this is a floor even
+  when a neighbour crowds the endpoint. Bus spines honour the same
+  floor for the edge they arrow into.
+- **Crossings are chosen, not stumbled into.** When two endpoints leave
+  their boxes the same way, the planner also considers common lanes at
+  increasing depth, and prefers the shallowest bridge unless a
+  proportionate alternative strictly removes a crossing. A long run
+  will take a longer outgoing arm to pass under a short one rather than
+  cut through it -- but a detour stays a detour, bounded relative to the
+  preferred route.

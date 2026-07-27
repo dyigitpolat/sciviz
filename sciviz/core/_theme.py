@@ -115,6 +115,13 @@ class Theme:
     # consistent regardless of which connector primitive draws it.
     arrow_size: float = 3.6
 
+    # Shaft left visible behind an arrowhead, as a multiple of the head's
+    # own length. An arrowhead drawn on a stub no longer than itself
+    # reads as a triangle glued to the border rather than as an arrow
+    # arriving somewhere; connectors reserve head + this much shaft at
+    # every end that carries a marker.
+    arrow_shaft_ratio: float = 0.8
+
     # Connector caption size token. Routed-flow labels read at this size;
     # dense multi-panel overview figures may override it down one step
     # (e.g. "tiny") so edge captions stay subordinate to node labels.
@@ -197,6 +204,27 @@ class Theme:
         "micro": "font_micro",
         "math": "font_math",
     }
+
+    @property
+    def arrow_head_px(self) -> float:
+        """Length an arrowhead occupies along its shaft.
+
+        SVG marker units are stroke widths, so the drawn head is the
+        marker size times the connector's stroke weight. Deriving it
+        here keeps the geometry in one place: a theme that grows its
+        arrows automatically grows the stubs that must carry them.
+        """
+        return float(self.arrow_size) * float(self.connector)
+
+    @property
+    def arrow_stub_px(self) -> float:
+        """Shortest endpoint stub on which an arrow still reads as one.
+
+        The head plus a visible run of shaft behind it. Routers use this
+        as the floor for their perpendicular stubs, and bus spines use
+        it as the minimum clearance from the edge they arrow into.
+        """
+        return self.arrow_head_px * (1.0 + max(0.0, self.arrow_shaft_ratio))
 
     def size_px(self, size: Union[str, float]) -> float:
         """Resolve a semantic size name (``"label"``) or a raw px value to px."""

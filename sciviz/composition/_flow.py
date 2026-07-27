@@ -30,7 +30,8 @@ def _draw_placed_label(canvas: Canvas, placed, text: str, size_px: float,
     x0, y0, x1, y1 = placed.rect
     cx = (x0 + x1) / 2.0
     cy = (y0 + y1) / 2.0
-    if getattr(placed, "inline", False) and halo_fill is not None:
+    if halo_fill is not None and (getattr(placed, "inline", False)
+                                  or getattr(placed, "overlapped", False)):
         pad = max(1.5, size_px * 0.2)
         canvas.rect(x0 - pad, y0 - pad,
                     (x1 - x0) + 2 * pad, (y1 - y0) + 2 * pad,
@@ -258,19 +259,30 @@ class Flow:
             dst_frac = getattr(self, "_share_dst_frac", 0.5)
             drawn_so_far = registry.get("__drawn_segments__", ())
             from dataclasses import replace as _dc_replace
+            # The planner must know how much of each stub the
+            # arrowhead will eat, or a marker crowded against a
+            # neighbouring box ends up with no visible shaft behind it.
             policy = _dc_replace(_rt.DEFAULT_POLICY,
-                                 min_clearance=self._clearance_px(theme))
+                                 min_clearance=self._clearance_px(theme),
+                                 head_len=theme.arrow_head_px)
             # A labeled wire is only valid when some arm can carry its
             # caption; hand the measured caption box to the planner so
             # short-armed candidates are rejected while alternatives
             # exist.
             label_extent = None
+            label_rotatable = False
             if self.label:
                 from ..auto.labels import measure_label as _measure_label
                 _probe = _measure_label(
                     self.label, theme,
                     getattr(theme, "connector_label_size", "small"))
                 label_extent = (_probe.width, _probe.height)
+                # Single lines may be rotated by the placer; blocks are
+                # never set as columns of tilted text. The planner has to
+                # judge homes by the same rule the placer will apply, or
+                # the two disagree and the route runs away looking for an
+                # arm the caption does not need.
+                label_rotatable = len(_probe.lines) == 1
             plan = _rt.plan_path(
                 _rt.Endpoint(src_box, src_side, tap=tap,
                              tap_fraction=src_frac),
@@ -282,6 +294,7 @@ class Flow:
                 policy=policy,
                 label_extent=label_extent,
                 label_gap=theme.unit,
+                label_rotatable=label_rotatable,
             )
 
             # Retain `anchor_obstacles` for label-placement collision
@@ -549,6 +562,14 @@ def label_corridor_reservation(spec, theme: Theme, side: str,
     Multi-line captions (``"\\n"``) measure as blocks, so authors keep
     corridors compact by breaking long captions instead of the layout
     growing to fit one long line.
+
+    A single-line caption on a facing left/right pair is costed at the
+    cheaper of its two orientations, because the placer will rotate it
+    into a narrow corridor rather than lose it. Reserving the full
+    horizontal length there is what makes side-by-side hand-offs
+    ruinously expensive in wide figures -- expensive enough that authors
+    start deleting words to fit, which is a layout failure wearing an
+    editorial disguise.
     """
     label = getattr(spec, "label", None)
     if not label:
@@ -561,6 +582,8 @@ def label_corridor_reservation(spec, theme: Theme, side: str,
     vertical_pair = {side, other_side} == {"top", "bottom"}
     if horizontal_pair and side in ("left", "right"):
         along = lbl.width
+        if len(lbl.lines) == 1:
+            along = min(along, lbl.height)
     elif vertical_pair and side in ("top", "bottom"):
         along = lbl.height
     else:

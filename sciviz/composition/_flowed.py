@@ -117,6 +117,9 @@ class Flowed(Element):
                 # a label.
                 label_mul = 1.6 if flow.label else 1.0
                 bump = m * label_mul
+                # Arrowheads land on the sinks; only those need room for
+                # a head plus a visible shaft.
+                stub = theme.arrow_stub_px if flow.arrow else 0.0
                 if flow.orientation == "auto":
                     # Unlabelled buses need only a thin gap for the spine,
                     # and we can't predict orientation yet -- bump every
@@ -124,13 +127,18 @@ class Flowed(Element):
                     # some room, but don't spread the whole diagram.
                     light = m * (0.6 if flow.label else 0.3)
                     sides = ("top", "bottom", "left", "right")
-                    for name in list(flow.sources) + list(flow.sinks):
+                    for name in flow.sources:
                         a = anchors.get(name)
-                        if a is None:
-                            continue
-                        for side in sides:
-                            a._bump_margin(side, light)
+                        if a is not None:
+                            for side in sides:
+                                a._bump_margin(side, light)
+                    for name in flow.sinks:
+                        a = anchors.get(name)
+                        if a is not None:
+                            for side in sides:
+                                a._bump_margin(side, max(light, stub))
                 elif flow.orientation == "horizontal":
+                    sink_bump = max(bump, stub)
                     # Spine is vertical, between a source cluster on one
                     # side and a sink cluster on the other; source's
                     # left/right and sinks' opposite edges carry the gap.
@@ -144,8 +152,8 @@ class Flowed(Element):
                         a = anchors.get(name)
                         if a is None:
                             continue
-                        a._bump_margin("left", bump)
-                        a._bump_margin("right", bump)
+                        a._bump_margin("left", sink_bump)
+                        a._bump_margin("right", sink_bump)
                 else:  # vertical -- spine is horizontal
                     for name in flow.sources:
                         a = anchors.get(name)
@@ -157,8 +165,8 @@ class Flowed(Element):
                         a = anchors.get(name)
                         if a is None:
                             continue
-                        a._bump_margin("top", bump)
-                        a._bump_margin("bottom", bump)
+                        a._bump_margin("top", sink_bump)
+                        a._bump_margin("bottom", sink_bump)
 
     def measure(self, theme: Theme) -> BBox:
         self._apply_flow_margins(theme)

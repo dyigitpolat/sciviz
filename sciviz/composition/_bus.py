@@ -104,7 +104,9 @@ class Bus:
         )
         rect, anchor = placed.rect, placed.anchor
         x0, y0, x1, y1 = rect
-        if mask_bg:
+        # A caption the placer could not clear is knocked out rather
+        # than struck through -- same rule as routed connectors.
+        if mask_bg or getattr(placed, "overlapped", False):
             bg_pad = theme.unit * 0.25
             canvas.rect(x0 - bg_pad, y0 - bg_pad,
                         (x1 - x0) + 2 * bg_pad,
@@ -309,8 +311,24 @@ class Bus:
                 src_edge = lambda b: (b[0] + b[2] / 2, b[1] + b[3])
                 dst_edge = lambda b: (b[0] + b[2] / 2, b[1])
             if gap_lo < gap_hi:
-                # Spine sits in the clear inter-cluster gap.
+                # Spine sits in the clear inter-cluster gap, but never
+                # closer to the arrowed edge than one arrow stub: the
+                # entry segment has to be longer than the arrowhead it
+                # carries, or the bus terminates in a triangle stuck to
+                # the sink's border with no shaft behind it. The gap is
+                # reserved for this in the pre-measure pass, so the
+                # clamp normally has room; when it does not, a spine
+                # pressed against the SOURCE cluster still reads better
+                # than an invisible arrow.
+                stub = theme.arrow_stub_px
+                sink_edge = gap_lo if source_below else gap_hi
                 spine_y = (gap_lo + gap_hi) / 2
+                if source_below:
+                    spine_y = max(spine_y, sink_edge + stub)
+                    spine_y = min(spine_y, max(gap_hi, sink_edge + stub))
+                else:
+                    spine_y = min(spine_y, sink_edge - stub)
+                    spine_y = max(spine_y, min(gap_lo, sink_edge - stub))
             else:
                 # Overlapping clusters: fall back to nearest-edge midpoint.
                 if source_below:

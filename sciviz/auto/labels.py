@@ -40,12 +40,19 @@ class PlacedLabel:
     centred *on* its own wire (schematic convention) and the renderer
     must paint a background halo so the wire reads as passing behind
     the text. Offset placements keep ``inline=False``.
+
+    ``overlapped`` marks a placement that could not clear every
+    obstacle. It is the placer's admission of defeat, and it obliges the
+    renderer to paint the same halo: a caption may end up sitting over
+    ink, but it must never be *struck through* by it. Legibility is the
+    one thing the placer is not allowed to lose.
     """
 
     rect: Rect
     anchor: str
     rotation: float = 0.0
     inline: bool = False
+    overlapped: bool = False
 
     @property
     def center(self) -> Point:
@@ -240,7 +247,17 @@ def place_polyline_label(points: Sequence[Point], label: LabelBox,
         is_horizontal = abs(p2[0] - p1[0]) >= abs(p2[1] - p1[1])
         seg_prefer = _route_side_preference(points, i, prefer)
         attempts: list[Tuple[int, float]] = [(0, 0.0)]  # (pref_pen, rotation)
-        if not is_horizontal and allow_rotation:
+        if is_horizontal and allow_rotation and len(label.lines) == 1:
+            # A horizontal hand-off between two side-by-side nodes lives
+            # in a tall, narrow corridor: there is plenty of room ACROSS
+            # the wire and almost none along it. A rotated caption needs
+            # only its line height of corridor width, so it is the
+            # fallback that lets such a wire keep its caption instead of
+            # forcing the corridor to grow to the caption's full length
+            # -- or, worse, forcing the author to delete the words.
+            # Horizontal reading still wins whenever it fits.
+            attempts = [(0, 0.0), (1, 90.0)]
+        elif not is_horizontal and allow_rotation:
             # A rotated label reads *along* its wire, which only earns the
             # reader's head-tilt when the leg genuinely carries the text.
             # Short vertical hops keep horizontal preference so their
@@ -284,6 +301,11 @@ def place_polyline_label(points: Sequence[Point], label: LabelBox,
         inline = _place_inline(points, own_rects, label, obstacles, gap)
         if inline is not None:
             return inline
+    if best[0] > 0.0:
+        # No clear home and no on-wire fallback either: hand the
+        # renderer a knockout so the caption still reads.
+        from dataclasses import replace as _replace
+        return _replace(best[3], overlapped=True)
     return best[3]
 
 

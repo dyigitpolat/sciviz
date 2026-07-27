@@ -34,46 +34,56 @@ def _render_recorded(body, flows) -> DebugRecorder:
 # 1. corridor reservation grows with the measured caption
 # ---------------------------------------------------------------------------
 
-def test_direct_corridor_reserves_caption_space():
+def _facing_pair(label):
+    """Two side-by-side cards joined by one labeled facing connector."""
+    return Flowed(
+        Row(Anchor("a", Box("A", width=60, height=26)),
+            Anchor("b", Box("B", width=60, height=26)),
+            gap="sm", align="center"),
+        flows=[Flow("a", "b", src_side="right", dst_side="left",
+                    label=label)],
+    )
+
+
+def test_direct_corridor_reserves_room_for_a_placeable_caption():
+    """A labeled facing pair opens a corridor -- but only as wide as the
+    cheapest orientation the placer will actually use.
+
+    Reserving the caption's full horizontal length here is what used to
+    make side-by-side hand-offs ruinously expensive in wide figures, to
+    the point where authors deleted words to fit. A single-line caption
+    may be rotated into the corridor, so its cost is its line height.
+    """
     theme = Theme()
     caption = "a rather long caption that needs room"
-
-    def build(label):
-        return Flowed(
-            Row(Anchor("a", Box("A", width=60, height=26)),
-                Anchor("b", Box("B", width=60, height=26)),
-                gap="sm", align="center"),
-            flows=[Flow("a", "b", src_side="right", dst_side="left",
-                        label=label)],
-        )
-
-    unlabeled_w = build(None).measure(theme).w
-    labeled_w = build(caption).measure(theme).w
-    lbl_w = theme.text_width(
-        caption, getattr(theme, "connector_label_size", "small"))
-    # The labeled layout must be wide enough that the corridor between
-    # the two cards can carry the caption.
-    assert labeled_w >= unlabeled_w + lbl_w * 0.8, (
-        f"labeled={labeled_w}, unlabeled={unlabeled_w}, caption={lbl_w}")
+    size = getattr(theme, "connector_label_size", "small")
+    lbl_w = theme.text_width(caption, size)
+    lbl_h = theme.text_height(size)
+    # The corridor is whatever the layout adds beyond the two cards.
+    corridor = _facing_pair(caption).measure(theme).w - 120.0
+    assert corridor >= lbl_h + 2 * theme.unit, (
+        f"corridor {corridor:.1f} cannot carry the caption in any "
+        f"orientation")
+    assert corridor < lbl_w, (
+        f"corridor {corridor:.1f} still costed at the caption's full "
+        f"horizontal length {lbl_w:.1f}")
 
 
-def test_multiline_caption_reserves_less_corridor():
+def test_block_captions_cost_their_width_because_blocks_do_not_rotate():
+    """A multi-line caption reads as stacked horizontal lines; rotating
+    it would yield parallel columns of tilted text. So a block keeps the
+    horizontal reservation, and a single line -- which may rotate -- is
+    the cheaper form of the same words."""
     theme = Theme()
-
-    def build(label):
-        return Flowed(
-            Row(Anchor("a", Box("A", width=60, height=26)),
-                Anchor("b", Box("B", width=60, height=26)),
-                gap="sm", align="center"),
-            flows=[Flow("a", "b", src_side="right", dst_side="left",
-                        label=label)],
-        )
-
-    one_line = build("earned parents, stage advance").measure(theme).w
-    two_line = build("earned parents,\nstage advance").measure(theme).w
-    assert two_line < one_line, (
-        f"two-line caption should need less corridor: {two_line} vs "
-        f"{one_line}")
+    one_line = _facing_pair("earned parents, stage advance").measure(theme).w
+    two_line = _facing_pair("earned parents,\nstage advance").measure(theme).w
+    assert one_line < two_line, (
+        f"a rotatable single line should need less corridor than a "
+        f"block: {one_line} vs {two_line}")
+    # Breaking a block into narrower lines still shrinks its corridor.
+    three_line = _facing_pair(
+        "earned\nparents,\nstage advance").measure(theme).w
+    assert three_line < two_line
 
 
 # ---------------------------------------------------------------------------
