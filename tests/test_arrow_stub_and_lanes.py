@@ -157,3 +157,39 @@ def test_same_side_run_routes_around_an_existing_wire():
                 crossings += 1
     assert crossings == 0, (
         "planner crossed a wire it could have routed under")
+
+
+def test_bus_members_are_not_charged_the_spine_budget_each():
+    """A stack of tags feeding a bus must not be spread by clearance
+    nothing uses.
+
+    The spine sits in the gap BETWEEN the two clusters, which is a
+    layout gap. Charging every member the full spine budget on both
+    faces inflated a run of pills by its own height again.
+    """
+    from sciviz import Chip, Palette
+    from sciviz.connect._resolver import _FlowResolver, _collect_anchors
+
+    tags = [Anchor(f"t{i}", Chip(f"domain {i}", color=Palette.teal))
+            for i in range(5)]
+    body = Column(
+        Anchor("hub", Box("hub", width=140, height=30)),
+        Column(*tags, gap="xs"),
+        Connect([t.name for t in tags], "hub", orientation="vertical"),
+        gap="sm",
+    )
+    theme = Diagram.for_paper(body)._layout_theme()
+    _FlowResolver(body).measure(theme)
+    anchors = {}
+    _collect_anchors(body, anchors)
+    hub = anchors["hub"]
+    # The sink keeps room for a visible arrowhead.
+    assert max(hub.margin_top, hub.margin_bottom) >= theme.arrow_stub_px - 0.1
+
+    for i in range(5):
+        a = anchors[f"t{i}"]
+        pill_h = a.child.measure(theme).h
+        added = a.margin_top + a.margin_bottom
+        assert added < pill_h * 0.5, (
+            f"tag {i} carries {added:.1f}pt of bus margin on a "
+            f"{pill_h:.1f}pt pill")

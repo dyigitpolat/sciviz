@@ -149,6 +149,13 @@ class Flowed(Element):
                 # Arrowheads land on the sinks; only those need room for
                 # a head plus a visible shaft.
                 stub = theme.arrow_stub_px if flow.arrow else 0.0
+                # A bus member only needs enough room for its own tap to
+                # leave its edge. The spine itself sits in the gap
+                # BETWEEN the two clusters, which is a layout gap -- so
+                # charging every member the full spine budget on both
+                # faces inflates a stack of tags by its own height again
+                # for clearance nothing uses.
+                member = m * 0.3
                 if flow.orientation == "auto":
                     # Unlabelled buses need only a thin gap for the spine,
                     # and we can't predict orientation yet -- bump every
@@ -175,8 +182,8 @@ class Flowed(Element):
                         a = anchors.get(name)
                         if a is None:
                             continue
-                        a._bump_margin("left", bump)
-                        a._bump_margin("right", bump)
+                        a._bump_margin("left", member)
+                        a._bump_margin("right", member)
                     for name in flow.sinks:
                         a = anchors.get(name)
                         if a is None:
@@ -184,12 +191,13 @@ class Flowed(Element):
                         a._bump_margin("left", sink_bump)
                         a._bump_margin("right", sink_bump)
                 else:  # vertical -- spine is horizontal
+                    sink_bump = max(bump, stub)
                     for name in flow.sources:
                         a = anchors.get(name)
                         if a is None:
                             continue
-                        a._bump_margin("top", bump)
-                        a._bump_margin("bottom", bump)
+                        a._bump_margin("top", member)
+                        a._bump_margin("bottom", member)
                     for name in flow.sinks:
                         a = anchors.get(name)
                         if a is None:
