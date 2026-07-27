@@ -139,6 +139,34 @@ def segment_rects(points: Sequence[Point], pad: float = 0.0) -> list[Rect]:
     return out
 
 
+def _route_side_preference(points: Sequence[Point], i: int,
+                           fallback: str) -> str:
+    """Prefer the convex side of a bent route for segment ``i``.
+
+    A dog-leg's caption belongs on the outside of the bend -- the side
+    away from the route's own other legs -- so it annotates its arm
+    from open space instead of hovering over a perpendicular leg or
+    sitting inside the elbow.  The signed perpendicular offsets of the
+    route's *other* points mark the concave side; their sum picks the
+    side to avoid (distance-weighted, so long legs dominate over stub
+    legs on Z-shaped routes).  Straight routes -- no other points off
+    the segment axis -- keep ``fallback``, the caller's preference.
+    """
+    (x1, y1), (x2, y2) = points[i], points[i + 1]
+    is_horizontal = abs(x2 - x1) >= abs(y2 - y1)
+    off = 0.0
+    for j, (px, py) in enumerate(points):
+        if j in (i, i + 1):
+            continue
+        off += (py - y1) if is_horizontal else (px - x1)
+    if abs(off) < 1e-6:
+        return fallback
+    if is_horizontal:
+        # SVG y grows downward: route mass below the arm -> caption above.
+        return "above" if off > 0 else "below"
+    return "left" if off > 0 else "right"
+
+
 def place_polyline_label(points: Sequence[Point], label: LabelBox,
                          obstacles: Sequence[Rect], *,
                          prefer: str = "above",
@@ -168,8 +196,17 @@ def place_polyline_label(points: Sequence[Point], label: LabelBox,
     prefer a horizontal label beside the leg, so one short edge in a
     stack never reads top-to-bottom while its sibling edges read
     left-to-right merely because its label happened to fit rotated.
+    Multi-line captions never prefer rotation regardless of leg length:
+    a block reads as stacked horizontal lines, and rotating it yields
+    parallel columns of tilted text.
     Either way the non-preferred orientation remains a fallback and the
     lower-overlap orientation wins when the preferred one collides.
+
+    Side preference is geometric on bent routes: each candidate segment
+    prefers the convex side of the dog-leg -- the side away from the
+    route's own other legs -- so a caption annotates its arm from the
+    outside instead of hovering over a perpendicular leg or sitting
+    inside the elbow.  Straight routes keep the caller's ``prefer``.
     """
     if len(points) < 2:
         raise ValueError("place_polyline_label requires at least two points")
@@ -201,6 +238,7 @@ def place_polyline_label(points: Sequence[Point], label: LabelBox,
         cand_obstacles = list(obstacles) + others
         p1, p2 = seg
         is_horizontal = abs(p2[0] - p1[0]) >= abs(p2[1] - p1[1])
+        seg_prefer = _route_side_preference(points, i, prefer)
         attempts: list[Tuple[int, float]] = [(0, 0.0)]  # (pref_pen, rotation)
         if not is_horizontal and allow_rotation:
             # A rotated label reads *along* its wire, which only earns the
@@ -208,7 +246,12 @@ def place_polyline_label(points: Sequence[Point], label: LabelBox,
             # Short vertical hops keep horizontal preference so their
             # orientation stays consistent with sibling edges in the same
             # stack (whose longer labels resolve horizontal anyway).
-            carries_rotated = length >= label.width + 2.0 * gap
+            # Multi-line captions never prefer rotation: a block reads as
+            # stacked horizontal lines, and rotating it yields parallel
+            # columns of tilted text -- for blocks the rotated orientation
+            # remains a collision fallback only.
+            carries_rotated = (len(label.lines) == 1
+                               and length >= label.width + 2.0 * gap)
             if carries_rotated:
                 attempts = [(0, 90.0), (1, 0.0)]
             else:
@@ -217,11 +260,11 @@ def place_polyline_label(points: Sequence[Point], label: LabelBox,
             if rotation:
                 rect, anchor, overlap = _try_place(
                     seg, label.height, label.width, cand_obstacles,
-                    prefer, gap)
+                    seg_prefer, gap)
             else:
                 rect, anchor, overlap = _try_place(
                     seg, label.width, label.height, cand_obstacles,
-                    prefer, gap)
+                    seg_prefer, gap)
             placed = PlacedLabel(rect=rect, anchor=anchor, rotation=rotation)
             if overlap <= 0.0 and pref_pen == 0:
                 return placed
@@ -263,7 +306,10 @@ def _place_inline(points: Sequence[Point], own_rects: Sequence[Rect],
     for length, i in order:
         p1, p2 = points[i], points[i + 1]
         is_horizontal = abs(p2[0] - p1[0]) >= abs(p2[1] - p1[1])
-        if is_horizontal:
+        if is_horizontal or len(label.lines) > 1:
+            # Blocks stay horizontal even on vertical legs (see
+            # :func:`place_polyline_label`): a rotated multi-line block
+            # reads as parallel columns of tilted text.
             w, h, rotation = label.width, label.height, 0.0
         else:
             w, h, rotation = label.height, label.width, 90.0

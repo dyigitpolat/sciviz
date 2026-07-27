@@ -23,10 +23,17 @@ Conventions
 Placement strategy
 ------------------
 
-For each of 5 arc-length fractions along the segment [0.15, 0.3, 0.5,
-0.7, 0.85] we try four sides: "above", "below", "left", "right" --
-with a small perpendicular offset.  The side preference is an argument
-(``prefer``) that acts as a tie-breaker.
+For each of several arc-length fractions along the segment we try both
+perpendicular sides with a small offset.  Scoring is lexicographic:
+zero overlap with obstacles first (the invariant), then span discipline
+(the label rides its own arm; overhanging an endpoint or elbow is a
+last-resort demotion, never a hard failure), then the standard offset
+lane, then the preferred side (``prefer``), then *satisficed* clearance
+(candidates with less than one ``gap`` unit of breathing room are
+penalised by their deficit; clearance beyond the floor buys nothing),
+and finally proximity to the segment midpoint -- so captions hug their
+wires instead of drifting into whatever open void the canvas happens
+to have.
 """
 from __future__ import annotations
 
@@ -97,6 +104,30 @@ def _rect_at(cx: float, cy: float, w: float, h: float) -> Rect:
     return (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
 
 
+def _span_penalty(rect: Rect, segment: Segment, extrapolated: bool,
+                  eps: float = 0.5) -> int:
+    """Along-axis span discipline for offset labels (``0``, ``1``, ``2``).
+
+    ``0`` when the label rect stays within the segment's along-axis
+    span, ``1`` when an in-range candidate still pokes past an endpoint
+    (a long label near an elbow), ``2`` for extrapolated candidates
+    whose centre lies beyond the segment.  Non-zero values demote,
+    never drop: a segment too short to hold its label keeps every
+    candidate at the same penalty and the remaining keys decide, so
+    placement never becomes infeasible.
+    """
+    if extrapolated:
+        return 2
+    (x1, y1), (x2, y2) = segment
+    if abs(y1 - y2) <= abs(x1 - x2):
+        lo, hi = sorted((x1, x2))
+        exits = rect[0] < lo - eps or rect[2] > hi + eps
+    else:
+        lo, hi = sorted((y1, y2))
+        exits = rect[1] < lo - eps or rect[3] > hi + eps
+    return 1 if exits else 0
+
+
 def _candidate_centers(
     segment: Segment, w: float, h: float, gap: float,
 ) -> List[Tuple[Point, str, bool, int]]:
@@ -164,9 +195,12 @@ def place_label(
     """Return the best label rectangle and its SVG ``text-anchor``.
 
     The solver minimises overlap area against all ``obstacles``.  Among
-    zero-overlap candidates, it prefers ``prefer`` (``"above"``,
-    ``"below"``, ``"left"``, ``"right"``), then candidates closest to
-    the segment midpoint.
+    zero-overlap candidates it enforces span discipline (the label
+    rides its own segment; overhanging an endpoint survives only as a
+    last resort), then prefers ``prefer`` (``"above"``, ``"below"``,
+    ``"left"``, ``"right"``), satisfices clearance at one ``gap`` unit,
+    and finally picks the candidate closest to the segment midpoint --
+    surplus clearance never outranks centrality.
 
     ``owner`` is an optional tag used solely by the debug recorder
     (:mod:`sciviz.auto.debug`) to link a placement decision back to
@@ -175,12 +209,21 @@ def place_label(
     candidates = _candidate_centers(segment, label_w, label_h, gap)
 
     # Score tuple:
-    #   (overlap_area,              # lower is better
-    #    extrapolated_penalty,      # lower is better (prefer in-range first)
+    #   (overlap_area,              # lower is better (zero overlap is the
+    #                               # contract and always outranks the rest)
+    #    span_penalty,              # 0 in-span, 1 overhangs the segment span,
+    #                               # 2 extrapolated past an endpoint: a label
+    #                               # rides *its own arm* -- hanging past an
+    #                               # elbow survives only as a last resort
     #    ring_penalty,              # lower is better (standard lane first)
     #    preference_penalty,        # lower is better (0 if side == prefer)
-    #    -min_clearance,            # lower is better (more breathing room wins)
-    #    distance_to_midpoint_sq)   # lower is better (closer to spine centre)
+    #    clearance_deficit,         # max(0, gap - clearance): clearance is
+    #                               # satisficed at one gap unit; breathing
+    #                               # room beyond the floor buys nothing
+    #    distance_to_midpoint_sq)   # lower is better -- the deciding key
+    #                               # among satisfied slots, so captions hug
+    #                               # their wire's midpoint instead of
+    #                               # drifting into regional voids
     best: Optional[Tuple[float, float, float, float, float, float,
                          Rect, str, int]] = None
     p1, p2 = segment
@@ -191,10 +234,10 @@ def place_label(
     from .debug import LabelCandidate, emit_label  # local import: keep placer standalone
     records: List[LabelCandidate] = []
     rings: List[int] = []
+    span_pens: List[int] = []
     for (cx, cy), side, extrap, ring in candidates:
         rect = _rect_at(cx, cy, label_w, label_h)
         overlap = sum(overlap_area(rect, ob) for ob in obstacles)
-        extrap_pen = 1 if extrap else 0
         pref_pen = 0 if side == prefer else 1
         clearance = _min_clearance(rect, obstacles)
         d2 = ((cx - mid[0]) ** 2 + (cy - mid[1]) ** 2) ** 0.5
@@ -204,11 +247,13 @@ def place_label(
             clearance=clearance, distance_to_midpoint=d2,
         ))
         rings.append(ring)
+        span_pens.append(_span_penalty(rect, segment, extrap))
 
     for idx, c in enumerate(records):
-        score = (c.overlap, 1 if c.extrapolated else 0, rings[idx],
+        score = (c.overlap, span_pens[idx], rings[idx],
                  c.preference_penalty,
-                 -c.clearance, c.distance_to_midpoint ** 2)
+                 max(0.0, gap - c.clearance),
+                 c.distance_to_midpoint ** 2)
         if best is None or score < best[:6]:
             best = (*score, c.rect, c.side, idx)
 

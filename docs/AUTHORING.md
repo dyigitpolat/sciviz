@@ -411,11 +411,32 @@ the leg is long enough to genuinely carry the rotated text (leg length
 gaps of a stacked column -- prefer a horizontal label beside the wire,
 so sibling edges in one spine share one reading direction regardless of
 label length; the other orientation remains a collision fallback either
-way. Routed-flow captions read at `Theme.connector_label_size`
+way. Multi-line captions never prefer rotation regardless of leg
+length: a block reads as stacked horizontal lines, and rotating it
+yields parallel columns of tilted text. Routed-flow captions read at `Theme.connector_label_size`
 (default `"small"`); dense multi-panel overviews may override it one
 step down, e.g.
 `Theme().with_overrides(connector_label_size="tiny")`. If a label still
 collides, improve the semantic structure rather than nudging pixels.
+
+Placement scoring is lexicographic and hugs the wire: a caption must
+clear all ink (the hard invariant), stay within its own arm's span
+(overhanging an endpoint or elbow is a last-resort demotion, never a
+hard failure), sit on the convex side of a bent route (the outside of
+the dog-leg, away from the route's own legs; straight routes keep the
+caller's preference), satisfice clearance at one gap unit, and only
+then settle as close to the arm's midpoint as possible -- surplus
+breathing room never pulls a caption off its wire into whatever void
+the canvas happens to have.
+
+**Known limitation (proposed enhancement).** Captions are never
+re-wrapped by the placer: a one-line caption beside a short vertical
+leg keeps its authored width even when it protrudes far past the leg.
+Auto-reflowing such captions at natural break points to match arm
+proportions is a proposed future enhancement, deliberately deferred
+because it would change caption typography globally. Until then, break
+wide captions manually with `"\n"` -- multi-line captions measure as
+blocks and reserve narrower corridors.
 
 Bus geometry derives from the *flow direction* (source-cluster centroid
 toward sink-cluster centroid), never from incidental cluster spread; the
