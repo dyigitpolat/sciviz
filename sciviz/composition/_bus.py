@@ -383,12 +383,26 @@ class Bus:
                 bar_mid_x = (x0 + x1) / 2
                 sink = dst_boxes[0]
                 dpx, dpy = dst_edge(sink)
-                # Enter the sink face at the x nearest the bar within the
-                # face's usable span; jog horizontally along the spine
-                # first when the bar and the entry point are misaligned.
+                # Enter the sink at the CENTER of its facing edge: a
+                # centred entry reads as "the bus feeds this card",
+                # while a bar-aligned entry at the face's extreme reads
+                # as clipping a corner (rail-form buses put the bar far
+                # to one side of the sink). Fall back to the bar-aligned
+                # position, clamped into the face's usable span, when
+                # the centred descent or its jog along the spine would
+                # strike another endpoint or box.
                 lo = sink[0] + min(edge_inset, sink[2] / 4)
                 hi = sink[0] + sink[2] - min(edge_inset, sink[2] / 4)
-                entry_x = min(max(bar_mid_x, lo), hi)
+                center_x = sink[0] + sink[2] / 2.0
+                bar_aligned = min(max(bar_mid_x, lo), hi)
+                centred_clear = (
+                    not self._v_seg_hits(center_x, spine_y, dpy,
+                                         all_boxes, sink)
+                    and not self._h_seg_hits(spine_y,
+                                             min(bar_mid_x, center_x),
+                                             max(bar_mid_x, center_x),
+                                             all_boxes, sink))
+                entry_x = center_x if centred_clear else bar_aligned
                 if abs(entry_x - bar_mid_x) > 0.5:
                     _line(bar_mid_x, spine_y, entry_x, spine_y)
                 _line(entry_x, spine_y, entry_x, dpy, end_marker=marker)

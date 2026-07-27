@@ -125,3 +125,39 @@ def test_fan_in_bus_has_horizontal_bar_between_sources():
     horizontals = [l for l in lines
                    if abs(l["y1"] - l["y2"]) < 0.01 and abs(l["x2"] - l["x1"]) > 5]
     assert horizontals, "no horizontal bar found"
+
+
+_RECT_ATTR_RX = re.compile(r"<rect ([^/>]*?)/>")
+
+
+def _rect_center_x_by_width(svg: str, w: float) -> float:
+    """Center x of the first rect whose width matches ``w``."""
+    for m in _RECT_ATTR_RX.finditer(svg):
+        attrs = dict(_ATTR_RX.findall(m.group(1)))
+        if abs(float(attrs.get("width", -1.0)) - w) < 0.5:
+            return float(attrs["x"]) + w / 2.0
+    raise AssertionError(f"no rect of width {w} in svg")
+
+
+def test_fan_in_rail_bus_enters_sink_at_face_center():
+    """A stacked source column forces the side-rail bus form; the single
+    entry into the sink must still land at the CENTER of the sink's
+    facing edge (jogging along the spine to get there), never at the
+    corner where the rail happens to meet the card."""
+    theme = Theme()
+    sink = Anchor("s", Box("SINK", width=120, height=24))
+    chips = Column(*[Anchor(f"c{i}", Box(f"chip {i}", width=80, height=14))
+                     for i in range(4)], gap="sm")
+    body = Column(sink, Spacer(0, 30), chips, gap="md")
+    svg, _, _ = _render(body, [
+        Bus([f"c{i}" for i in range(4)], "s"),
+    ])
+    lines = _parse_lines(svg)
+    arrows = [l for l in lines if l["marker_end"]]
+    assert len(arrows) == 1, f"expected one sink arrow, got {len(arrows)}"
+    entry = arrows[0]
+    assert abs(entry["x1"] - entry["x2"]) < 0.5, (
+        f"sink entry must be strictly vertical: {entry}")
+    face_center = _rect_center_x_by_width(svg, 120.0)
+    assert abs(entry["x1"] - face_center) < 1.0, (
+        f"sink entry at x={entry['x1']}, face center at x={face_center}")

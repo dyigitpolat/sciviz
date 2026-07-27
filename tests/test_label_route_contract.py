@@ -135,3 +135,29 @@ def test_placed_labels_have_zero_overlap_in_dense_scene():
         assert record.chosen.overlap <= 0.0, (
             f"label {record.owner!r} placed with overlap "
             f"{record.chosen.overlap} at {record.chosen.rect}")
+
+
+# ---------------------------------------------------------------------------
+# 4. dog-leg side lanes hold the whole caption beside the wire
+# ---------------------------------------------------------------------------
+
+def test_dogleg_lane_reserves_full_caption_cross_extent():
+    """A non-facing side pair (right toward right) reserves a lane that
+    holds the wire plus the caption's full cross extent plus clearance,
+    so the caption has an in-span home beside the long arm even when a
+    third-party card neighbours the corridor."""
+    from sciviz.auto.labels import measure_label
+    from sciviz.composition._flow import label_corridor_reservation
+
+    theme = Theme()
+    flow = Flow("a", "b", src_side="right", dst_side="right",
+                label="outcome evidence")
+    lbl = measure_label(
+        "outcome evidence", theme,
+        getattr(theme, "connector_label_size", "small"))
+    cross = min(lbl.width, lbl.height)
+    base = 9.0
+    reserved = label_corridor_reservation(flow, theme, "right", "right",
+                                          base)
+    assert reserved >= base / 2.0 + cross + 2.0 * theme.unit - 0.01, (
+        f"lane {reserved} cannot hold wire + caption cross {cross}")

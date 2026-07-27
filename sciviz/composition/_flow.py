@@ -564,7 +564,18 @@ def label_corridor_reservation(spec, theme: Theme, side: str,
     elif vertical_pair and side in ("top", "bottom"):
         along = lbl.height
     else:
-        along = min(lbl.width, lbl.height)
+        # Dog-leg: the route's long arm rides *inside* this reserved
+        # side lane with the caption offset beside the wire, so the
+        # lane must hold the wire's own clearance (about half the base
+        # budget), a caption gap, the caption's cross extent (its
+        # smaller side -- rotated along a vertical arm or stacked
+        # beside a horizontal one), and a clearance floor to whatever
+        # third-party card neighbours the lane. Reserving only half
+        # the cross extent left captions with no in-span home in
+        # cramped inter-zone corridors: the placer was forced to hang
+        # them past the arm's elbow as a last resort.
+        cross = min(lbl.width, lbl.height)
+        return max(base, base / 2.0 + cross + 2.0 * gap)
     return max(base, along / 2.0 + gap)
 
 
