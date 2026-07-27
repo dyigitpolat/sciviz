@@ -56,15 +56,27 @@ class Row(Element):
         on the exact row centreline.  The outer children pack inward, so an
         unequal legend/system pair does not push the semantic centre off
         axis.  Layout-invisible children such as ``Connect`` are ignored.
+    equal_heights : bool or None
+        Height equalisation of siblings (the cross-axis analogue of
+        ``equal_widths``). ``True`` grows every child to the tallest
+        child's height via ``inflate_to``; ``False`` never does. The
+        default ``None`` applies the *sibling-frame rule*: when a row
+        holds two or more framed siblings (``Panel``, ``Card``,
+        ``StepCell``; anything declaring ``frame_sibling = True``) and
+        nothing else, their frames automatically share one height, so a
+        flow of side-by-side panels or step cells reads as one balanced
+        band without per-figure sizing work.
     """
 
     def __init__(self, *children: Element, gap: Union[str, float] = "md",
                  align: str = "center", equal_widths: bool = False,
-                 balance_outer: bool = False):
+                 balance_outer: bool = False,
+                 equal_heights: Union[bool, None] = None):
         self.children: List[Element] = [c for c in children if c is not None]
         self.gap = gap
         self.align = _validate_align("Row", align)
         self.equal_widths = equal_widths
+        self.equal_heights = equal_heights
         self.balance_outer = bool(balance_outer)
         if self.balance_outer and self.equal_widths:
             raise ValueError(
@@ -366,14 +378,42 @@ class Row(Element):
                 continue
             c.inflate_to(slot, 0.0)
 
-    def _maybe_stretch_heights(self, theme: Theme) -> None:
-        """For ``align="stretch"``: grow every child to the tallest child's
-        height (cross-axis stretch) so side-by-side siblings share one outer
-        height. Mirrors :meth:`_maybe_equalise_widths`; idempotent per
-        instance. Children without a height-honouring ``inflate_to`` (most
-        leaf elements) are simply left unaffected.
+    def _wants_height_equalisation(self) -> bool:
+        """Whether sibling heights should be equalised for this row.
+
+        ``align="stretch"`` and ``equal_heights=True`` always qualify;
+        ``equal_heights=False`` never does. With the default
+        ``equal_heights=None`` the *sibling-frame rule* applies: a row of
+        two or more framed siblings (elements declaring
+        ``frame_sibling = True``, i.e. Panel/Card/StepCell) and nothing
+        else equalises automatically, because uneven frame heights in one
+        band read as an accident rather than a choice.
         """
-        if self.align != "stretch" or self._stretched or not self.children:
+        if self.align == "stretch" or self.equal_heights is True:
+            return True
+        if self.equal_heights is False:
+            return False
+        peers = [
+            c for c in self._visible_children()
+            if not self._is_inline_connector(c)
+        ]
+        return (
+            len(peers) >= 2
+            and all(getattr(c, "frame_sibling", False) for c in peers)
+        )
+
+    def _maybe_stretch_heights(self, theme: Theme) -> None:
+        """Grow every child to the tallest child's height (cross-axis
+        stretch) so side-by-side siblings share one outer height. Fires
+        for ``align="stretch"``, ``equal_heights=True``, or automatically
+        for a row of framed siblings (see :meth:`_wants_height_equalisation`).
+        Mirrors :meth:`_maybe_equalise_widths`; idempotent per instance.
+        Children without a height-honouring ``inflate_to`` (most leaf
+        elements) are simply left unaffected.
+        """
+        if self._stretched or not self.children:
+            return
+        if not self._wants_height_equalisation():
             return
         self._stretched = True
         target_h = max(

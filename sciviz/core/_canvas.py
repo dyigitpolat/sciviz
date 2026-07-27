@@ -60,6 +60,13 @@ class Canvas:
         self._next_id: int = 0
         self._ink_bbox: Optional[tuple[float, float, float, float]] = None
         self._min_text_size: Optional[float] = None
+        #: Per-item ink ledger: every painted primitive appends its
+        #: ``(x0, y0, x1, y1, kind)`` rectangle. ``kind`` is ``"text"``
+        #: for glyph runs and ``"shape"`` for everything else. The
+        #: connector subsystem consumes this ledger so wires and labels
+        #: can avoid *all* rendered ink -- headers, captions, chips --
+        #: not only the rectangles that happen to be named anchors.
+        self._ink_items: List[tuple[float, float, float, float, str]] = []
         #: Font family used to ink-account text runs with real glyph
         #: metrics (set by :class:`sciviz.diagram.Diagram` from the
         #: theme). ``None`` falls back to a conservative per-character
@@ -70,6 +77,19 @@ class Canvas:
     def ink_bbox(self) -> Optional[tuple[float, float, float, float]]:
         """Bounding rectangle of emitted ink in canvas coordinates."""
         return self._ink_bbox
+
+    def ink_items(self, kind: Optional[str] = None
+                  ) -> List[tuple[float, float, float, float]]:
+        """Rectangles of every painted primitive, optionally by kind.
+
+        ``kind=None`` returns all items as 5-tuples including the kind
+        tag; ``kind="text"`` / ``kind="shape"`` return plain 4-tuple
+        rectangles of that category.
+        """
+        if kind is None:
+            return list(self._ink_items)
+        return [(x0, y0, x1, y1)
+                for (x0, y0, x1, y1, k) in self._ink_items if k == kind]
 
     @property
     def min_text_size(self) -> Optional[float]:
@@ -87,7 +107,9 @@ class Canvas:
         if self._min_text_size is None or size < self._min_text_size:
             self._min_text_size = float(size)
 
-    def _mark_ink(self, x0: float, y0: float, x1: float, y1: float) -> None:
+    def _mark_ink(self, x0: float, y0: float, x1: float, y1: float,
+                  kind: str = "shape") -> None:
+        self._ink_items.append((x0, y0, x1, y1, kind))
         if self._ink_bbox is None:
             self._ink_bbox = (x0, y0, x1, y1)
             return
@@ -350,9 +372,9 @@ class Canvas:
                 dx, dy = px - x, py - y
                 xs.append(x + dx * ca - dy * sa)
                 ys.append(y + dx * sa + dy * ca)
-            self._mark_ink(min(xs), min(ys), max(xs), max(ys))
+            self._mark_ink(min(xs), min(ys), max(xs), max(ys), kind="text")
         else:
-            self._mark_ink(x0, y0, x1, y1)
+            self._mark_ink(x0, y0, x1, y1, kind="text")
 
     def text_with_sub(self, x: float, y: float, base: str, sub: str, *,
                       size: float = 11.0, fill: str = "#0f172a",
@@ -377,7 +399,7 @@ class Canvas:
             x0, x1 = x - width, x
         else:
             x0, x1 = x, x + width
-        self._mark_ink(x0, y - size, x1, y + size * 0.45)
+        self._mark_ink(x0, y - size, x1, y + size * 0.45, kind="text")
 
     def svg_path(self, x: float, y: float, w: float, h: float, *,
                  paths: List[str],

@@ -19,6 +19,12 @@ class LabelBox:
     width: float
     height: float
     size_px: float
+    #: Individual lines ("\n"-split); single-line labels carry one entry.
+    lines: Tuple[str, ...] = ()
+
+    def __post_init__(self):
+        if not self.lines:
+            object.__setattr__(self, "lines", tuple(self.text.split("\n")))
 
 
 @dataclass(frozen=True)
@@ -29,11 +35,17 @@ class PlacedLabel:
     ``90`` for text rotated to read top-to-bottom. Renderers use this
     flag to draw rotated SVG ``<text>`` glyphs when the placer found
     that vertical orientation gave better clearance than horizontal.
+
+    ``inline`` marks the walled-corridor fallback: the label sits
+    centred *on* its own wire (schematic convention) and the renderer
+    must paint a background halo so the wire reads as passing behind
+    the text. Offset placements keep ``inline=False``.
     """
 
     rect: Rect
     anchor: str
     rotation: float = 0.0
+    inline: bool = False
 
     @property
     def center(self) -> Point:
@@ -43,11 +55,20 @@ class PlacedLabel:
 
 def measure_label(text: str, theme: Theme, size="small", *,
                   bold: bool = False) -> LabelBox:
+    """Measure a connector label; ``"\\n"`` splits it into stacked lines.
+
+    Multi-line labels measure as a block (widest line by the summed line
+    heights), letting long captions ride short corridors that a one-line
+    label could never fit.
+    """
+    lines = tuple(text.split("\n"))
+    line_h = theme.text_height(size)
     return LabelBox(
         text=text,
-        width=theme.text_width(text, size, bold=bold),
-        height=theme.text_height(size),
+        width=max(theme.text_width(line, size, bold=bold) for line in lines),
+        height=line_h * len(lines) * (1.0 if len(lines) == 1 else 1.12),
         size_px=theme.size_px(size),
+        lines=lines,
     )
 
 
@@ -210,7 +231,71 @@ def place_polyline_label(points: Sequence[Point], label: LabelBox,
             if overlap <= 0.0:
                 break
     assert best is not None
+    if best[0] > 0.5:
+        # Walled corridor: every offset candidate collides with a card,
+        # another wire, or free text. Fall back to the schematic
+        # convention -- centre the label ON its own wire and let the
+        # renderer paint a background halo behind it. The label's own
+        # wire is not an obstacle here (it deliberately passes behind),
+        # but everything else still is.
+        inline = _place_inline(points, own_rects, label, obstacles, gap)
+        if inline is not None:
+            return inline
     return best[3]
+
+
+def _place_inline(points: Sequence[Point], own_rects: Sequence[Rect],
+                  label: LabelBox, obstacles: Sequence[Rect],
+                  gap: float) -> Optional[PlacedLabel]:
+    """On-wire fallback placement (see :func:`place_polyline_label`).
+
+    Walks segments longest-first and tries label rectangles centred on
+    the wire at several fractions. A candidate is accepted only when it
+    clears every *foreign* obstacle; the wire's own legs are exempt
+    (the halo makes the wire read as passing behind the text).
+    """
+    order = []
+    for i in range(len(points) - 1):
+        (x1, y1), (x2, y2) = points[i], points[i + 1]
+        length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+        order.append((length, i))
+    order.sort(reverse=True)
+    for length, i in order:
+        p1, p2 = points[i], points[i + 1]
+        is_horizontal = abs(p2[0] - p1[0]) >= abs(p2[1] - p1[1])
+        if is_horizontal:
+            w, h, rotation = label.width, label.height, 0.0
+        else:
+            w, h, rotation = label.height, label.width, 90.0
+        # The wire must genuinely carry the text: the along-axis extent
+        # of the label plus a small margin must fit inside the leg.
+        along = w if is_horizontal else h
+        if length < along + gap:
+            continue
+        for t in (0.5, 0.4, 0.6, 0.3, 0.7):
+            cx = p1[0] + (p2[0] - p1[0]) * t
+            cy = p1[1] + (p2[1] - p1[1]) * t
+            rect = (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+            # Keep the whole rect within the leg's along-axis span.
+            if is_horizontal:
+                lo, hi = sorted((p1[0], p2[0]))
+                if rect[0] < lo or rect[2] > hi:
+                    continue
+            else:
+                lo, hi = sorted((p1[1], p2[1]))
+                if rect[1] < lo or rect[3] > hi:
+                    continue
+            other_legs = [r for j, r in enumerate(own_rects) if j != i]
+            blocked = any(
+                (min(rect[2], ob[2]) > max(rect[0], ob[0])
+                 and min(rect[3], ob[3]) > max(rect[1], ob[1]))
+                for ob in list(obstacles) + other_legs
+            )
+            if blocked:
+                continue
+            return PlacedLabel(rect=rect, anchor="middle",
+                               rotation=rotation, inline=True)
+    return None
 
 
 def place_curve_label(points: Sequence[Point], label: LabelBox,

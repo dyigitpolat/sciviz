@@ -268,3 +268,54 @@ def test_theme_tokens_resolve_on_default_and_slides_theme():
         bbox = chart.measure(theme)
         chart.render(canvas, 0.0, 0.0, theme)
         assert bbox.w > 0 and bbox.h > 0
+
+
+# ---- leader lanes ---------------------------------------------------------
+
+
+def _count_lines(svg: str) -> int:
+    import re
+    return len(re.findall(r"<line ", svg))
+
+
+def _render_svg(graph):
+    from sciviz.core import Canvas, DEFAULT_THEME
+    size = graph.measure(DEFAULT_THEME)
+    canvas = Canvas()
+    graph.render(canvas, 0.0, 0.0, DEFAULT_THEME)
+    return canvas.to_svg(size.w, size.h)
+
+
+def test_clustered_labels_get_leaders_on_every_label_of_the_side():
+    """A value cluster activates the side's leader lane, and every label
+    on that side (including ones sitting at their endpoint) gets a
+    two-segment elbow leader; a spread chart draws none."""
+    from sciviz import SlopeRecord, Slopegraph
+
+    spread = Slopegraph(
+        [SlopeRecord("a", 10.0, 15.0), SlopeRecord("b", 50.0, 55.0),
+         SlopeRecord("c", 90.0, 85.0)],
+        value_range=(0, 100), show_values=True)
+    clustered = Slopegraph(
+        [SlopeRecord("a", 50.0, 10.0), SlopeRecord("b", 50.4, 10.3),
+         SlopeRecord("c", 50.8, 10.6)],
+        value_range=(0, 100), show_values=True)
+    n_spread = _count_lines(_render_svg(spread))
+    n_clustered = _count_lines(_render_svg(clustered))
+    # Same rails and slope lines; the clustered chart adds 2 leader
+    # segments per label on both sides: 2 * 3 * 2 = 12.
+    assert n_clustered - n_spread == 12, (
+        f"expected 12 leader segments, got {n_clustered - n_spread}")
+
+
+def test_leader_lane_widens_the_measured_bbox():
+    from sciviz import SlopeRecord, Slopegraph
+    from sciviz.core import DEFAULT_THEME
+
+    spread = Slopegraph(
+        [SlopeRecord("aaa", 10.0, 15.0), SlopeRecord("bbb", 50.0, 55.0)],
+        value_range=(0, 100), show_values=True)
+    clustered = Slopegraph(
+        [SlopeRecord("aaa", 50.0, 10.0), SlopeRecord("bbb", 50.2, 10.1)],
+        value_range=(0, 100), show_values=True)
+    assert clustered.measure(DEFAULT_THEME).w > spread.measure(DEFAULT_THEME).w + 10.0

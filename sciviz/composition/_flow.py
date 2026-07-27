@@ -15,17 +15,26 @@ from ._anchor import Anchor, _side_point, _side_point_frac
 
 
 def _draw_placed_label(canvas: Canvas, placed, text: str, size_px: float,
-                       fill: str) -> None:
+                       fill: str, halo_fill: str | None = None) -> None:
     """Render a connector label at the placer's chosen rectangle.
 
     Honours :attr:`PlacedLabel.rotation` so labels found by the placer
     to fit better vertically are drawn rotated 90 degrees clockwise --
     useful in narrow horizontal corridors. Anchored at "middle" by
     default so the placer's centred ``rect`` lines up correctly.
+
+    When the placer fell back to an *inline* placement (label centred on
+    its own wire), a ``halo_fill`` background rectangle is painted first
+    so the wire reads as passing behind the text.
     """
     x0, y0, x1, y1 = placed.rect
     cx = (x0 + x1) / 2.0
     cy = (y0 + y1) / 2.0
+    if getattr(placed, "inline", False) and halo_fill is not None:
+        pad = max(1.5, size_px * 0.2)
+        canvas.rect(x0 - pad, y0 - pad,
+                    (x1 - x0) + 2 * pad, (y1 - y0) + 2 * pad,
+                    fill=halo_fill, stroke="none")
     # Connector prose is annotation, not a mathematical variable.  Infer
     # the common case so authors do not need a typography flag on every
     # edge: short identifiers and symbolic expressions remain italic,
@@ -35,19 +44,30 @@ def _draw_placed_label(canvas: Canvas, placed, text: str, size_px: float,
         (" " not in stripped and len(stripped) <= 3)
         or any(ch in stripped for ch in "_{}^=+-×÷∑∏∈→←λμσ")
     )
-    if getattr(placed, "rotation", 0.0):
-        # Rotated text: anchor at the centre of the rotated bbox.
-        canvas.text(cx, cy, text,
-                    size=size_px, fill=fill, italic=symbolic,
-                    anchor="middle", baseline="middle",
-                    rotate=placed.rotation)
-    else:
-        # Horizontal text: anchor with baseline approximated from the
-        # placer's vertical centre (fonts have ~33% descender).
-        baseline_y = cy + size_px * 0.33
-        canvas.text(cx, baseline_y, text,
-                    size=size_px, fill=fill, italic=symbolic,
-                    anchor=placed.anchor)
+    # "\n" stacks label lines as a block centred in the placed rect,
+    # in both horizontal and rotated orientations.
+    lines = text.split("\n")
+    n = len(lines)
+    line_h = size_px * (1.0 if n == 1 else 1.12)
+    rotation = getattr(placed, "rotation", 0.0)
+    for i, line in enumerate(lines):
+        # This line's centre offset from the block centre, along the
+        # reading-perpendicular axis.
+        off = (i - (n - 1) / 2.0) * line_h
+        if rotation:
+            # Rotated block: successive lines advance along +x (the
+            # rotated "downward" direction for 90-degree text).
+            canvas.text(cx + off, cy, line,
+                        size=size_px, fill=fill, italic=symbolic,
+                        anchor="middle", baseline="middle",
+                        rotate=rotation)
+        else:
+            # Horizontal text: baseline approximated from the line's
+            # vertical centre (fonts have ~33% descender).
+            baseline_y = cy + off + size_px * 0.33
+            canvas.text(cx, baseline_y, line,
+                        size=size_px, fill=fill, italic=symbolic,
+                        anchor=placed.anchor)
 
 
 class Flow:
@@ -141,11 +161,22 @@ class Flow:
             return "right" if dx > 0 else "left"
         return "bottom" if dy > 0 else "top"
 
-    def _render(self, canvas: Canvas, theme: Theme, registry: dict):
+    def _render(self, canvas: Canvas, theme: Theme, registry: dict,
+                defer_label: bool = False):
+        """Draw the wire; place the label now or return a label closure.
+
+        With ``defer_label=False`` (legacy behaviour) the label is placed
+        immediately after the wire. With ``defer_label=True`` the wire is
+        drawn and a zero-argument closure is returned; the caller invokes
+        it after *every* wire in the scope has been drawn, so each label
+        sees the complete set of wires (and all free ink) as obstacles.
+        This two-phase discipline is what keeps a label from landing on a
+        wire that merely happened to be drawn later.
+        """
         sb = registry.get(self.src)
         db = registry.get(self.dst)
         if sb is None or db is None:
-            return
+            return None
         src_side = (
             registry.get(f"__preferred_side_{self.src}",
                          self._auto_side(sb, db))
@@ -210,12 +241,36 @@ class Flow:
                               name=self.src, kind="anchor")
             dst_box = _rt.Box(x=db_x, y=db_y, w=db_w, h=db_h,
                               name=self.dst, kind="anchor")
+            # Free-standing text ink (zone headers, captions, chips that
+            # are not anchors) blocks wires exactly like anchor boxes.
+            # Ink clinging to either endpoint is exempt so the wire can
+            # still reach its own boundary.
+            from ..auto.ink import free_text_rects, rects_excluding_endpoints
+            free_ink = rects_excluding_endpoints(
+                free_text_rects(canvas, registry),
+                [sb, db],
+            )
+            for (ix0, iy0, ix1, iy1) in free_ink:
+                all_anchors.append(_rt.Box(x=ix0, y=iy0,
+                                           w=ix1 - ix0, h=iy1 - iy0,
+                                           name="__ink__", kind="anchor"))
             src_frac = getattr(self, "_share_src_frac", 0.5)
             dst_frac = getattr(self, "_share_dst_frac", 0.5)
             drawn_so_far = registry.get("__drawn_segments__", ())
             from dataclasses import replace as _dc_replace
             policy = _dc_replace(_rt.DEFAULT_POLICY,
                                  min_clearance=self._clearance_px(theme))
+            # A labeled wire is only valid when some arm can carry its
+            # caption; hand the measured caption box to the planner so
+            # short-armed candidates are rejected while alternatives
+            # exist.
+            label_extent = None
+            if self.label:
+                from ..auto.labels import measure_label as _measure_label
+                _probe = _measure_label(
+                    self.label, theme,
+                    getattr(theme, "connector_label_size", "small"))
+                label_extent = (_probe.width, _probe.height)
             plan = _rt.plan_path(
                 _rt.Endpoint(src_box, src_side, tap=tap,
                              tap_fraction=src_frac),
@@ -225,6 +280,8 @@ class Flow:
                 regions=all_regions,
                 existing_segments=list(drawn_so_far),
                 policy=policy,
+                label_extent=label_extent,
+                label_gap=theme.unit,
             )
 
             # Retain `anchor_obstacles` for label-placement collision
@@ -258,34 +315,52 @@ class Flow:
             )
             # Record the segments we just drew so subsequent flows can
             # detect crossings against them.
+            own_segments = []
             for i in range(len(path) - 1):
                 p1 = path[i]; p2 = path[i + 1]
                 if abs(p1[0] - p2[0]) < 0.5 and abs(p1[1] - p2[1]) < 0.5:
                     continue
-                drawn.append((p1[0], p1[1], p2[0], p2[1]))
-            if self.label and len(path) >= 2:
+                seg = (p1[0], p1[1], p2[0], p2[1])
+                drawn.append(seg)
+                own_segments.append(seg)
+
+            if not (self.label and len(path) >= 2):
+                return None
+
+            def _label_pass():
+                from ..auto.ink import free_text_rects as _free_ink
                 from ..auto.labels import (
                     measure_label, place_polyline_label,
                     register_label_obstacle, registry_label_obstacles,
                     segment_rects,
                 )
-                sz_tok = "small"
+                sz_tok = getattr(theme, "connector_label_size", "small")
                 lbl = measure_label(self.label, theme, sz_tok)
                 all_anchor_obstacles = [
                     (ox, oy, ox + ow, oy + oh)
                     for ox, oy, ow, oh in anchor_obstacles
                 ]
                 all_anchor_obstacles.extend(registry_label_obstacles(registry))
-                # Earlier flows' wires are obstacles too: a label must
-                # not sit across another connector's line.
+                # Free-standing text ink is a label obstacle too, so a
+                # connector caption never sits on a header or note.
+                all_anchor_obstacles.extend(_free_ink(canvas, registry))
+                # Every other wire drawn in this scope is an obstacle: a
+                # label must not sit across another connector's line.
+                # (Under deferred placement this set is complete; the
+                # label's own legs are handled by the placer itself.)
+                own = set(own_segments)
                 wire_pad = max(0.5, sw)
-                for (ex1, ey1, ex2, ey2) in drawn_before:
+                for seg in registry.get("__drawn_segments__", ()):  # noqa: B023
+                    if seg in own:
+                        continue
+                    ex1, ey1, ex2, ey2 = seg
                     all_anchor_obstacles.extend(
                         segment_rects([(ex1, ey1), (ex2, ey2)], wire_pad))
                 # The placer walks every leg of this wire longest-first
                 # and offsets the label perpendicular to the chosen leg,
                 # dodging cards, other labels, other wires, and the
-                # wire's own perpendicular legs.
+                # wire's own perpendicular legs; in walled corridors it
+                # falls back to an on-wire placement with a halo.
                 placed = place_polyline_label(
                     path, lbl,
                     obstacles=all_anchor_obstacles,
@@ -294,9 +369,14 @@ class Flow:
                     wire_width=sw,
                 )
                 _draw_placed_label(canvas, placed, self.label,
-                                   lbl.size_px, label_col)
+                                   lbl.size_px, label_col,
+                                   halo_fill=theme.color_of("bg"))
                 register_label_obstacle(registry, placed.rect, self.src)
-            return
+
+            if defer_label:
+                return _label_pass
+            _label_pass()
+            return None
 
         # Explicit straight line: render as M/L so the tangent is the line
         # direction (well-defined) and orient="auto" points the arrowhead
@@ -310,7 +390,11 @@ class Flow:
                        marker_end=marker if marker_end else None,
                        marker_start=marker if marker_start else None,
                        dasharray=dash)
-            if self.label:
+            if not self.label:
+                return None
+
+            def _straight_label_pass():
+                from ..auto.ink import free_text_rects as _free_ink
                 from ..auto.labels import (
                     measure_label, place_segment_label,
                     register_label_obstacle, registry_label_obstacles,
@@ -323,7 +407,10 @@ class Flow:
                         ox, oy, ow, oh = b
                         obstacles.append((ox, oy, ox + ow, oy + oh))
                 obstacles += registry_label_obstacles(registry)
-                lbl = measure_label(self.label, theme, "small")
+                obstacles += _free_ink(canvas, registry)
+                lbl = measure_label(
+                    self.label, theme,
+                    getattr(theme, "connector_label_size", "small"))
                 placed = place_segment_label(
                     ((sx, sy), (dx, dy)), lbl, obstacles,
                     prefer="above", gap=theme.unit * 1.0,
@@ -331,7 +418,11 @@ class Flow:
                 _draw_placed_label(canvas, placed, self.label,
                                    lbl.size_px, label_col)
                 register_label_obstacle(registry, placed.rect, self.src)
-            return
+
+            if defer_label:
+                return _straight_label_pass
+            _straight_label_pass()
+            return None
 
         dist = ((dx - sx) ** 2 + (dy - sy) ** 2) ** 0.5
         # Control-point distance scales with actual distance.  No minimum
@@ -403,7 +494,11 @@ class Flow:
                    marker_start=marker if marker_start else None,
                    dasharray=dash)
 
-        if self.label:
+        if not self.label:
+            return None
+
+        def _curve_label_pass():
+            from ..auto.ink import free_text_rects as _free_ink
             from ..auto.labels import (
                 measure_label, place_curve_label,
                 register_label_obstacle, registry_label_obstacles,
@@ -416,7 +511,10 @@ class Flow:
                     ox, oy, ow, oh = b
                     obstacles.append((ox, oy, ox + ow, oy + oh))
             obstacles += registry_label_obstacles(registry)
-            lbl = measure_label(self.label, theme, "small")
+            obstacles += _free_ink(canvas, registry)
+            lbl = measure_label(
+                self.label, theme,
+                getattr(theme, "connector_label_size", "small"))
             placed = place_curve_label(
                 [(sx, sy), c1, c2, (dx, dy)], lbl, obstacles,
                 prefer="above", gap=theme.unit * 1.0,
@@ -424,6 +522,50 @@ class Flow:
             _draw_placed_label(canvas, placed, self.label,
                                lbl.size_px, label_col)
             register_label_obstacle(registry, placed.rect, self.src)
+
+        if defer_label:
+            return _curve_label_pass
+        _curve_label_pass()
+        return None
+
+
+def label_corridor_reservation(spec, theme: Theme, side: str,
+                               other_side: str, base: float) -> float:
+    """Margin a labeled flow reserves on one pinned exit side.
+
+    Labels are part of the route contract: a wire whose arms cannot
+    carry its caption is not a valid wire, so the layout must reserve
+    corridor length for the caption *before* geometry freezes -- a
+    fixed multiplier cannot know how long the caption is.
+
+    Two facing pinned sides (``right`` toward ``left``, ``bottom``
+    toward ``top``) form a direct corridor whose only arm runs along
+    that axis; each end then reserves half the caption's along-axis
+    extent plus a caption gap, so the corridor as a whole is guaranteed
+    to fit the caption. Any other side pairing implies a dog-leg whose
+    long arm lives in shared space; the pinned stubs then reserve only
+    the caption's smaller extent, which every orientation form needs.
+
+    Multi-line captions (``"\\n"``) measure as blocks, so authors keep
+    corridors compact by breaking long captions instead of the layout
+    growing to fit one long line.
+    """
+    label = getattr(spec, "label", None)
+    if not label:
+        return base
+    from ..auto.labels import measure_label
+    lbl = measure_label(label, theme,
+                        getattr(theme, "connector_label_size", "small"))
+    gap = theme.unit
+    horizontal_pair = {side, other_side} == {"left", "right"}
+    vertical_pair = {side, other_side} == {"top", "bottom"}
+    if horizontal_pair and side in ("left", "right"):
+        along = lbl.width
+    elif vertical_pair and side in ("top", "bottom"):
+        along = lbl.height
+    else:
+        along = min(lbl.width, lbl.height)
+    return max(base, along / 2.0 + gap)
 
 
 def _assign_edge_shares(specs, registry: dict) -> None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence, Union
+from typing import Callable, List, Optional, Sequence, Tuple, Union
 
 from ..core import BBox, Canvas, Element, Theme
 from ..elements import Text
@@ -19,6 +19,15 @@ class Bus:
             sinks=["mtp1_out", "mtp2_out", "mtp3_out"],
             label="Shared",
             dashed=True)
+
+    Geometry is derived from the *flow direction* (source-cluster
+    centroid toward sink-cluster centroid): a mostly-vertical flow gets a
+    horizontal spine in the clear gap between the clusters, a
+    mostly-horizontal flow gets a vertical spine.  When a cluster is
+    stacked *along* the flow axis (so straight taps would impale sibling
+    endpoints), the taps exit sideways onto a rail that runs alongside
+    the cluster and joins the spine -- endpoints are never struck
+    through.  All bus ink is strictly axis-aligned.
 
     Parameters
     ----------
@@ -70,20 +79,24 @@ class Bus:
         """Place ``self.label`` on ``segment`` avoiding ``obstacles``.
 
         Uses the geometric label placer so the label dodges structural
-        lines (T-bars, taps, other boxes).  When ``mask_bg`` is True, a
-        white rectangle is drawn behind the label so a dashed line
-        reads as passing cleanly behind the text.
+        lines (T-bars, taps, other boxes), every wire drawn so far, and
+        free-standing text ink.  When ``mask_bg`` is True, a background
+        rectangle is drawn behind the label so a dashed line reads as
+        passing cleanly behind the text.
         """
         if not self.label:
             return
+        from ..auto.ink import free_text_rects
         from ..auto.labels import (
             measure_label, place_segment_label,
             register_label_obstacle, registry_label_obstacles,
+            segment_rects,
         )
         lbl = measure_label(self.label, theme, size_token)
         all_obstacles = list(obstacles)
         if registry is not None:
             all_obstacles += registry_label_obstacles(registry)
+            all_obstacles += free_text_rects(canvas, registry)
         placed = place_segment_label(
             segment, lbl, obstacles=all_obstacles, prefer=prefer,
             gap=theme.unit * 0.35,
@@ -103,11 +116,49 @@ class Bus:
         if registry is not None:
             register_label_obstacle(registry, placed.rect, "bus")
 
-    def _render(self, canvas: Canvas, theme: Theme, registry: dict) -> None:
+    # ------------------------------------------------------------------
+    # geometry helpers (pure, unit-testable through _render)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _centroid(boxes: Sequence[Tuple[float, float, float, float]]
+                  ) -> Tuple[float, float]:
+        cx = sum(b[0] + b[2] / 2 for b in boxes) / len(boxes)
+        cy = sum(b[1] + b[3] / 2 for b in boxes) / len(boxes)
+        return cx, cy
+
+    @staticmethod
+    def _v_seg_hits(px: float, y_a: float, y_b: float,
+                    boxes, skip) -> bool:
+        """Does the vertical segment at x=px cross any box interior?"""
+        y0, y1 = sorted((y_a, y_b))
+        for b in boxes:
+            if b is skip:
+                continue
+            bx, by, bw, bh = b
+            if bx < px < bx + bw and y0 < by + bh and y1 > by:
+                return True
+        return False
+
+    @staticmethod
+    def _h_seg_hits(py: float, x_a: float, x_b: float,
+                    boxes, skip) -> bool:
+        """Does the horizontal segment at y=py cross any box interior?"""
+        x0, x1 = sorted((x_a, x_b))
+        for b in boxes:
+            if b is skip:
+                continue
+            bx, by, bw, bh = b
+            if by < py < by + bh and x0 < bx + bw and x1 > bx:
+                return True
+        return False
+
+    def _render(self, canvas: Canvas, theme: Theme, registry: dict,
+                defer_label: bool = False) -> Optional[Callable[[], None]]:
         src_boxes = [registry[n] for n in self.sources if n in registry]
         dst_boxes = [registry[n] for n in self.sinks   if n in registry]
         if not src_boxes or not dst_boxes:
-            return
+            return None
 
         col = theme.color_of(self.color)
         dasharray = "4,3" if self.dashed else None
@@ -123,6 +174,41 @@ class Bus:
         def _record_segment(x1, y1, x2, y2):
             if abs(x1 - x2) > 0.5 or abs(y1 - y2) > 0.5:
                 drawn.append((x1, y1, x2, y2))
+
+        def _line(x1, y1, x2, y2, *, end_marker=None):
+            attrs = {"stroke": col, "stroke_width": sw}
+            if dasharray:
+                attrs["dasharray"] = dasharray
+            if end_marker:
+                attrs["marker_end"] = end_marker
+            canvas.line(x1, y1, x2, y2, **attrs)
+            _record_segment(x1, y1, x2, y2)
+
+        # Labels are deferred so they can dodge every wire in the scope.
+        label_jobs: List[Callable[[], None]] = []
+
+        def _emit_label(segment, obstacles, *, size_token, prefer,
+                        mask_bg=False):
+            if not self.label:
+                return
+            obs = list(obstacles)
+
+            def run():
+                self._draw_placed_label(
+                    canvas, theme, segment=segment, obstacles=obs,
+                    color=col, size_token=size_token, prefer=prefer,
+                    registry=registry, mask_bg=mask_bg)
+            label_jobs.append(run)
+
+        def _finish() -> None:
+            for job in label_jobs:
+                job()
+
+        def _done() -> Optional[Callable[[], None]]:
+            if defer_label:
+                return _finish if label_jobs else None
+            _finish()
+            return None
 
         # Collect every rectangle the planner knows about -- src/dst
         # boxes, sibling anchors, auto-registered Box obstacles, AND
@@ -184,198 +270,230 @@ class Bus:
                     # Place on the centred line gap; mask the dashed line
                     # behind the label.  The placer chooses above/below
                     # automatically based on which side has more room.
-                    self._draw_placed_label(
-                        canvas, theme,
-                        segment=((x_from, mid_y), (x_to, mid_y)),
-                        obstacles=box_obstacles,
-                        color=col,
-                        size_token="tiny",
-                        prefer="above",
-                        registry=registry,
-                        mask_bg=True,
-                    )
-            return
+                    _emit_label(((x_from, mid_y), (x_to, mid_y)),
+                                box_obstacles, size_token="tiny",
+                                prefer="above", mask_bg=True)
+            return _done()
 
-        # Otherwise fan-out/fan-in: one-side (sources or sinks) is clustered,
-        # other side is spread out.  Build a spine OFFSET from the clustered
-        # side toward the spread side, and route taps to each endpoint.
-        # Orientation precedence: explicit author hint > dominant geometry.
-        # ``orientation`` describes the FLOW (source -> sink) direction:
-        #   "horizontal" flow (src left of sinks)  => spine is VERTICAL
-        #   "vertical"   flow (src above of sinks) => spine is HORIZONTAL
-        # See the symmetric margin inflation in ``Flowed._apply_flow_margins``.
-        all_x = [b[0] + b[2] / 2 for b in all_boxes]
-        x_spread = max(all_x) - min(all_x)
+        # Fan-out/fan-in: orient from the FLOW direction (source-cluster
+        # centroid toward sink-cluster centroid), never from incidental
+        # cluster spread:
+        #   mostly-vertical flow   => horizontal spine in the inter-cluster gap
+        #   mostly-horizontal flow => vertical spine in the inter-cluster gap
+        src_cx, src_cy = self._centroid(src_boxes)
+        dst_cx, dst_cy = self._centroid(dst_boxes)
+        flow_dx = dst_cx - src_cx
+        flow_dy = dst_cy - src_cy
         if self.orientation == "horizontal":
             horizontal = False   # spine perpendicular to horizontal flow
         elif self.orientation == "vertical":
             horizontal = True    # spine perpendicular to vertical flow
         else:
-            horizontal = x_spread >= y_spread
+            horizontal = abs(flow_dy) >= abs(flow_dx)
+
+        rail_off = theme.unit * 2.0
+        edge_inset = theme.unit
 
         if horizontal:
-            # Spine is horizontal, spread is along x.  Decide which cluster
-            # is "below" (source) vs "above" (sink) by mean y.
-            src_mean_y = sum(b[1] + b[3] / 2 for b in src_boxes) / len(src_boxes)
-            dst_mean_y = sum(b[1] + b[3] / 2 for b in dst_boxes) / len(dst_boxes)
-            source_below = src_mean_y > dst_mean_y
+            # Horizontal spine; flow is vertical.
+            source_below = src_cy > dst_cy
             if source_below:
+                gap_lo = max(b[1] + b[3] for b in dst_boxes)  # sinks bottom
+                gap_hi = min(b[1] for b in src_boxes)         # sources top
                 src_edge = lambda b: (b[0] + b[2] / 2, b[1])              # top
                 dst_edge = lambda b: (b[0] + b[2] / 2, b[1] + b[3])       # bottom
-                # Spine sits in the middle of the gap between the source
-                # tops and the sink bottom, so the side label has clear
-                # room above it without touching the sink.
-                src_top = max(b[1] for b in src_boxes)
-                dst_bot = min(b[1] + b[3] for b in dst_boxes)
-                spine_y = (src_top + dst_bot) / 2
             else:
+                gap_lo = max(b[1] + b[3] for b in src_boxes)
+                gap_hi = min(b[1] for b in dst_boxes)
                 src_edge = lambda b: (b[0] + b[2] / 2, b[1] + b[3])
                 dst_edge = lambda b: (b[0] + b[2] / 2, b[1])
-                src_bot = min(b[1] + b[3] for b in src_boxes)
-                dst_top = max(b[1] for b in dst_boxes)
-                spine_y = (src_bot + dst_top) / 2
+            if gap_lo < gap_hi:
+                # Spine sits in the clear inter-cluster gap.
+                spine_y = (gap_lo + gap_hi) / 2
+            else:
+                # Overlapping clusters: fall back to nearest-edge midpoint.
+                if source_below:
+                    spine_y = (max(b[1] for b in src_boxes)
+                               + min(b[1] + b[3] for b in dst_boxes)) / 2
+                else:
+                    spine_y = (min(b[1] + b[3] for b in src_boxes)
+                               + max(b[1] for b in dst_boxes)) / 2
+
+            def _cluster_taps(boxes, edge_of, *, arrows: bool):
+                """Vertical taps from each box to the spine; or, when a
+                straight tap would impale a sibling endpoint, a side
+                rail alongside the cluster joining the spine once.
+                Returns the tap x-coordinates on the spine."""
+                blocked = any(
+                    self._v_seg_hits(edge_of(b)[0], edge_of(b)[1], spine_y,
+                                     all_boxes, b)
+                    for b in boxes)
+                if not blocked:
+                    xs = []
+                    for b in boxes:
+                        px, py = edge_of(b)
+                        _line(*(((px, spine_y, px, py)
+                                 if arrows else (px, py, px, spine_y))),
+                              end_marker=(marker if arrows else None))
+                        line_obstacles.append((px - sw, min(py, spine_y),
+                                               px + sw, max(py, spine_y)))
+                        xs.append(px)
+                    return xs
+                # Side rail: exit each box horizontally toward open air,
+                # run the rail alongside the cluster, join the spine.
+                cl = min(b[0] for b in boxes)
+                cr = max(b[0] + b[2] for b in boxes)
+                other_c = dst_cx if boxes is src_boxes else src_cx
+                to_right = other_c >= (cl + cr) / 2
+                rail_x = cr + rail_off if to_right else cl - rail_off
+                tap_ys = []
+                for b in boxes:
+                    ex = (b[0] + b[2]) if to_right else b[0]
+                    ey = b[1] + b[3] / 2
+                    if arrows:
+                        _line(rail_x, ey, ex, ey, end_marker=marker)
+                    else:
+                        _line(ex, ey, rail_x, ey)
+                    line_obstacles.append((min(ex, rail_x), ey - sw,
+                                           max(ex, rail_x), ey + sw))
+                    tap_ys.append(ey)
+                far_y = (max(tap_ys) if source_below == (boxes is src_boxes)
+                         else min(tap_ys))
+                _line(rail_x, far_y, rail_x, spine_y)
+                line_obstacles.append((rail_x - sw, min(far_y, spine_y),
+                                       rail_x + sw, max(far_y, spine_y)))
+                return [rail_x]
+
+            line_obstacles = []  # drawn line rects we'll want to avoid
+            src_taps_x = _cluster_taps(src_boxes, src_edge, arrows=False)
 
             # Single-sink fan-in (``concatenation`` junction): taps from
             # each source rise to a short horizontal bar, then ONE arrow
-            # from the centre of that bar goes all the way to the sink.
-            is_fan_in = len(dst_boxes) == 1 and len(src_boxes) > 1
-            src_taps_x = [src_edge(b)[0] for b in src_boxes]
-
-            line_obstacles = []  # drawn line rects we'll want to avoid
-            for b in src_boxes:
-                px, py = src_edge(b)
-                canvas.line(px, py, px, spine_y,
-                            stroke=col, stroke_width=sw, dasharray=dasharray)
-                _record_segment(px, py, px, spine_y)
-                # tap obstacle: thin vertical stripe, sw wide
-                y_lo, y_hi = min(py, spine_y), max(py, spine_y)
-                line_obstacles.append((px - sw, y_lo, px + sw, y_hi))
+            # from the bar goes to the sink -- orthogonally.
+            is_fan_in = len(dst_boxes) == 1
             if is_fan_in:
                 x0 = min(src_taps_x); x1 = max(src_taps_x)
-                canvas.line(x0, spine_y, x1, spine_y,
-                            stroke=col, stroke_width=sw, dasharray=dasharray)
-                _record_segment(x0, spine_y, x1, spine_y)
-                # T-bar obstacle -- pad it by half a text-line's height so
-                # the placer never places a label flush against it.
-                bar_pad = theme.unit * 0.5
-                line_obstacles.append((x0, spine_y - bar_pad,
-                                       x1, spine_y + bar_pad))
+                if x1 - x0 > 0.5:
+                    _line(x0, spine_y, x1, spine_y)
+                    # T-bar obstacle -- pad it by half a text-line's height
+                    # so the placer never sits a label flush against it.
+                    bar_pad = theme.unit * 0.5
+                    line_obstacles.append((x0, spine_y - bar_pad,
+                                           x1, spine_y + bar_pad))
                 bar_mid_x = (x0 + x1) / 2
-                dpx, dpy = dst_edge(dst_boxes[0])
-                attrs = {"stroke": col, "stroke_width": sw}
-                if dasharray:
-                    attrs["dasharray"] = dasharray
-                if self.arrow:
-                    attrs["marker_end"] = marker
-                canvas.line(bar_mid_x, spine_y, dpx, dpy, **attrs)
-                _record_segment(bar_mid_x, spine_y, dpx, dpy)
-                # sink arrow obstacle
-                y_lo, y_hi = min(spine_y, dpy), max(spine_y, dpy)
-                line_obstacles.append((bar_mid_x - sw, y_lo,
-                                       bar_mid_x + sw, y_hi))
-                if self.label:
+                sink = dst_boxes[0]
+                dpx, dpy = dst_edge(sink)
+                # Enter the sink face at the x nearest the bar within the
+                # face's usable span; jog horizontally along the spine
+                # first when the bar and the entry point are misaligned.
+                lo = sink[0] + min(edge_inset, sink[2] / 4)
+                hi = sink[0] + sink[2] - min(edge_inset, sink[2] / 4)
+                entry_x = min(max(bar_mid_x, lo), hi)
+                if abs(entry_x - bar_mid_x) > 0.5:
+                    _line(bar_mid_x, spine_y, entry_x, spine_y)
+                _line(entry_x, spine_y, entry_x, dpy, end_marker=marker)
+                line_obstacles.append((entry_x - sw, min(spine_y, dpy),
+                                       entry_x + sw, max(spine_y, dpy)))
+                if x1 - x0 > 0.5:
                     # For a fan-in, prefer the empty space BETWEEN the
                     # source boxes and the T-bar (i.e. on the source side
-                    # of the bar).  That's "below" the bar when sources
-                    # are below, or "above" when sources are above.
+                    # of the bar).
                     prefer = "below" if source_below else "above"
-                    self._draw_placed_label(
-                        canvas, theme,
-                        segment=((x0, spine_y), (x1, spine_y)),
-                        obstacles=box_obstacles + line_obstacles,
-                        color=col,
-                        size_token="micro",
-                        prefer=prefer,
-                        registry=registry,
-                        mask_bg=False,
-                    )
+                    _emit_label(((x0, spine_y), (x1, spine_y)),
+                                box_obstacles + line_obstacles,
+                                size_token="micro", prefer=prefer)
+                else:
+                    seg_y0 = min(spine_y, dpy); seg_y1 = max(spine_y, dpy)
+                    _emit_label(((entry_x, seg_y0), (entry_x, seg_y1)),
+                                box_obstacles + line_obstacles,
+                                size_token="micro",
+                                prefer="left")
             else:
                 # Fan-out (or symmetric): taps from spine to each sink,
                 # with an arrowhead on each.  Spine spans all tap xs.
                 taps_x = list(src_taps_x)
-                for b in dst_boxes:
-                    px, py = dst_edge(b)
-                    attrs = {"stroke": col, "stroke_width": sw}
-                    if dasharray:
-                        attrs["dasharray"] = dasharray
-                    if self.arrow:
-                        attrs["marker_end"] = marker
-                    canvas.line(px, spine_y, px, py, **attrs)
-                    _record_segment(px, spine_y, px, py)
-                    taps_x.append(px)
-                    y_lo, y_hi = min(spine_y, py), max(spine_y, py)
-                    line_obstacles.append((px - sw, y_lo, px + sw, y_hi))
+                taps_x += _cluster_taps(dst_boxes, dst_edge, arrows=True)
                 x0 = min(taps_x); x1 = max(taps_x)
-                canvas.line(x0, spine_y, x1, spine_y,
-                            stroke=col, stroke_width=sw, dasharray=dasharray)
-                _record_segment(x0, spine_y, x1, spine_y)
-                if self.label:
-                    prefer = "above" if source_below else "below"
-                    self._draw_placed_label(
-                        canvas, theme,
-                        segment=((x0, spine_y), (x1, spine_y)),
-                        obstacles=box_obstacles + line_obstacles,
-                        color=col,
-                        size_token="tiny",
-                        prefer=prefer,
-                        registry=registry,
-                        mask_bg=False,
-                    )
+                _line(x0, spine_y, x1, spine_y)
+                prefer = "above" if source_below else "below"
+                _emit_label(((x0, spine_y), (x1, spine_y)),
+                            box_obstacles + line_obstacles,
+                            size_token="tiny", prefer=prefer)
         else:
-            # Vertical spine (left-right cluster spread vertically).
-            src_mean_x = sum(b[0] + b[2] / 2 for b in src_boxes) / len(src_boxes)
-            dst_mean_x = sum(b[0] + b[2] / 2 for b in dst_boxes) / len(dst_boxes)
-            source_left = src_mean_x < dst_mean_x
+            # Vertical spine; flow is horizontal.
+            source_left = src_cx < dst_cx
             if source_left:
-                spine_x = (max(b[0] + b[2] for b in src_boxes)
-                           + min(b[0] for b in dst_boxes)) / 2
+                gap_lo = max(b[0] + b[2] for b in src_boxes)  # sources right
+                gap_hi = min(b[0] for b in dst_boxes)         # sinks left
                 src_edge = lambda b: (b[0] + b[2], b[1] + b[3] / 2)
                 dst_edge = lambda b: (b[0], b[1] + b[3] / 2)
             else:
-                spine_x = (min(b[0] for b in src_boxes)
-                           + max(b[0] + b[2] for b in dst_boxes)) / 2
+                gap_lo = max(b[0] + b[2] for b in dst_boxes)
+                gap_hi = min(b[0] for b in src_boxes)
                 src_edge = lambda b: (b[0], b[1] + b[3] / 2)
                 dst_edge = lambda b: (b[0] + b[2], b[1] + b[3] / 2)
-            taps_y = []
+            if gap_lo < gap_hi:
+                spine_x = (gap_lo + gap_hi) / 2
+            else:
+                if source_left:
+                    spine_x = (max(b[0] + b[2] for b in src_boxes)
+                               + min(b[0] for b in dst_boxes)) / 2
+                else:
+                    spine_x = (min(b[0] for b in src_boxes)
+                               + max(b[0] + b[2] for b in dst_boxes)) / 2
+
+            def _cluster_taps_h(boxes, edge_of, *, arrows: bool):
+                blocked = any(
+                    self._h_seg_hits(edge_of(b)[1], edge_of(b)[0], spine_x,
+                                     all_boxes, b)
+                    for b in boxes)
+                if not blocked:
+                    ys = []
+                    for b in boxes:
+                        px, py = edge_of(b)
+                        _line(*(((spine_x, py, px, py)
+                                 if arrows else (px, py, spine_x, py))),
+                              end_marker=(marker if arrows else None))
+                        line_obstacles.append((min(px, spine_x), py - sw,
+                                               max(px, spine_x), py + sw))
+                        ys.append(py)
+                    return ys
+                ct = min(b[1] for b in boxes)
+                cb = max(b[1] + b[3] for b in boxes)
+                other_c = dst_cy if boxes is src_boxes else src_cy
+                to_bottom = other_c >= (ct + cb) / 2
+                rail_y = cb + rail_off if to_bottom else ct - rail_off
+                tap_xs = []
+                for b in boxes:
+                    ex = b[0] + b[2] / 2
+                    ey = (b[1] + b[3]) if to_bottom else b[1]
+                    if arrows:
+                        _line(ex, rail_y, ex, ey, end_marker=marker)
+                    else:
+                        _line(ex, ey, ex, rail_y)
+                    line_obstacles.append((ex - sw, min(ey, rail_y),
+                                           ex + sw, max(ey, rail_y)))
+                    tap_xs.append(ex)
+                far_x = (max(tap_xs) if source_left == (boxes is src_boxes)
+                         else min(tap_xs))
+                _line(far_x, rail_y, spine_x, rail_y)
+                line_obstacles.append((min(far_x, spine_x), rail_y - sw,
+                                       max(far_x, spine_x), rail_y + sw))
+                return [rail_y]
+
             line_obstacles = []
-            for b in src_boxes:
-                px, py = src_edge(b)
-                canvas.line(px, py, spine_x, py,
-                            stroke=col, stroke_width=sw, dasharray=dasharray)
-                _record_segment(px, py, spine_x, py)
-                taps_y.append(py)
-                x_lo, x_hi = min(px, spine_x), max(px, spine_x)
-                line_obstacles.append((x_lo, py - sw, x_hi, py + sw))
-            for b in dst_boxes:
-                px, py = dst_edge(b)
-                attrs = {"stroke": col, "stroke_width": sw}
-                if dasharray:
-                    attrs["dasharray"] = dasharray
-                if self.arrow:
-                    attrs["marker_end"] = marker
-                canvas.line(spine_x, py, px, py, **attrs)
-                _record_segment(spine_x, py, px, py)
-                taps_y.append(py)
-                x_lo, x_hi = min(spine_x, px), max(spine_x, px)
-                line_obstacles.append((x_lo, py - sw, x_hi, py + sw))
+            taps_y = list(_cluster_taps_h(src_boxes, src_edge, arrows=False))
+            taps_y += _cluster_taps_h(dst_boxes, dst_edge, arrows=True)
             y0 = min(taps_y); y1 = max(taps_y)
-            canvas.line(spine_x, y0, spine_x, y1,
-                        stroke=col, stroke_width=sw, dasharray=dasharray)
-            _record_segment(spine_x, y0, spine_x, y1)
+            if y1 - y0 > 0.5:
+                _line(spine_x, y0, spine_x, y1)
             if self.label:
                 # Prefer the SOURCE side of the spine for the label -- the
                 # sink side is typically a cluster of targets (often with
                 # their own labels/regions), so placing the bus label on
                 # the sink side tends to collide with other content.
                 prefer = "left" if source_left else "right"
-                self._draw_placed_label(
-                    canvas, theme,
-                    segment=((spine_x, y0), (spine_x, y1)),
-                    obstacles=box_obstacles + line_obstacles,
-                    color=col,
-                    size_token="tiny",
-                    prefer=prefer,
-                    registry=registry,
-                    mask_bg=False,
-                )
-
+                _emit_label(((spine_x, y0), (spine_x, y1)),
+                            box_obstacles + line_obstacles,
+                            size_token="tiny", prefer=prefer)
+        return _done()

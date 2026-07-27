@@ -53,6 +53,9 @@ class Card(Element):
     "header plus a stack of rows" -- is non-erroneous.
     """
 
+    # Framed siblings in a Row share one height (sibling-frame rule).
+    frame_sibling = True
+
     def __init__(self, header: Element | str, *body: Element, role,
                  footer: Optional[Element] = None, padding="sm",
                  radius: Optional[float] = None, dashed: bool = False,
@@ -397,6 +400,9 @@ class Stripe(Element):
 
 class StepCell(Element):
     """A full-name pipeline step card with a thumbnail and condition glyph."""
+
+    # Framed siblings in a Row share one height (sibling-frame rule).
+    frame_sibling = True
 
     def __init__(self, name: str, visual: Element, *, role, index: Optional[int] = None,
                  optional: bool = False, condition: Optional[ConditionSpec] = None,

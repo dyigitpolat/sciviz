@@ -13,7 +13,9 @@ import math as _m
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Sequence, Tuple, Union
 
+from ..auto.labelplacer import overlap_area
 from ..core import BBox, Canvas, Element, Theme
+from ..palette import ColorRef
 
 
 @dataclass
@@ -25,8 +27,10 @@ class Series:
     points : list of ``(x, y)``
     label : str, optional
         Label shown in the legend (if any). ``None`` hides from legend.
-    color : str
-        Theme colour role; defaults to "auto" which cycles through
+    color : str or ColorRef
+        Theme colour role, hex literal, or palette reference (e.g.
+        ``Palette.red.faded()`` for a de-emphasized baseline series);
+        defaults to "auto" which cycles through
         :meth:`Theme.role_for_index`.
     dash : str, optional
         SVG ``stroke-dasharray`` string, e.g. ``"4,3"``.
@@ -46,7 +50,7 @@ class Series:
 
     points: Sequence[Tuple[float, float]]
     label: Optional[str] = None
-    color: str = "auto"
+    color: Union[str, ColorRef] = "auto"
     dash: Optional[str] = None
     width: Optional[float] = None
     key: Optional[str] = None
@@ -133,7 +137,12 @@ class LineChart(Element):
     Parameters
     ----------
     series : list of :class:`Series`
-    x_range, y_range : tuple (low, high)
+    x_range, y_range : tuple (low, high), optional
+        Axis ranges. Omit (``None``, the default) for automatic ranging:
+        the axis is fitted snugly to the data and snapped outward to a
+        "nice" tick step, so plots carry no dead whitespace and ticks
+        land on round values. An explicit tuple is always honoured
+        verbatim.
     width, height : float
         Plot area (excluding axis labels).
     x_label, y_label : str
@@ -142,7 +151,14 @@ class LineChart(Element):
     annotations : list of :class:`Annotate`, optional
     legend : str or None
         Where to render the legend: ``"top"``, ``"bottom"``, ``"right"``,
-        or ``None`` (default -- use an external :class:`Legend`).
+        an inside corner (``"inside-top-left"``, ``"inside-top-right"``,
+        ``"inside-bottom-left"``, ``"inside-bottom-right"``), or ``None``
+        (default -- use an external :class:`Legend`). An inside corner is
+        a *preference*, not a fixed position: if the legend box would
+        cover data there, the chart relocates it to a clear corner, or,
+        when the y range is automatic, keeps the corner and expands the
+        range headroom just enough to clear the data. Legends never
+        occlude series lines silently.
     """
 
     _PLOT_SIZES = {
@@ -153,8 +169,8 @@ class LineChart(Element):
     }
 
     def __init__(self, series: Sequence[Union[Series, dict]], *,
-                 x_range: Tuple[float, float] = (0.0, 1.0),
-                 y_range: Tuple[float, float] = (0.0, 1.0),
+                 x_range: Optional[Tuple[float, float]] = None,
+                 y_range: Optional[Tuple[float, float]] = None,
                  width: Optional[float] = None,
                  height: Optional[float] = None,
                  size: str = "md",
@@ -199,15 +215,19 @@ class LineChart(Element):
             "right",
             "inside-top-left",
             "inside-top-right",
+            "inside-bottom-left",
             "inside-bottom-right",
         ):
             raise ValueError(
                 "legend must be None, 'top', 'bottom', 'right', "
-                "'inside-top-left', 'inside-top-right', or "
+                "'inside-top-left', 'inside-top-right', "
+                "'inside-bottom-left', or "
                 f"'inside-bottom-right'; got {legend!r}"
             )
         self.legend = legend
         self._validate_relations()
+        self._legend_rect: Optional[Tuple[float, float, float, float]] = None
+        self._resolve_ranges()
 
     @staticmethod
     def _coerce_series(s) -> Series:
@@ -250,10 +270,84 @@ class LineChart(Element):
                 raise ValueError(
                     "Series.marker_fill must be 'solid' or 'hollow'")
 
+    # ---- range resolution ------------------------------------------------
+
+    @staticmethod
+    def _nice_step(raw: float) -> float:
+        """Round ``raw`` up to a 1/2/2.5/5 x 10^k tick step."""
+        if raw <= 0:
+            return 1.0
+        mag = 10.0 ** _m.floor(_m.log10(raw))
+        frac = raw / mag
+        for nice in (1.0, 2.0, 2.5, 5.0, 10.0):
+            if frac <= nice + 1e-9:
+                return nice * mag
+        return 10.0 * mag
+
+    @classmethod
+    def _nice_bounds(cls, lo: float, hi: float,
+                     log: bool) -> Tuple[float, float, Optional[float]]:
+        """Snap a data extent outward to nice bounds; return (lo, hi, step)."""
+        if log:
+            lo = 10.0 ** _m.floor(_m.log10(max(lo, 1e-12)))
+            hi = 10.0 ** _m.ceil(_m.log10(max(hi, 1e-12)))
+            if hi <= lo:
+                hi = lo * 10.0
+            return lo, hi, None
+        if hi - lo < 1e-12:
+            pad = max(abs(lo), 1.0) * 0.5
+            lo, hi = lo - pad, hi + pad
+        step = cls._nice_step((hi - lo) / 4.0)
+        nlo = _m.floor(lo / step + 1e-9) * step
+        nhi = _m.ceil(hi / step - 1e-9) * step
+        if nhi <= nlo:
+            nhi = nlo + step
+        return nlo, nhi, step
+
+    def _data_extent(self) -> Tuple[Optional[Tuple[float, float]],
+                                    Optional[Tuple[float, float]]]:
+        xs: List[float] = []
+        ys: List[float] = []
+        for s in self.series:
+            for px, py in s.points:
+                xs.append(float(px))
+                ys.append(float(py))
+        for ann in self.annotations:
+            xs.append(float(ann.x))
+            ys.append(float(ann.y))
+        if not xs:
+            return None, None
+        return (min(xs), max(xs)), (min(ys), max(ys))
+
+    def _resolve_ranges(self) -> None:
+        """Fix the ranges used for projection this render.
+
+        Explicit ``x_range``/``y_range`` pass through verbatim. ``None``
+        (automatic) axes fit the data extent and snap outward to a nice
+        tick step; the step is kept so auto ticks land on round values.
+        """
+        x_ext, y_ext = self._data_extent()
+        self._x_step: Optional[float] = None
+        self._y_step: Optional[float] = None
+        if self.x_range is not None:
+            self._xr: Tuple[float, float] = tuple(self.x_range)
+        elif x_ext is None:
+            self._xr = (0.0, 1.0)
+        else:
+            lo, hi, self._x_step = self._nice_bounds(*x_ext, self.log_x)
+            self._xr = (lo, hi)
+        if self.y_range is not None:
+            self._yr: Tuple[float, float] = tuple(self.y_range)
+        elif y_ext is None:
+            self._yr = (0.0, 1.0)
+        else:
+            lo, hi, self._y_step = self._nice_bounds(*y_ext, self.log_y)
+            self._yr = (lo, hi)
+
     # ---- projection helpers ---------------------------------------------
 
     def _x_to_px(self, v: float) -> float:
-        x0, x1 = self.x_range
+        x0, x1 = self._xr
         if self.log_x:
             v = _m.log10(max(v, 1e-12))
             x0 = _m.log10(max(x0, 1e-12))
@@ -261,7 +355,7 @@ class LineChart(Element):
         return (v - x0) / (x1 - x0) * self.width
 
     def _y_to_px(self, v: float) -> float:
-        y0, y1 = self.y_range
+        y0, y1 = self._yr
         if self.log_y:
             v = _m.log10(max(v, 1e-12))
             y0 = _m.log10(max(y0, 1e-12))
@@ -291,8 +385,17 @@ class LineChart(Element):
             return str(int(round(v)))
         return f"{v:g}"
 
-    def _ticks(self, explicit, value_range, log: bool) -> List[float]:
+    def _ticks(self, explicit, value_range, log: bool,
+               step: Optional[float] = None) -> List[float]:
         if explicit == "auto":
+            if step is not None and not log:
+                # Ticks stay on the step grid; legend headroom expansion
+                # may leave a range edge half a step off grid, so emit
+                # only on-grid ticks inside the range.
+                lo, hi = value_range
+                start = _m.ceil(lo / step - 1e-9) * step
+                count = max(0, int(_m.floor((hi - start) / step + 1e-9)))
+                return [start + step * i for i in range(count + 1)]
             return self._axis_ticks(*value_range, log)
         if isinstance(explicit, str):
             raise ValueError("ticks must be 'auto' or a sequence of values")
@@ -378,11 +481,41 @@ class LineChart(Element):
 
     # ---- layout ----------------------------------------------------------
 
+    _TICK_GAP = 4.0            # axis -> tick-label gap
+
+    def _axis_gap(self, theme: Theme) -> float:
+        """Tick-label -> axis-title gap."""
+        return theme.unit * 0.75
+
+    def _y_tick_width(self, theme: Theme) -> float:
+        """Measured width of the widest resolved y tick label."""
+        y_ticks = self._ticks(self.y_ticks, self._yr, self.log_y,
+                              self._y_step)
+        return max((theme.text_width(
+            self._tick_label(v, self.log_y, self.y_tick_format), "small")
+            for v in y_ticks), default=0.0)
+
     def _pad(self, theme: Theme) -> Tuple[float, float, float, float]:
-        """Return padding (left, top, right, bottom) around the plot area."""
-        left = 42.0 + (theme.text_height("small") + 4 if self.y_label else 0)
-        bot = theme.text_height("small") * 2.3 + (
-            theme.text_height("label") + 4 if self.x_label else 0)
+        """Return padding (left, top, right, bottom) around the plot area.
+
+        The gutters are derived from the labels they must hold: the left
+        pad is the measured width of the y tick labels plus the axis
+        title band (when present), the bottom pad is the tick-label line
+        plus the x title band. The plot area therefore claims every
+        pixel the labels do not need, and axis titles sit a fixed small
+        gap from the nearest tick label instead of a fixed distance from
+        the axis. Resolves ranges and the inside legend first, so the
+        gutters reflect the final ticks.
+        """
+        self._resolve_ranges()
+        self._place_inside_legend(theme)
+        tick_h = theme.text_height("small")
+        title_h = theme.text_height("label")
+        gap = self._axis_gap(theme)
+        left = self._TICK_GAP + self._y_tick_width(theme) + (
+            gap + title_h if self.y_label else 0.0) + 2.0
+        bot = tick_h * 1.35 + (
+            gap * 0.6 + title_h if self.x_label else 0.0)
         top = 10.0
         right = 8.0
         if self.legend == "top":
@@ -400,6 +533,9 @@ class LineChart(Element):
     # ---- render ----------------------------------------------------------
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        # _pad resolves ranges and the inside legend (which may expand an
+        # automatic y range for headroom) before any geometry depends on
+        # them, and derives the gutters from the resolved tick labels.
         L, T, R, B = self._pad(theme)
         plot_x = x + L
         plot_y = y + T
@@ -410,8 +546,10 @@ class LineChart(Element):
         muted = theme.color_of("text_muted")
 
         # gridlines + ticks
-        x_ticks = self._ticks(self.x_ticks, self.x_range, self.log_x)
-        y_ticks = self._ticks(self.y_ticks, self.y_range, self.log_y)
+        x_ticks = self._ticks(self.x_ticks, self._xr, self.log_x,
+                              self._x_step)
+        y_ticks = self._ticks(self.y_ticks, self._yr, self.log_y,
+                              self._y_step)
 
         if self.grid:
             for xv in x_ticks:
@@ -449,16 +587,21 @@ class LineChart(Element):
                         label, size=tick_px,
                         fill=muted, anchor="end")
 
-        # axis labels
+        # axis titles sit one small gap beyond the tick labels they follow.
+        title_h = theme.text_height("label")
+        gap = self._axis_gap(theme)
         if self.x_label:
             canvas.text(plot_x + self.width / 2,
-                        plot_y + self.height + tick_h * 2.2,
+                        plot_y + self.height + tick_h * 1.35
+                        + gap * 0.6 + title_h * 0.78,
                         self.x_label, size=theme.size_px("label"),
                         fill=text_col, anchor="middle")
         if self.y_label:
             # canvas.text (not raw SVG) so the rotated label's ink is
             # tracked -- otherwise auto-trim can crop the y-axis title.
-            canvas.text(plot_x - 36.0, plot_y + self.height / 2,
+            canvas.text(plot_x - self._TICK_GAP - self._y_tick_width(theme)
+                        - gap - title_h / 2,
+                        plot_y + self.height / 2,
                         self.y_label, size=theme.size_px("label"),
                         fill=text_col, anchor="middle", rotate=-90)
 
@@ -640,30 +783,225 @@ class LineChart(Element):
                 canvas, plot_x, plot_y, L, T, R, B, theme,
             )
 
+    # ---- inside-legend placement ----------------------------------------
+
+    _INSIDE_CORNERS = ("top-right", "top-left", "bottom-right", "bottom-left")
+
+    def _legend_items(self) -> List[Tuple[int, Series]]:
+        return [(i, s) for i, s in enumerate(self.series) if s.label]
+
+    def _legend_font(self, theme: Theme) -> float:
+        """Inside-legend font in px: slightly smaller than tick text.
+
+        The legend competes with data for plot area, and an oversized
+        box forces large headroom expansion when no corner is clear, so
+        the inside legend runs compact by default.
+        """
+        return theme.size_px("small") * 0.85
+
+    def _legend_box_size(self, theme: Theme) -> Optional[
+            Tuple[float, float, float, float, float, float]]:
+        """Return (box_w, box_h, pad, sample_w, line_h, font_px)."""
+        items = self._legend_items()
+        if not items:
+            return None
+        font = self._legend_font(theme)
+        line_h = theme.text_height(font)
+        pad = theme.unit * 0.6
+        sample_w = theme.unit * 3.0
+        text_w = max(theme.text_width(s.label, font) for _, s in items)
+        box_w = pad * 2 + sample_w + theme.unit + text_w
+        box_h = pad * 2 + len(items) * line_h + max(0, len(items) - 1) * 1.0
+        return box_w, box_h, pad, sample_w, line_h, font
+
+    def _corner_rect(self, corner: str, box_w: float, box_h: float,
+                     theme: Theme) -> Tuple[float, float, float, float]:
+        """Legend rect for a corner, relative to the plot origin."""
+        u = theme.unit
+        x0 = u if corner.endswith("left") else self.width - box_w - u
+        y0 = u if corner.startswith("top") else self.height - box_h - u
+        return (x0, y0, x0 + box_w, y0 + box_h)
+
+    def _legend_obstacles(self, theme: Theme) -> Tuple[
+            List[Tuple[float, float, float, float]],
+            List[Tuple[float, float, float, float]],
+            List[Tuple[float, float, float, float]]]:
+        """Data ink in plot pixels, plus range-expansion constraints.
+
+        Returns ``(rects, top_cons, bot_cons)``. ``rects`` are obstacle
+        bboxes used to score legend corners. Long polyline segments are
+        subdivided so a diagonal's bbox does not block corners the line
+        never visits. Each constraint is ``(x0, x1, v, off)``: over the
+        x-pixel span ``[x0, x1]`` the ink tied to data value ``v``
+        reaches ``off`` pixels above (top) or below (bottom) that
+        value's projection, which the headroom solver must clear.
+        """
+        rects: List[Tuple[float, float, float, float]] = []
+        top_cons: List[Tuple[float, float, float, float]] = []
+        bot_cons: List[Tuple[float, float, float, float]] = []
+        y0, y1 = self._yr
+
+        def inv_y(py: float) -> float:
+            return y0 + (self.height - py) / self.height * (y1 - y0)
+
+        for s in self.series:
+            pts = [(self._x_to_px(float(px)), self._y_to_px(float(py)))
+                   for px, py in s.points]
+            r = (self._marker_radius(s.marker_size, theme)
+                 if s.marker else 0.0)
+            pad = max(r, (s.width if s.width is not None else theme.line)) + 2.0
+
+            def add_ink(x0: float, py0: float, x1: float, py1: float) -> None:
+                rects.append((min(x0, x1) - pad, min(py0, py1) - pad,
+                              max(x0, x1) + pad, max(py0, py1) + pad))
+                span = (min(x0, x1) - pad, max(x0, x1) + pad)
+                top_cons.append((*span, inv_y(min(py0, py1)), pad))
+                bot_cons.append((*span, inv_y(max(py0, py1)), pad))
+
+            if s.show_line and len(pts) >= 2:
+                for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+                    n = max(1, int(_m.ceil(_m.hypot(bx - ax, by - ay) / 10.0)))
+                    for i in range(n):
+                        t0, t1 = i / n, (i + 1) / n
+                        add_ink(ax + (bx - ax) * t0, ay + (by - ay) * t0,
+                                ax + (bx - ax) * t1, ay + (by - ay) * t1)
+            for px, py in pts:
+                add_ink(px, py, px, py)
+
+        for ann in self.annotations:
+            ax = self._x_to_px(float(ann.x))
+            ay = self._y_to_px(float(ann.y))
+            lines = ann.text.splitlines() or [ann.text]
+            w = max(theme.text_width(line, ann.size) for line in lines)
+            h = theme.text_height(ann.size) * len(lines)
+            x0 = ax + ann.dx
+            if ann.anchor == "middle":
+                x0 -= w / 2
+            elif ann.anchor == "end":
+                x0 -= w
+            ry0 = ay + ann.dy - theme.text_height(ann.size) * 0.75
+            rects.append((x0, ry0, x0 + w, ry0 + h))
+            top_cons.append((x0, x0 + w, inv_y(ay), ay - ry0))
+            bot_cons.append((x0, x0 + w, inv_y(ay), (ry0 + h) - ay))
+            if ann.dot:
+                rects.append((ax - 3.0, ay - 3.0, ax + 3.0, ay + 3.0))
+        return rects, top_cons, bot_cons
+
+    def _expand_y_for_corner(self, corner: str, rect, cons, margin: float
+                             ) -> bool:
+        """Grow the automatic y range so ``rect`` clears the data under it.
+
+        Solves in data space: for a top corner, the range top ``y1`` rises
+        until every constrained value projects below the legend bottom
+        plus ``margin`` (symmetrically, the bottom drops for a bottom
+        corner). The result snaps outward to the auto tick step. Returns
+        False when no finite expansion can clear the corner.
+        """
+        y0, y1 = self._yr
+        H = self.height
+        x0, _, x1, _ = rect
+        active = [(v, off) for (cx0, cx1, v, off) in cons
+                  if cx1 >= x0 - margin and cx0 <= x1 + margin]
+        if not active:
+            return True
+        if corner.startswith("top"):
+            B = rect[3] + margin          # legend bottom edge + clearance
+            needed = y1
+            for v, off in active:
+                free = H - B - off
+                if free <= 1.0:
+                    return False
+                if v <= y0:
+                    continue
+                needed = max(needed, y0 + (v - y0) * H / free)
+            if needed > y1 + (y1 - y0) * 4.0:
+                return False
+            step = self._y_step or self._nice_step((needed - y0) / 4.0)
+            # Snap the expansion outward on the half-step grid: ticks stay
+            # nice while the range grows no more than necessary.
+            half_step = step / 2.0
+            self._yr = (y0, y0 + _m.ceil((needed - y0) / half_step - 1e-9)
+                        * half_step)
+        else:
+            T = rect[1] - margin          # legend top edge - clearance
+            if T <= 1.0:
+                return False
+            needed = y0
+            for v, off in active:
+                t_eff = T - off
+                if t_eff <= 1.0:
+                    return False
+                q_eff = (H - t_eff) / H
+                if v >= y1:
+                    continue
+                needed = min(needed, (v - q_eff * y1) / (1.0 - q_eff))
+            if needed < y0 - (y1 - y0) * 4.0:
+                return False
+            step = self._y_step or self._nice_step((y1 - needed) / 4.0)
+            half_step = step / 2.0
+            self._yr = (y1 - _m.ceil((y1 - needed) / half_step - 1e-9)
+                        * half_step, y1)
+        return True
+
+    def _place_inside_legend(self, theme: Theme) -> None:
+        """Settle the inside legend so it never covers data ink.
+
+        Cascade: keep the author's corner when it is clear; otherwise
+        relocate to the first clear corner; otherwise, when the y range
+        is automatic, keep the author's corner and expand headroom just
+        enough to clear it; as a last resort take the least-covering
+        corner. Explicit ranges are never mutated.
+        """
+        self._legend_rect = None
+        if not (self.legend and self.legend.startswith("inside")):
+            return
+        size = self._legend_box_size(theme)
+        if size is None:
+            return
+        box_w, box_h, *_ = size
+        preferred = self.legend[len("inside-"):]
+        order = [preferred] + [c for c in self._INSIDE_CORNERS
+                               if c != preferred]
+        rects = {c: self._corner_rect(c, box_w, box_h, theme) for c in order}
+        obstacles, top_cons, bot_cons = self._legend_obstacles(theme)
+        scores = {c: sum(overlap_area(rects[c], ob) for ob in obstacles)
+                  for c in order}
+        margin = theme.unit * 0.75
+        if scores[preferred] <= 1e-9:
+            self._legend_rect = rects[preferred]
+            return
+        for c in order:
+            if scores[c] <= 1e-9:
+                self._legend_rect = rects[c]
+                return
+        y_is_auto = self.y_range is None and not self.log_y
+        if y_is_auto:
+            cons = top_cons if preferred.startswith("top") else bot_cons
+            if self._expand_y_for_corner(preferred, rects[preferred],
+                                         cons, margin):
+                self._legend_rect = rects[preferred]
+                return
+        best = min(order, key=lambda c: scores[c])
+        self._legend_rect = rects[best]
+
     def _render_legend(self, canvas: Canvas, plot_x: float, plot_y: float,
                        L: float, T: float, R: float, B: float,
                        theme: Theme) -> None:
-        items = [(i, s) for i, s in enumerate(self.series) if s.label]
+        items = self._legend_items()
         if not items:
             return
         legend_size = "small"
         line_h = theme.text_height(legend_size)
-        if self.legend in (
-            "inside-top-left", "inside-top-right", "inside-bottom-right"
-        ):
-            pad = theme.unit * 0.7
-            sample_w = theme.unit * 3.0
-            text_w = max(theme.text_width(s.label, legend_size) for _, s in items)
-            box_w = pad * 2 + sample_w + theme.unit + text_w
-            box_h = pad * 2 + len(items) * line_h + max(0, len(items) - 1) * 2
-            if self.legend == "inside-top-left":
-                lx = plot_x + theme.unit
-            else:
-                lx = plot_x + self.width - box_w - theme.unit
-            if self.legend in ("inside-top-left", "inside-top-right"):
-                box_y = plot_y + theme.unit
-            else:
-                box_y = plot_y + self.height - box_h - theme.unit
+        if self.legend.startswith("inside"):
+            size = self._legend_box_size(theme)
+            assert size is not None
+            box_w, box_h, pad, sample_w, line_h, font = size
+            if self._legend_rect is None:
+                # render() resolves placement; fall back for direct calls.
+                self._place_inside_legend(theme)
+            rx0, ry0, _, _ = self._legend_rect
+            lx = plot_x + rx0
+            box_y = plot_y + ry0
             canvas.rect(
                 lx,
                 box_y,
@@ -705,10 +1043,10 @@ class LineChart(Element):
                     lx + pad + sample_w + theme.unit,
                     ly + line_h * 0.75,
                     s.label,
-                    size=theme.size_px(legend_size),
+                    size=font,
                     fill=theme.color_of("text"),
                 )
-                ly += line_h + 2
+                ly += line_h + 1.0
             return
         if self.legend == "right":
             lx = plot_x + self.width + 16.0

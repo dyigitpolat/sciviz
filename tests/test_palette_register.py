@@ -46,3 +46,19 @@ def test_register_does_not_clobber_builtins():
     import pytest
     with pytest.raises(ValueError):
         Palette.register("alert", "#000000")
+
+
+def test_faded_variant_sits_between_fill_and_soft():
+    """``faded`` is a legible stroke tone: lighter than the full hue,
+    far darker than the ``soft`` background tint."""
+    theme = Theme()
+    fill = resolve_color(Palette.red, theme)
+    faded = resolve_color(Palette.red.faded(), theme)
+    soft = resolve_color(Palette.red.soft(), theme)
+
+    def lum(h):
+        return sum(int(h[i:i + 2], 16) for i in (1, 3, 5)) / 3.0
+
+    assert lum(fill) < lum(faded) < lum(soft), (
+        f"expected fill < faded < soft luminance, got "
+        f"{lum(fill)}, {lum(faded)}, {lum(soft)}")

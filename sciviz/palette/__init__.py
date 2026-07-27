@@ -40,18 +40,28 @@ class ColorRef:
                      resolves to the theme-adjusted version.
     3. ``literal`` -- an explicit hex string ("#3b5fa0") that passes through.
 
-    Modifiers ``soft`` and ``dark`` produce derived references.
+    Modifiers ``soft``, ``dark``, and ``faded`` produce derived
+    references.
     """
     role: Optional[str] = None
     named: Optional[str] = None
     literal: Optional[str] = None
-    variant: str = "fill"           # "fill" | "soft" | "dark" | "stroke"
+    variant: str = "fill"    # "fill" | "soft" | "dark" | "stroke" | "faded"
 
     def soft(self) -> "ColorRef":
         return ColorRef(self.role, self.named, self.literal, "soft")
 
     def dark(self) -> "ColorRef":
         return ColorRef(self.role, self.named, self.literal, "dark")
+
+    def faded(self) -> "ColorRef":
+        """De-emphasized tone that still reads as a data stroke.
+
+        Sits between the full hue and the ``soft`` background tint:
+        use it for context/baseline series that must stay legible while
+        the emphasized series carry the full hue.
+        """
+        return ColorRef(self.role, self.named, self.literal, "faded")
 
     def stroke(self) -> "ColorRef":
         return ColorRef(self.role, self.named, self.literal, "stroke")
@@ -350,6 +360,11 @@ def _dark(hex_color: str) -> str:
     return _mix(hex_color, "#000000", 0.25)
 
 
+def _faded(hex_color: str) -> str:
+    """Return a de-emphasized tone that still reads as a data stroke."""
+    return _mix(hex_color, "#ffffff", 0.45)
+
+
 def resolve_color(ref, theme) -> str:
     """Resolve any color spec (string, ColorRef, None) to a hex string.
 
@@ -388,4 +403,6 @@ def resolve_color(ref, theme) -> str:
         return _soft(base)
     if ref.variant == "dark":
         return _dark(base)
+    if ref.variant == "faded":
+        return _faded(base)
     return base

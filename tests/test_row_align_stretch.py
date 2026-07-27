@@ -62,16 +62,28 @@ def _panel_borders(svg: str) -> list[dict]:
     return borders
 
 
-def test_center_leaves_panel_borders_unequal():
-    """Baseline: without stretch the two panel frames have different heights
-    (this is the behaviour ``align="stretch"`` is meant to fix)."""
+def test_opting_out_leaves_panel_borders_unequal():
+    """Baseline: with the sibling-frame rule disabled the two panel frames
+    keep their natural, different heights (equalisation is what
+    ``align="stretch"`` / the default sibling-frame rule provide)."""
+    svg, _ = _render(Row(_short_panel(), _tall_panel(), gap="lg",
+                         align="center", equal_heights=False))
+    borders = _panel_borders(svg)
+    assert len(borders) == 2, f"expected 2 panel frames, got {borders}"
+    short_h, tall_h = borders[0]["height"], borders[1]["height"]
+    assert short_h < tall_h - 1.0, (
+        f"expected unequal frames when opted out: {short_h} vs {tall_h}")
+
+
+def test_sibling_frame_rule_equalises_panel_borders_by_default():
+    """A row of two Panels equalises frame heights with no flags at all."""
     svg, _ = _render(Row(_short_panel(), _tall_panel(), gap="lg",
                          align="center"))
     borders = _panel_borders(svg)
     assert len(borders) == 2, f"expected 2 panel frames, got {borders}"
     short_h, tall_h = borders[0]["height"], borders[1]["height"]
-    assert short_h < tall_h - 1.0, (
-        f"expected unequal frames under align=center: {short_h} vs {tall_h}")
+    assert abs(short_h - tall_h) < 0.5, (
+        f"expected equal frames by default: {short_h} vs {tall_h}")
 
 
 def test_stretch_equalises_panel_heights():

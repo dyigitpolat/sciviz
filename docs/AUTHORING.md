@@ -71,7 +71,7 @@ Long bold values therefore centre symmetrically inside `Card` /
 Signatures at call sites:
 
 ```
-Row(*children, gap="md", align="center", equal_widths=False, balance_outer=False)
+Row(*children, gap="md", align="center", equal_widths=False, equal_heights=None, balance_outer=False)
 Column(*children, gap="md", align="center")
 WrapRow(*children, gap="sm", max_width=..., line_align="start", hang=0.0)
 Panel(tag, title, child)
@@ -100,6 +100,15 @@ leaf text is left at its natural size. Use it instead of padding shims
 or hand-set uniform widths when adjacent framed siblings should line
 up edge to edge -- a stretched `Panel` centres its content in the
 enlarged box automatically.
+
+**Sibling-frame rule.** A `Row` whose visible children are all *framed*
+siblings (`Panel`, `Card`, `StepCell`) equalises their heights by
+default, with no flags: side-by-side framed boxes of uneven height read
+as an accident, never as information, so the library removes the
+unevenness for you. Mixed rows (a panel next to a caption `Text`) are
+left alone. `equal_heights=True` forces equalisation for unframed
+children (e.g. two `Box`es); `equal_heights=False` opts a framed row
+out. `align="stretch"` still implies equalisation for any row.
 
 For a bilateral architecture or comparison with one semantic hub, use
 `Row(left, hub, right, balance_outer=True)`. The outer systems receive equal
@@ -365,16 +374,56 @@ of their own endpoints (default `theme.unit * 4/3`; pass
 full margin the router degrades it gradually instead of hugging card
 borders, wires never ride co-linearly on top of an earlier wire when a
 parallel lane exists, and perpendicular crossings render as hop arcs.
-Labels offset from the wire and dodge cards, other labels, and other
-wires automatically. Orientation follows the wire: horizontal legs
-take horizontal labels, and a vertical leg takes a 90-degree rotated
-label only when the leg is long enough to genuinely carry the rotated
-text (leg length >= label width plus clearance). Short vertical hops
--- the card-to-card gaps of a stacked column -- prefer a horizontal
-label beside the wire, so sibling edges in one spine share one reading
-direction regardless of label length; the other orientation remains a
-collision fallback either way. If a label still collides, improve the
-semantic structure rather than nudging pixels.
+Obstacles are *ink-complete*: beyond anchors and regions, every
+free-standing text run on the canvas (zone headers, captions, chips
+that are not anchors) blocks wires and labels alike, so a routed wire
+never runs through a title that happened not to be anchored.
+
+**Labels are part of the route contract.** A wire whose arms cannot
+carry its caption is not a valid wire, and three mechanisms enforce
+that generically:
+
+* *Corridor reservation.* Labeled flows between two facing pinned
+  sides (`right` toward `left`, `bottom` toward `top`) reserve, before
+  layout freezes, half the measured caption extent plus a gap on each
+  facing margin, so the corridor as a whole is guaranteed to fit the
+  caption. Any other side pairing implies a dog-leg whose long arm
+  lives in shared space and reserves only the caption's smaller
+  extent. Break long captions with `"\n"` -- connector labels are
+  multi-line-aware and measure as blocks -- to keep corridors compact.
+* *Capacity-aware routing.* The planner rejects candidate routes with
+  no arm long and clear enough to host the caption (beside the arm,
+  rotated along a vertical arm, or centred on the arm) while
+  alternatives exist; clearance degrades before the caption's home is
+  ever given up.
+* *Two-phase placement with a halo fallback.* Wires draw first, then
+  every label is placed against the complete set of wires, cards, free
+  text, and earlier labels. In a corridor walled on both sides the
+  label falls back to the schematic convention: centred on its own
+  wire over a background halo. A placed label overlapping other ink is
+  treated as an error (`tests/test_label_route_contract.py` locks the
+  zero-overlap invariant).
+
+Label orientation follows the wire: horizontal legs take horizontal
+labels, and a vertical leg takes a 90-degree rotated label only when
+the leg is long enough to genuinely carry the rotated text (leg length
+>= label width plus clearance). Short vertical hops -- the card-to-card
+gaps of a stacked column -- prefer a horizontal label beside the wire,
+so sibling edges in one spine share one reading direction regardless of
+label length; the other orientation remains a collision fallback either
+way. Routed-flow captions read at `Theme.connector_label_size`
+(default `"small"`); dense multi-panel overviews may override it one
+step down, e.g.
+`Theme().with_overrides(connector_label_size="tiny")`. If a label still
+collides, improve the semantic structure rather than nudging pixels.
+
+Bus geometry derives from the *flow direction* (source-cluster centroid
+toward sink-cluster centroid), never from incidental cluster spread; the
+spine sits in the clear inter-cluster gap. When a cluster is stacked
+along the flow axis -- so straight taps would strike through sibling
+endpoints -- the taps exit sideways onto a rail that runs alongside the
+cluster and joins the spine once, and sink entries stay strictly
+axis-aligned.
 
 **Auto-routing is on by default.** Every `Connect` — routed, bus, and
 inline — runs through the router by default (`auto_route=True`). Pass
@@ -689,7 +738,12 @@ d = Diagram.for_paper(mix)
 a y-axis. Per-record `color` / `dash` / `marker` encode record classes
 (e.g. simulated vs measured evidence), `SlopeReference` draws a dotted
 level such as an equivalence bound, and endpoint labels dodge
-vertically -- coincident duplicates collapse into one.
+vertically -- coincident duplicates collapse into one. When dodging
+pushes any label visibly off its endpoint (a tight value cluster),
+that side's margin widens into a leader lane and thin record-coloured
+elbow leaders connect *every* label on the side to its point -- a
+uniform connector language, so a leader-less label can never be
+misread -- with no author-side offsets.
 
 ```python
 from sciviz import Diagram, SlopeRecord, SlopeReference, Slopegraph
@@ -765,17 +819,40 @@ d = Diagram.for_paper(DetailCallout(overview, detail, source="sm0"))
 
 ### LineChart with inline annotations
 
+Axis ranges default to *automatic*: each omitted `x_range` / `y_range`
+is fitted snugly to the data and snapped outward to a nice tick step,
+so plots carry no dead whitespace and ticks land on round values. Pass
+an explicit tuple only when the range itself is part of the message
+(e.g. a shared scale across sibling panels); explicit ranges are always
+honoured verbatim. Axis gutters are derived from the labels they hold:
+the left pad is the measured width of the y tick labels (plus the title
+band), and axis titles sit a fixed small gap from the nearest tick
+label rather than a fixed distance from the axis, so the plot area
+claims every pixel the labels do not need.
+
+An inside legend corner (`legend="inside-top-right"` and friends) is a
+*preference*, not a fixed position. The chart projects every series
+segment, marker, and annotation into pixel space and checks the corner
+box against that ink: a clear preferred corner is kept; a covered one
+relocates to the first clear corner; when no corner is clear and the y
+range is automatic, the chart keeps your corner and expands the range
+headroom just enough for the legend to clear the data. Legends never
+silently sit on data lines, and authors never pre-pad ranges to make
+room for them. Inside legends run a slightly smaller font than tick
+text and the headroom expansion snaps to half tick steps, so the
+legend claims only a modest slice of the range rather than a large
+empty band.
+
 ```python
 from sciviz import LineChart, Series, Annotate, Diagram
 
 chart = LineChart(
     [Series([(i, i*i) for i in range(10)], label="n^2", color="blue"),
      Series([(i, 5*i) for i in range(10)], label="5n", color="amber", dash="4,3")],
-    x_range=(0, 9), y_range=(0, 80),
     size="md",
     x_label="n", y_label="cost",
     annotations=[Annotate(4, 16, "crossover", color="accent")],
-    legend="right",
+    legend="inside-top-left",
 )
 d = Diagram(title="LineChart", body=chart)
 ```

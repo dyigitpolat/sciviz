@@ -115,6 +115,11 @@ class Theme:
     # consistent regardless of which connector primitive draws it.
     arrow_size: float = 3.6
 
+    # Connector caption size token. Routed-flow labels read at this size;
+    # dense multi-panel overview figures may override it down one step
+    # (e.g. "tiny") so edge captions stay subordinate to node labels.
+    connector_label_size: str = "small"
+
     # -- palettes (paper-appropriate: desaturated, print-safe) ------------
     sequential_blues: List[str] = field(default_factory=lambda: [
         "#f4f6fb", "#e1e8f3", "#c8d4e9", "#a7bad8",

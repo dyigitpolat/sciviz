@@ -148,25 +148,34 @@ class _FlowResolver(Element):
         # margin on every face so the router always has at least a few
         # pixels of breathing room, regardless of the picked side.
         auto_m = m * 0.5
+        from ..composition._flow import label_corridor_reservation
         for spec in self._specs_from_tree():
             if isinstance(spec, Flow):
                 src = anchors.get(spec.src)
                 dst = anchors.get(spec.dst)
-                # A connector label needs a readable corridor in addition to
-                # the arrow shaft itself. Reserve that space automatically on
-                # the participating faces so the placer is not forced back
-                # onto either endpoint node.
-                flow_bump = m * (1.6 if spec.label else 1.0)
+                # A connector label needs a readable corridor in addition
+                # to the arrow shaft itself. The reservation is sized from
+                # the *measured* caption (see label_corridor_reservation):
+                # labels are part of the route contract, so the corridor
+                # between two facing pinned sides must fit the caption.
                 flow_auto = auto_m * (1.6 if spec.label else 1.0)
                 if src is not None:
                     if spec.src_side != "auto":
-                        src._bump_margin(spec.src_side, flow_bump)
+                        src._bump_margin(
+                            spec.src_side,
+                            label_corridor_reservation(
+                                spec, theme, spec.src_side,
+                                spec.dst_side, m))
                     else:
                         for side in ("top", "bottom", "left", "right"):
                             src._bump_margin(side, flow_auto)
                 if dst is not None:
                     if spec.dst_side != "auto":
-                        dst._bump_margin(spec.dst_side, flow_bump)
+                        dst._bump_margin(
+                            spec.dst_side,
+                            label_corridor_reservation(
+                                spec, theme, spec.dst_side,
+                                spec.src_side, m))
                     else:
                         for side in ("top", "bottom", "left", "right"):
                             dst._bump_margin(side, flow_auto)
@@ -236,8 +245,18 @@ class _FlowResolver(Element):
         # (mirrors Flowed._assign_edge_shares).
         self._assign_edge_shares(pending_list, my_registry)
 
+        # Two-phase resolution: draw every wire first, then place every
+        # label. Each label therefore sees the complete set of wires --
+        # not merely the ones that happened to be drawn before it -- so
+        # captions never straddle a later crossing.
+        label_passes = []
         for spec in pending_list:
-            spec._render(canvas, theme, my_registry)
+            finish = spec._render(canvas, theme, my_registry,
+                                  defer_label=True)
+            if callable(finish):
+                label_passes.append(finish)
+        for finish in label_passes:
+            finish()
 
     def _assign_edge_shares(self, pending: list, registry: dict) -> None:
         _assign_edge_shares(pending, registry)

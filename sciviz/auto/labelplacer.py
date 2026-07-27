@@ -48,7 +48,8 @@ def rects_overlap(a: Rect, b: Rect, eps: float = 0.0) -> bool:
     return True
 
 
-def _overlap_area(a: Rect, b: Rect) -> float:
+def overlap_area(a: Rect, b: Rect) -> float:
+    """Area of the intersection of two rects (0.0 when disjoint)."""
     ax0, ay0, ax1, ay1 = a
     bx0, by0, bx1, by1 = b
     ox = max(0.0, min(ax1, bx1) - max(ax0, bx0))
@@ -98,17 +99,23 @@ def _rect_at(cx: float, cy: float, w: float, h: float) -> Rect:
 
 def _candidate_centers(
     segment: Segment, w: float, h: float, gap: float,
-) -> List[Tuple[Point, str, bool]]:
-    """Generate (center, side, is_extrapolated) candidates along the
-    segment offset perpendicularly on each side.
+) -> List[Tuple[Point, str, bool, int]]:
+    """Generate (center, side, is_extrapolated, ring) candidates along
+    the segment offset perpendicularly on each side.
 
-    Besides the seven in-range fractions we also emit two extrapolated
+    Besides the in-range fractions we also emit two extrapolated
     candidates just beyond each endpoint so that very short segments
     (or segments flanked on both sides by tall neighbours) still have
     a chance of finding an obstacle-free slot along the spine axis.
     Extrapolated candidates are marked so the placer prefers in-range
     candidates when multiple options share the same overlap/preference
     score.
+
+    Candidates come in two *rings*: the standard lane (``ring=0``,
+    offset just clear of the wire) and a farther lane (``ring=1``, at
+    ~1.8x the offset) used only when every standard-lane candidate
+    collides -- a narrow corridor walled by cards on both sides still
+    finds air a little farther out instead of sitting on a border.
     """
     p1, p2 = segment
     is_horizontal = abs(p1[1] - p2[1]) <= abs(p1[0] - p2[0])
@@ -123,29 +130,24 @@ def _candidate_centers(
         if ny > 0:  # canonical "above" normal points upward on the page
             nx, ny = -nx, -ny
         support = abs(nx) * w / 2 + abs(ny) * h / 2
-        offset = gap + support
     else:
         nx, ny = -dy / length, dx / length
         if nx > 0:  # canonical "left" normal points left on the page
             nx, ny = -nx, -ny
         support = abs(nx) * w / 2 + abs(ny) * h / 2
-        offset = gap + support
-    in_range = [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8]
+    in_range = [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8, 0.1, 0.9]
     out_range = [-0.15, 1.15]
-    out: List[Tuple[Point, str, bool]] = []
-    for t in in_range + out_range:
-        mid = _lerp_point(p1, p2, t)
-        extrap = t < 0.0 or t > 1.0
-        if is_horizontal:
+    sides = ("above", "below") if is_horizontal else ("left", "right")
+    out: List[Tuple[Point, str, bool, int]] = []
+    for ring, mult in ((0, 1.0), (1, 1.8)):
+        offset = gap * mult + support
+        for t in in_range + out_range:
+            mid = _lerp_point(p1, p2, t)
+            extrap = t < 0.0 or t > 1.0
             out.append(((mid[0] + nx * offset, mid[1] + ny * offset),
-                        "above", extrap))
+                        sides[0], extrap, ring))
             out.append(((mid[0] - nx * offset, mid[1] - ny * offset),
-                        "below", extrap))
-        else:
-            out.append(((mid[0] + nx * offset, mid[1] + ny * offset),
-                        "left", extrap))
-            out.append(((mid[0] - nx * offset, mid[1] - ny * offset),
-                        "right", extrap))
+                        sides[1], extrap, ring))
     return out
 
 
@@ -175,10 +177,12 @@ def place_label(
     # Score tuple:
     #   (overlap_area,              # lower is better
     #    extrapolated_penalty,      # lower is better (prefer in-range first)
+    #    ring_penalty,              # lower is better (standard lane first)
     #    preference_penalty,        # lower is better (0 if side == prefer)
     #    -min_clearance,            # lower is better (more breathing room wins)
     #    distance_to_midpoint_sq)   # lower is better (closer to spine centre)
-    best: Optional[Tuple[float, float, float, float, float, Rect, str, int]] = None
+    best: Optional[Tuple[float, float, float, float, float, float,
+                         Rect, str, int]] = None
     p1, p2 = segment
     mid = _lerp_point(p1, p2, 0.5)
 
@@ -186,9 +190,10 @@ def place_label(
     # demand) hand it to the debug recorder without re-deriving anything.
     from .debug import LabelCandidate, emit_label  # local import: keep placer standalone
     records: List[LabelCandidate] = []
-    for (cx, cy), side, extrap in candidates:
+    rings: List[int] = []
+    for (cx, cy), side, extrap, ring in candidates:
         rect = _rect_at(cx, cy, label_w, label_h)
-        overlap = sum(_overlap_area(rect, ob) for ob in obstacles)
+        overlap = sum(overlap_area(rect, ob) for ob in obstacles)
         extrap_pen = 1 if extrap else 0
         pref_pen = 0 if side == prefer else 1
         clearance = _min_clearance(rect, obstacles)
@@ -198,11 +203,13 @@ def place_label(
             extrapolated=extrap, preference_penalty=pref_pen,
             clearance=clearance, distance_to_midpoint=d2,
         ))
+        rings.append(ring)
 
     for idx, c in enumerate(records):
-        score = (c.overlap, 1 if c.extrapolated else 0, c.preference_penalty,
+        score = (c.overlap, 1 if c.extrapolated else 0, rings[idx],
+                 c.preference_penalty,
                  -c.clearance, c.distance_to_midpoint ** 2)
-        if best is None or score < best[:5]:
+        if best is None or score < best[:6]:
             best = (*score, c.rect, c.side, idx)
 
     assert best is not None
@@ -210,4 +217,4 @@ def place_label(
     emit_label(owner=owner, segment=segment, label_size=(label_w, label_h),
                prefer=prefer, obstacles=list(obstacles),
                candidates=records, chosen_index=chosen_idx)
-    return best[5], "middle"
+    return best[6], "middle"

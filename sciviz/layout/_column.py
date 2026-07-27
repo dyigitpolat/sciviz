@@ -223,28 +223,39 @@ class Column(Element):
         instance. Children without a width-honouring ``inflate_to`` (most
         leaf elements) are simply left unaffected.
 
-        The target is expressed per child as *content* width plus that
-        child's own decoration (outer minus content).  Transparent
-        wrappers such as :class:`Anchor` consume part of an outer request
-        as margin -- flow-connected anchors carry side-margin bumps for
-        wire lanes -- so handing every child the same outer width would
-        leave margined cards visibly narrower than their unmargined
-        siblings.  Equalising the painted faces is the point of stretch.
+        Stretch equalises the *painted faces* of its children.  A
+        child's face is its outer width minus any immovable outer
+        decoration it declares through the ``stretch_decoration``
+        protocol (:class:`Anchor` returns its flow-lane margins there,
+        so margined cards keep faces flush with their unmargined
+        siblings).  Decoration is an explicit wrapper contract, never
+        inferred from content bboxes: a Row that centres its content
+        between flexible slots reports a content box narrower than its
+        paint, and treating that interior slack as decoration used to
+        re-widen the target on every pass until stacked cards
+        overshot their widest member by half the narrowest child's
+        slack.
         """
         if self.align != "stretch" or self._stretched or not self.children:
             return
         self._stretched = True
-        contents = [c.content_bbox(theme) for c in self.children]
         sizes = [c.measure(theme) for c in self.children]
+        decorations = []
+        for c in self.children:
+            deco_fn = getattr(c, "stretch_decoration", None)
+            if deco_fn is not None:
+                decorations.append(max(0.0, float(deco_fn(theme)[0])))
+            else:
+                decorations.append(0.0)
         target_w = max(
             self._min_width,
-            max((cb[2] for cb in contents), default=0.0),
+            max((size.w - deco
+                 for size, deco in zip(sizes, decorations)), default=0.0),
         )
         if target_w <= 0.0:
             return
-        for c, cb, size in zip(self.children, contents, sizes):
-            decoration = max(0.0, size.w - cb[2])
-            c.inflate_to(target_w + decoration, 0.0)
+        for c, deco in zip(self.children, decorations):
+            c.inflate_to(target_w + deco, 0.0)
 
     def measure(self, theme: Theme) -> BBox:
         if not self.children:
@@ -276,7 +287,17 @@ class Column(Element):
         to different children.  Expressing every child relative to the
         actual alignment axis gives the exact union instead.
         """
-        if self.align in ("start", "stretch"):
+        if self.align == "stretch":
+            # Stretched children share one outer width and fill their
+            # slot edge to edge, so the union is the plain outer union.
+            # Aligning on content landmarks here double-counts the
+            # centring slack a stretched Row keeps around its content
+            # (each inflated sibling re-widens the union, which re-
+            # inflates the siblings) and can overshoot the true width
+            # by half the narrowest child's slack.
+            left = 0.0
+            right = max(size.w for size in sizes)
+        elif self.align == "start":
             left = max(cb[0] for cb in content)
             right = max(size.w - cb[0]
                         for size, cb in zip(sizes, content))
@@ -327,7 +348,11 @@ class Column(Element):
             invisible = getattr(child, "is_layout_invisible", False)
             cb_x = cb[0]
             cb_w = cb[2]
-            if self.align in ("start", "stretch"):
+            if self.align == "stretch":
+                # Stretched children fill the shared slot from the
+                # column origin (see the outer-union in _cross_extents).
+                cx = x
+            elif self.align == "start":
                 axis_x = x + left_extent
                 cx = axis_x - cb_x
             elif self.align == "end":

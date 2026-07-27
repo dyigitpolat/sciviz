@@ -67,9 +67,12 @@ def test_fan_in_bus_has_exactly_one_arrow_into_sink():
 
 
 def test_fan_in_bus_label_does_not_cross_bar():
-    """The label should sit horizontally OFFSET from the single sink-arrow,
-    not on top of the horizontal bar itself.  We check that the label's
-    rendered x-range does not overlap the arrow's x-range."""
+    """The label must sit clear of every bus line -- taps, bar, and sink
+    arrow -- as a 2-D rectangle check. (Historically this test asserted
+    1-D x-separation from the sink arrow, which also outlawed the ideal
+    placement: the clean pocket centred directly *below* the bar. The
+    two-ring placer now finds that pocket, so the assertion checks the
+    real property: no label/wire intersection.)"""
     theme = Theme()
     left = Anchor("l", Box("L", width=40, height=20))
     right = Anchor("r", Box("R", width=40, height=20))
@@ -79,17 +82,15 @@ def test_fan_in_bus_label_does_not_cross_bar():
     svg, _, _ = _render(body, [
         Bus(sources=["l", "r"], sinks="s", label="concatenation"),
     ])
-    # Arrow line: the only marker-end line
     lines = _parse_lines(svg)
-    arrow_lines = [l for l in lines if l["marker_end"]]
-    assert len(arrow_lines) == 1
-    arrow = arrow_lines[0]
+    assert len([l for l in lines if l["marker_end"]]) == 1
     # find the "concatenation" label
     m = re.search(
         r'<text ([^>]*?)>concatenation</text>', svg)
     assert m, svg
     attrs = dict(_ATTR_RX.findall(m.group(1)))
     lx = float(attrs["x"])
+    ly = float(attrs["y"])
     fs = float(attrs["font-size"])
     lw = theme.text_width("concatenation", fs)
     anchor = attrs.get("text-anchor", "start")
@@ -99,9 +100,13 @@ def test_fan_in_bus_label_does_not_cross_bar():
         lx0, lx1 = lx - lw, lx
     else:
         lx0, lx1 = lx, lx + lw
-    arrow_x = arrow["x1"]
-    assert arrow_x <= lx0 or arrow_x >= lx1, (
-        f"label x-range ({lx0}, {lx1}) overlaps arrow x={arrow_x}")
+    ly0, ly1 = ly - fs, ly + fs * 0.35
+    for line in lines:
+        sx0, sx1 = sorted((line["x1"], line["x2"]))
+        sy0, sy1 = sorted((line["y1"], line["y2"]))
+        assert (lx1 <= sx0 or lx0 >= sx1 or ly1 <= sy0 or ly0 >= sy1), (
+            f"label rect ({lx0}, {ly0}, {lx1}, {ly1}) crosses "
+            f"bus line {line}")
 
 
 def test_fan_in_bus_has_horizontal_bar_between_sources():

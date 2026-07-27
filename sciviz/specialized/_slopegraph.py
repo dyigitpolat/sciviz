@@ -5,7 +5,11 @@ A slopegraph compares one measurement across exactly two conditions
 value on the left rail to its value on the right rail; values are
 labelled directly at the endpoints (no y-axis), Tufte-style.  Endpoint
 labels dodge vertically so nearby records stay legible, and coincident
-duplicate labels collapse into one.
+duplicate labels collapse into one.  When dodging displaces any label
+visibly from its endpoint, that side's margin widens into a leader
+lane and a thin record-coloured leader connects every label on the
+side to its point (all of them, so the connector language is uniform),
+keeping labels traceable even in a tight value cluster.
 
 Scope is deliberately tight: one linear value scale shared by both
 rails, N records (each with per-record colour/dash/marker so authors
@@ -258,6 +262,64 @@ class Slopegraph(Element):
 
     # ---- geometry -----------------------------------------------------------
 
+    # ---- endpoint-label placement -----------------------------------------
+    # Labels dodge as a group; a label pushed visibly off its endpoint gets
+    # a leader, and the side's margin widens into a lane the leader can
+    # traverse.  One helper feeds both _layout (lane reservation) and
+    # render (text + leader drawing) so the two never disagree.
+
+    def _leader_lane(self, theme: Theme) -> float:
+        return theme.unit * 1.4
+
+    def _placed_side_labels(self, side: str, plot_y: float,
+                            lo: float, hi: float, theme: Theme) -> List[dict]:
+        """Deduplicate, dodge, and flag one side's endpoint labels.
+
+        Returns dicts with ``runs``, ``anchor`` (endpoint y), ``center``
+        (dodged label centre y), ``color`` (leader colour), and
+        ``displaced`` (True when the label visibly left its endpoint).
+        """
+        entries = {}
+        for i, rec in enumerate(self.records):
+            runs = tuple(self._side_runs(rec, side))
+            if not runs:
+                continue
+            value = rec.left if side == "left" else rec.right
+            color = (rec.color if rec.color != "auto"
+                     else theme.role_for_index(i))
+            entries.setdefault((runs, value),
+                               (plot_y + self._y_px(value, lo, hi), color))
+        for ref in self.references:
+            if ref.label and ref.label_side == side:
+                runs = ((ref.label, ref.color, "400"),)
+                entries.setdefault(
+                    (runs, ref.value),
+                    (plot_y + self._y_px(ref.value, lo, hi), ref.color))
+        if not entries:
+            return []
+        half = theme.text_height(self.label_size) / 2
+        keys = list(entries)
+        centers = self._dodge([entries[k][0] for k in keys], half,
+                              plot_y + half, plot_y + self.height + half)
+        placed = []
+        for (runs, _value), center in zip(keys, centers):
+            anchor, color = entries[(runs, _value)]
+            placed.append({
+                "runs": list(runs),
+                "anchor": anchor,
+                "center": center,
+                "color": color,
+                "displaced": abs(center - anchor) > half * 0.9,
+            })
+        return placed
+
+    def _side_lane(self, side: str, theme: Theme) -> float:
+        """Leader lane width a side needs (0.0 when nothing is displaced)."""
+        lo, hi = self._resolved_range()
+        placed = self._placed_side_labels(side, 0.0, lo, hi, theme)
+        return (self._leader_lane(theme)
+                if any(p["displaced"] for p in placed) else 0.0)
+
     def _layout(self, theme: Theme) -> dict:
         left_w = max((self._runs_width(self._side_runs(r, "left"), theme)
                       for r in self.records), default=0.0)
@@ -269,11 +331,13 @@ class Slopegraph(Element):
             elif ref.label and ref.label_side == "right":
                 right_w = max(right_w, theme.text_width(ref.label, self.label_size))
         gap = theme.unit
+        lane_l = self._side_lane("left", theme) if left_w else 0.0
+        lane_r = self._side_lane("right", theme) if right_w else 0.0
         title_h = (theme.text_height("label") + theme.unit * 0.8
                    if (self.left_title or self.right_title) else theme.unit * 0.5)
-        rail_left = left_w + (gap if left_w else 0.0)
+        rail_left = left_w + (gap + lane_l if left_w else 0.0)
         rail_right = rail_left + self.slope_width
-        base_w = rail_right + (gap if right_w else 0.0) + right_w
+        base_w = rail_right + (gap + lane_r if right_w else 0.0) + right_w
         # Titles prefer to centre on their rails but are clamped into the
         # chart's own extent so a long header cannot inflate the width.
         def _title_center(rail_x: float, title: str) -> float:
@@ -303,6 +367,8 @@ class Slopegraph(Element):
         return {
             "rail_left": rail_left,
             "rail_right": rail_right,
+            "lane_l": lane_l,
+            "lane_r": lane_r,
             "title_lx": title_lx,
             "title_rx": title_rx,
             "title_h": title_h,
@@ -439,33 +505,22 @@ class Slopegraph(Element):
                     self._draw_marker(canvas, rec.marker, px, py, radius,
                                       stroke, theme)
 
-        # endpoint labels (deduplicated, then dodged per side) ---------------------
-        line_h = theme.text_height(self.label_size)
-        half = line_h / 2
-        for side, rail_x, anchor_dir in (("left", rail_l, -1), ("right", rail_r, 1)):
-            entries = {}   # (runs tuple, exact value) -> anchor y
-            for rec in self.records:
-                runs = tuple(self._side_runs(rec, side))
-                if not runs:
-                    continue
-                value = rec.left if side == "left" else rec.right
-                entries.setdefault((runs, value),
-                                   plot_y + self._y_px(value, lo, hi))
-            for ref in self.references:
-                if ref.label and ref.label_side == side:
-                    runs = ((ref.label, ref.color, "400"),)
-                    entries.setdefault((runs, ref.value),
-                                       plot_y + self._y_px(ref.value, lo, hi))
-            if not entries:
-                continue
-            keys = list(entries)
-            centers = self._dodge([entries[k] for k in keys], half,
-                                  plot_y + half, plot_y + self.height + half)
-            for (runs, _value), cy in zip(keys, centers):
+        # endpoint labels (deduplicated, dodged, and leader-connected) -----------
+        for side, rail_x, anchor_dir, lane in (
+            ("left", rail_l, -1, lay["lane_l"]),
+            ("right", rail_r, 1, lay["lane_r"]),
+        ):
+            placed = self._placed_side_labels(side, plot_y, lo, hi, theme)
+            for p in placed:
+                cy = p["center"]
                 baseline = cy + theme.size_px(self.label_size) * 0.33
-                total = self._runs_width(list(runs), theme)
-                cursor = (rail_x + gap) if anchor_dir > 0 else (rail_x - gap - total)
-                for t, color, weight in runs:
+                total = self._runs_width(p["runs"], theme)
+                margin = gap + lane
+                cursor = (rail_x + margin) if anchor_dir > 0 \
+                    else (rail_x - margin - total)
+                text_edge = (rail_x + margin) if anchor_dir > 0 \
+                    else (rail_x - margin)
+                for t, color, weight in p["runs"]:
                     canvas.text(cursor, baseline, t,
                                 size=theme.size_px(self.label_size),
                                 fill=theme.color_of(color),
@@ -473,6 +528,23 @@ class Slopegraph(Element):
                     cursor += theme.text_width(
                         t, self.label_size, bold=(weight in ("600", "700"))
                     ) + theme.unit * 0.8
+                if lane > 0.0:
+                    # Elbow leader: a short horizontal stub at the label,
+                    # then a slant into the endpoint marker. Once a side
+                    # needs leaders, every label on it gets one, so a
+                    # connector-less label can never be misread as
+                    # belonging to the nearest line.
+                    toward = -anchor_dir            # unit step toward the rail
+                    x0 = text_edge + toward * 1.5
+                    x1 = rail_x - toward * (radius + 1.5)
+                    xm = x0 + (x1 - x0) * 0.45
+                    stroke = theme.color_of(p["color"])
+                    canvas.line(x0, cy, xm, cy,
+                                stroke=stroke, stroke_width=theme.hairline,
+                                opacity=0.65)
+                    canvas.line(xm, cy, x1, p["anchor"],
+                                stroke=stroke, stroke_width=theme.hairline,
+                                opacity=0.65)
 
     # ---- marker (shared vocabulary with LineChart) -----------------------------
 

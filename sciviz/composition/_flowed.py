@@ -87,17 +87,25 @@ class Flowed(Element):
         anchors: dict = {}
         self._collect_anchors(self.child, anchors)
         m = self._flow_space(theme)
+        from ._flow import label_corridor_reservation
         for flow in self.flows:
             if isinstance(flow, Flow):
                 src = anchors.get(flow.src)
                 dst = anchors.get(flow.dst)
-                bump = m * (1.6 if flow.label else 1.0)
                 # If the flow's side is "auto", skip margin inflation --
                 # we don't know which boundary the flow will attach to.
+                # Pinned sides reserve caption-sized corridors (labels
+                # are part of the route contract).
                 if src is not None and flow.src_side != "auto":
-                    src._bump_margin(flow.src_side, bump)
+                    src._bump_margin(
+                        flow.src_side,
+                        label_corridor_reservation(
+                            flow, theme, flow.src_side, flow.dst_side, m))
                 if dst is not None and flow.dst_side != "auto":
-                    dst._bump_margin(flow.dst_side, bump)
+                    dst._bump_margin(
+                        flow.dst_side,
+                        label_corridor_reservation(
+                            flow, theme, flow.dst_side, flow.src_side, m))
             elif isinstance(flow, Bus):
                 # A Bus chooses its orientation (horizontal or vertical
                 # spine) at render time based on measured positions; at
@@ -167,8 +175,15 @@ class Flowed(Element):
         finally:
             _anchor_stack.reset(token)
         self._assign_edge_shares(my_registry)
+        # Two-phase: wires first, labels after (see connect._resolver).
+        label_passes = []
         for flow in self.flows:
-            flow._render(canvas, theme, my_registry)
+            finish = flow._render(canvas, theme, my_registry,
+                                  defer_label=True)
+            if callable(finish):
+                label_passes.append(finish)
+        for finish in label_passes:
+            finish()
 
     def _assign_edge_shares(self, registry: dict) -> None:
         _assign_edge_shares(self.flows, registry)

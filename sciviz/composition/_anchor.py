@@ -57,6 +57,14 @@ class Anchor(Element):
         adj_h = max(0.0, min_h - self.margin_top - self.margin_bottom)
         self.child.inflate_to(adj_w, adj_h)
 
+    def stretch_decoration(self, theme: Theme) -> tuple[float, float]:
+        """Immovable outer decoration (w, h) preserved by cross-axis
+        stretch: the anchor's flow-lane margins. A stretch container
+        equalises the *painted faces* of its children; margined anchors
+        therefore receive their face target plus these margins."""
+        return (self.margin_left + self.margin_right,
+                self.margin_top + self.margin_bottom)
+
     def content_bbox(self, theme: Theme):
         """The inner child bbox, excluding margins.  Layout containers use
         this to align siblings on their *content* box, not on the

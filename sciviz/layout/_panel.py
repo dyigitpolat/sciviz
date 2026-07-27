@@ -47,6 +47,9 @@ class Panel(Element):
     >>> Panel("a", "Weight Matrix", Matrix(...))
     """
 
+    # Framed siblings in a Row share one height (sibling-frame rule).
+    frame_sibling = True
+
     def __init__(self, tag: str | Element, title: str | Element,
                  child: Element, *,
                  min_width: float = 0, min_height: float = 0,

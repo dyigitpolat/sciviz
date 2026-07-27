@@ -175,5 +175,5 @@ class Math(Element):
         # infer either its ink extent or effective type size. Publish both
         # explicitly: paper-mode auto-trimming must not crop formulae that
         # protrude beyond a neighbouring text or box element.
-        canvas._mark_ink(x, y, x + w, y + h)
+        canvas._mark_ink(x, y, x + w, y + h, kind="text")
         canvas._mark_text_size(theme.size_px(self.size) * self.scale)

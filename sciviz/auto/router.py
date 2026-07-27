@@ -138,6 +138,8 @@ def plan_path(src: Endpoint, dst: Endpoint, *,
               regions: Sequence[Box] = (),
               existing_segments: Sequence[Tuple[float, float, float, float]] = (),
               policy: CrossPolicy = DEFAULT_POLICY,
+              label_extent: Optional[Tuple[float, float]] = None,
+              label_gap: float = 6.0,
               owner: str = "") -> Plan:
     """Compute an orthogonal path from ``src`` to ``dst``.
 
@@ -166,24 +168,47 @@ def plan_path(src: Endpoint, dst: Endpoint, *,
     quarter, then zero) so the route keeps the *largest feasible*
     margin instead of collapsing straight to an edge-grazing corridor.
     The caller always gets a valid route.
+
+    ``label_extent`` declares that the wire must carry a caption of
+    ``(w, h)`` pixels (horizontal-text dimensions): a candidate route is
+    then valid only if at least one of its arms can host that caption --
+    beside the arm, rotated along a vertical arm, or centred on the arm
+    itself -- without covering any real obstacle.  A route whose arms
+    are all too short for their own label is not a route; the planner
+    keeps searching (longer bridges, other corridors) before it ever
+    degrades the requirement.  ``label_gap`` is the caption clearance
+    used in that feasibility test.
     """
     clearance = max(0.0, policy.min_clearance)
     retried = False
-    if clearance > 0.0:
-        for fraction in (1.0, 0.5, 0.25):
-            pad = clearance * fraction
-            plan = _plan_path_impl(src, dst, anchors=anchors, regions=regions,
-                                   existing_segments=existing_segments,
-                                   policy=policy, obstacle_pad=pad)
-            if plan is not None:
-                _emit_route(owner, src, dst, anchors, regions, plan,
-                            retried_without_clearance=retried,
-                            min_clearance=pad)
-                return plan
-            retried = True
+    # The degradation ladder gives up clearance before it gives up the
+    # label's home: every pad level is tried with the label requirement
+    # first, and only when no path in any pad level can host the caption
+    # does the requirement drop (the label placer then falls back to its
+    # halo placement on the least-bad route).
+    ladder = []
+    fractions = (1.0, 0.5, 0.25) if clearance > 0.0 else ()
+    if label_extent is not None:
+        for fraction in fractions:
+            ladder.append((clearance * fraction, label_extent))
+        ladder.append((0.0, label_extent))
+    for fraction in fractions:
+        ladder.append((clearance * fraction, None))
+    for pad, extent in ladder:
+        plan = _plan_path_impl(src, dst, anchors=anchors, regions=regions,
+                               existing_segments=existing_segments,
+                               policy=policy, obstacle_pad=pad,
+                               label_extent=extent, label_gap=label_gap)
+        if plan is not None:
+            _emit_route(owner, src, dst, anchors, regions, plan,
+                        retried_without_clearance=retried,
+                        min_clearance=pad)
+            return plan
+        retried = True
     plan = _plan_path_impl(src, dst, anchors=anchors, regions=regions,
                            existing_segments=existing_segments,
-                           policy=policy, obstacle_pad=0.0)
+                           policy=policy, obstacle_pad=0.0,
+                           label_extent=None, label_gap=label_gap)
     assert plan is not None, "planner failed to return a path"
     _emit_route(owner, src, dst, anchors, regions, plan,
                 retried_without_clearance=retried,
@@ -228,7 +253,9 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
                     regions: Sequence[Box],
                     existing_segments: Sequence[Tuple[float, float, float, float]],
                     policy: CrossPolicy,
-                    obstacle_pad: float) -> Optional[Plan]:
+                    obstacle_pad: float,
+                    label_extent: Optional[Tuple[float, float]] = None,
+                    label_gap: float = 6.0) -> Optional[Plan]:
     tol = policy.tolerance
 
     src_anchor = src.anchor
@@ -338,6 +365,13 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
     def clean(path: Sequence[Tuple[float, float]], *,
               skip_endpoints: bool = False) -> bool:
         if not ok(path, skip_endpoints=skip_endpoints):
+            return False
+        if label_extent is not None and not _label_home_exists(
+                path, label_extent, label_gap, raw_obstacles,
+                src_anchor, dst_anchor, tol):
+            # An arm too short (or too boxed-in) to carry its own
+            # caption makes the whole candidate invalid: labels are
+            # part of the route contract, not an afterthought.
             return False
         if parallel_sep <= 0.0 or not existing_segments:
             return True
@@ -481,6 +515,15 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
         return (length + 10_000.0 * _count_crossings(cand)
                 + 300.0 * overlap)
 
+    def _ok_stair(cand):
+        if not ok(cand, skip_endpoints=True):
+            return False
+        if label_extent is not None and not _label_home_exists(
+                cand, label_extent, label_gap, raw_obstacles,
+                src_anchor, dst_anchor, tol):
+            return False
+        return True
+
     best_cand = None
     best_score = float("inf")
     if src_dir[0] == 0 and dst_dir[0] == 0:
@@ -501,7 +544,7 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
                         (bridge_x, src_tap[1]), (bridge_x, dst_tap[1]),
                         dst_tap, (dx, dy)]
                 cand = _simplify(cand, tol)
-                if ok(cand, skip_endpoints=True):
+                if _ok_stair(cand):
                     score = _score(cand)
                     if score < best_score:
                         best_score = score
@@ -524,7 +567,7 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
                         (src_tap[0], bridge_y), (dst_tap[0], bridge_y),
                         dst_tap, (dx, dy)]
                 cand = _simplify(cand, tol)
-                if ok(cand, skip_endpoints=True):
+                if _ok_stair(cand):
                     score = _score(cand)
                     if score < best_score:
                         best_score = score
@@ -534,7 +577,7 @@ def _plan_path_impl(src: Endpoint, dst: Endpoint, *,
             else (src_tap[0], dst_tap[1])
         cand = [(sx, sy), src_tap, corner, dst_tap, (dx, dy)]
         cand = _simplify(cand, tol)
-        if ok(cand, skip_endpoints=True):
+        if _ok_stair(cand):
             best_cand = cand
 
     if best_cand is not None:
@@ -1238,6 +1281,65 @@ def _segment_touches_anchor(x1, y1, x2, y2, anchor: Box, tol: float) -> bool:
             return False
         lo, hi = (y1, y2) if y1 <= y2 else (y2, y1)
         return (min(hi, anchor.bottom) - max(lo, anchor.top)) > tol
+    return False
+
+
+def _label_home_exists(path: Sequence[Tuple[float, float]],
+                       extent: Tuple[float, float],
+                       gap: float,
+                       obstacles: Sequence[Box],
+                       src_anchor: Box, dst_anchor: Box,
+                       tol: float) -> bool:
+    """Can some arm of ``path`` carry a caption of ``extent`` = (w, h)?
+
+    The caption may sit beside a horizontal arm (above/below), beside a
+    vertical arm as horizontal text, along a vertical arm rotated 90
+    degrees, or centred on the arm itself (the halo form). Every
+    placement form requires the arm to be at least the caption's
+    along-axis extent plus a ``gap`` at each end, and the caption
+    rectangle must not cover any real obstacle (including the route's
+    own endpoints).
+    """
+    w, h = extent
+    if w <= 0.0 or h <= 0.0:
+        return True
+    blockers = list(obstacles) + [src_anchor, dst_anchor]
+
+    def _rect_free(cx: float, cy: float, rw: float, rh: float) -> bool:
+        x0, y0 = cx - rw / 2.0, cy - rh / 2.0
+        x1, y1 = cx + rw / 2.0, cy + rh / 2.0
+        for o in blockers:
+            if (x0 < o.right - tol and x1 > o.left + tol
+                    and y0 < o.bottom - tol and y1 > o.top + tol):
+                return False
+        return True
+
+    for i in range(len(path) - 1):
+        (x1, y1), (x2, y2) = path[i], path[i + 1]
+        horiz = abs(y2 - y1) < tol
+        vert = abs(x2 - x1) < tol
+        if horiz == vert:
+            continue
+        length = abs(x2 - x1) + abs(y2 - y1)
+        # (along-extent required, rect w, rect h, offset axis)
+        forms = []
+        if horiz:
+            forms.append((w, w, h, "y"))          # beside / on a horizontal arm
+        else:
+            forms.append((h, w, h, "x"))          # horizontal text beside a vertical arm
+            forms.append((w, h, w, "x"))          # rotated along a vertical arm
+        for along, rw, rh, axis in forms:
+            if length < along + 2.0 * gap:
+                continue
+            perp = gap + (rh if axis == "y" else rw) / 2.0
+            for t in (0.5, 0.35, 0.65, 0.2, 0.8):
+                cx = x1 + (x2 - x1) * t
+                cy = y1 + (y2 - y1) * t
+                offsets = ((0.0, -perp), (0.0, perp), (0.0, 0.0)) \
+                    if axis == "y" else ((-perp, 0.0), (perp, 0.0), (0.0, 0.0))
+                for ox, oy in offsets:
+                    if _rect_free(cx + ox, cy + oy, rw, rh):
+                        return True
     return False
 
 
