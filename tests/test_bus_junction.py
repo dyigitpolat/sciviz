@@ -139,6 +139,16 @@ def _rect_center_x_by_width(svg: str, w: float) -> float:
     raise AssertionError(f"no rect of width {w} in svg")
 
 
+def _rect_by_width(svg: str, w: float) -> tuple[float, float, float, float]:
+    """(x, y, w, h) of the first rect whose width matches ``w``."""
+    for m in _RECT_ATTR_RX.finditer(svg):
+        attrs = dict(_ATTR_RX.findall(m.group(1)))
+        if abs(float(attrs.get("width", -1.0)) - w) < 0.5:
+            return (float(attrs["x"]), float(attrs["y"]),
+                    float(attrs["width"]), float(attrs["height"]))
+    raise AssertionError(f"no rect of width {w} in svg")
+
+
 def test_fan_in_rail_bus_enters_sink_at_face_center():
     """A stacked source column forces the side-rail bus form; the single
     entry into the sink must still land at the CENTER of the sink's
@@ -161,3 +171,114 @@ def test_fan_in_rail_bus_enters_sink_at_face_center():
     face_center = _rect_center_x_by_width(svg, 120.0)
     assert abs(entry["x1"] - face_center) < 1.0, (
         f"sink entry at x={entry['x1']}, face center at x={face_center}")
+
+
+def test_fan_in_west_rail_bus_enters_sink_at_south_center():
+    """The AgentEvolve system-overview topology: a tall sink card with a
+    column of five variable-width chips below it, the chip cluster
+    sitting slightly EAST of the sink's centre so the side rail exits on
+    the WEST.  The bus must climb the west collector rail, jog east
+    along the spine in the clear band below the card, and enter the sink
+    at the CENTER of its SOUTH edge -- never at the corner where the
+    rail meets the card (the pre-fix behaviour clamped the entry to the
+    west edge inset)."""
+    sink_w, sink_h = 114.0, 90.0
+    chip_widths = [96.0, 88.0, 122.0, 100.0, 84.0]
+    sink = Anchor("s", Box("SINK", width=sink_w, height=sink_h))
+    chips = Column(*[Anchor(f"c{i}", Box(f"chip {i}", width=w, height=14))
+                     for i, w in enumerate(chip_widths)], gap="sm")
+    # The Spacer shifts the chip cluster east of the sink's centre line,
+    # which sends the side rail west (the paper figure's geometry).
+    body = Column(sink, Spacer(0, 30), Row(Spacer(24, 0), chips),
+                  gap="md")
+    svg, _, _ = _render(body, [
+        Bus([f"c{i}" for i in range(len(chip_widths))], "s"),
+    ])
+    lines = _parse_lines(svg)
+    sx, sy, sw_, sh_ = _rect_by_width(svg, sink_w)
+    sink_bottom = sy + sh_
+    sink_center = sx + sw_ / 2.0
+    chip_lefts = [_rect_by_width(svg, w)[0] for w in chip_widths]
+
+    # One arrow, strictly vertical, entering the sink's SOUTH edge.
+    arrows = [l for l in lines if l["marker_end"]]
+    assert len(arrows) == 1, f"expected one sink arrow, got {len(arrows)}"
+    entry = arrows[0]
+    assert abs(entry["x1"] - entry["x2"]) < 0.5, (
+        f"sink entry must be strictly vertical: {entry}")
+    entry_x = entry["x1"]
+    entry_top = min(entry["y1"], entry["y2"])
+    assert abs(entry_top - sink_bottom) < 0.5, (
+        f"entry must land on the sink's south edge y={sink_bottom}, "
+        f"got y={entry_top}")
+
+    # Edge-CENTER entry (the defect: pre-fix it clamped to the west
+    # corner inset at sink.x + edge_inset).
+    assert abs(entry_x - sink_center) < 3.0, (
+        f"sink entry at x={entry_x}, south-edge center at "
+        f"x={sink_center}")
+
+    # The topology really is the west-rail form: a vertical collector
+    # runs strictly WEST of every chip.
+    verticals = [l for l in lines
+                 if abs(l["x1"] - l["x2"]) < 0.5 and not l["marker_end"]]
+    assert any(l["x1"] < min(chip_lefts) - 0.5 for l in verticals), (
+        f"expected a west collector rail left of x={min(chip_lefts)}; "
+        f"verticals at x={sorted(l['x1'] for l in verticals)}")
+
+    # The jog from the rail to the centred entry runs horizontally in
+    # the clear band below the card.
+    jogs = [l for l in lines
+            if abs(l["y1"] - l["y2"]) < 0.5
+            and abs(max(l["x1"], l["x2"]) - entry_x) < 0.5]
+    assert jogs, "no horizontal jog reaches the centred entry"
+    jog_y = jogs[0]["y1"]
+    assert sink_bottom < jog_y < min(
+        _rect_by_width(svg, w)[1] for w in chip_widths), (
+        f"jog at y={jog_y} must run in the clear band between the "
+        f"sink bottom ({sink_bottom}) and the topmost chip")
+
+
+def test_fan_in_walled_center_falls_back_loudly():
+    """When the centred descent is genuinely walled (an endpoint rises
+    under the sink's south centre), the bar-aligned fallback still
+    applies -- but LOUDLY: a UserWarning is emitted and, when a debug
+    recorder is active, a note is recorded.  Silent corner entries are
+    how the original defect shipped twice."""
+    import pytest
+
+    from sciviz.auto.debug import DebugRecorder, record_into
+
+    def render_walled():
+        theme = Theme()
+        canvas = Canvas()
+        # Hand-placed registry (the documented unit-test surface for
+        # Bus geometry): the "tall" source overlaps the sink's band and
+        # straddles its centre line, so the centred descent must hit it.
+        registry = {
+            "s":    (0.0, 0.0, 120.0, 30.0),
+            "tall": (45.0, 20.0, 30.0, 60.0),
+            "west": (0.0, 70.0, 30.0, 14.0),
+        }
+        bus = Bus(sources=["tall", "west"], sinks="s")
+        bus._render(canvas, theme, registry)
+        return canvas.to_svg(200.0, 120.0)
+
+    with pytest.warns(UserWarning, match="centred entry.*walled"):
+        svg = render_walled()
+    lines = _parse_lines(svg)
+    arrows = [l for l in lines if l["marker_end"]]
+    assert len(arrows) == 1
+    entry = arrows[0]
+    assert abs(entry["x1"] - entry["x2"]) < 0.5
+    # Fallback keeps the bar-aligned entry (off-centre but on the face).
+    assert abs(entry["x1"] - 60.0) > 3.0, (
+        f"walled entry should NOT be centred, got x={entry['x1']}")
+    assert 0.0 < entry["x1"] < 120.0
+    assert abs(min(entry["y1"], entry["y2"]) - 30.0) < 0.5
+
+    # The fallback also leaves a debug-recorder note.
+    rec = DebugRecorder()
+    with pytest.warns(UserWarning), record_into(rec):
+        render_walled()
+    assert any("walled" in n for n in rec.notes), rec.notes

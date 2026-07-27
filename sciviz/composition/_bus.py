@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Callable, List, Optional, Sequence, Tuple, Union
 
 from ..core import BBox, Canvas, Element, Theme
@@ -402,7 +403,29 @@ class Bus:
                                              min(bar_mid_x, center_x),
                                              max(bar_mid_x, center_x),
                                              all_boxes, sink))
-                entry_x = center_x if centred_clear else bar_aligned
+                if centred_clear:
+                    entry_x = center_x
+                else:
+                    # The fallback is a visible layout concession (the
+                    # bus meets the sink off-centre), so it is never
+                    # silent: it always warns, and it leaves a note in
+                    # the active debug recorder when one is installed.
+                    entry_x = bar_aligned
+                    msg = (
+                        f"Bus fan-in into sink {self.sinks[0]!r}: the "
+                        f"centred entry at x={center_x:.1f} is walled "
+                        f"(the descent to the sink edge or the jog "
+                        f"along the spine would strike another "
+                        f"endpoint), so the entry falls back to the "
+                        f"bar-aligned x={entry_x:.1f}. The bus will "
+                        f"meet the sink off-centre; open the band "
+                        f"below the sink or move the blocking "
+                        f"endpoint to restore a centred entry.")
+                    warnings.warn(msg)
+                    from ..auto import debug as _layout_debug
+                    rec = _layout_debug.active()
+                    if rec is not None:
+                        rec.note(msg)
                 if abs(entry_x - bar_mid_x) > 0.5:
                     _line(bar_mid_x, spine_y, entry_x, spine_y)
                 _line(entry_x, spine_y, entry_x, dpy, end_marker=marker)
