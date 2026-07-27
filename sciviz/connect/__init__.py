@@ -9,5 +9,6 @@ from __future__ import annotations
 
 from .connector import Connect
 from .anchor import Anchor
+from .cycle import Cycle, ring_positions, ring_shapes
 
-__all__ = ["Connect", "Anchor"]
+__all__ = ["Connect", "Anchor", "Cycle", "ring_positions", "ring_shapes"]

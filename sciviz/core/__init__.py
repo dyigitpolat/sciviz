@@ -12,6 +12,7 @@ the public surface so existing imports like ``from sciviz.core import
 Element`` keep working.
 """
 
+from ._aspect import NAMED_ASPECTS, AspectSpec
 from ._bbox import BBox
 from ._canvas import Canvas, _build_text_runs, _fmt, _xml_escape
 from ._element import Element
@@ -19,6 +20,7 @@ from ._fonts import FontAsset, FontRegistry, outline_svg_text
 from ._theme import DEFAULT_THEME, Theme
 
 __all__ = [
+    "AspectSpec", "NAMED_ASPECTS",
     "BBox", "Canvas", "Element", "Theme", "DEFAULT_THEME",
     "FontAsset", "FontRegistry", "outline_svg_text",
 ]

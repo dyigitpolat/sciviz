@@ -71,6 +71,7 @@ Lower packages must not import higher packages -- see
 
 # ----- core infrastructure -------------------------------------------------
 from .core import (
+    AspectSpec,
     Theme,
     DEFAULT_THEME,
     BBox,
@@ -82,6 +83,7 @@ from .core import (
 
 # ----- layout primitives ---------------------------------------------------
 from .layout import (
+    Aspect,
     Spacer,
     FixedSize,
     Row,
@@ -174,7 +176,7 @@ from .composition import (
 from .grid import Grid
 
 # ----- unified connector ---------------------------------------------------
-from .connect import Connect, Anchor
+from .connect import Connect, Anchor, Cycle
 
 # ----- generic graphs ------------------------------------------------------
 from .graphs import (
@@ -197,10 +199,11 @@ from .diagram import Diagram
 
 __all__ = [
     # core
-    "Theme", "DEFAULT_THEME", "BBox", "Canvas", "Element",
+    "Theme", "DEFAULT_THEME", "BBox", "Canvas", "Element", "AspectSpec",
     "FontAsset", "FontRegistry",
     # layout
-    "Spacer", "FixedSize", "Row", "Column", "Grid", "Panel", "AlignedStack",
+    "Aspect", "Spacer", "FixedSize", "Row", "Column", "Grid", "Panel",
+    "AlignedStack",
     "WrapRow",
     # elements
     "Text", "TextBlock", "Span", "Box", "Chip",
@@ -232,7 +235,7 @@ __all__ = [
     "StepCell",
     "StackedTiles", "Stripe",
     # unified connector
-    "Connect", "Anchor",
+    "Connect", "Anchor", "Cycle",
     # graphs
     "Token", "Tokens", "NodeTree", "Sequence", "Tree", "TreeNode",
     "FlowPort", "FlowRef", "FlowNode", "FlowEdge", "FlowGroup", "FlowGraph",

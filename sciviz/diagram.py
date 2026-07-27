@@ -27,6 +27,8 @@ from .core import (
     Element, BBox, Canvas, Theme, DEFAULT_THEME,
     FontRegistry, outline_svg_text,
 )
+from .core._aspect import AspectSpec
+from .layout._aspect import collect_aspect_goals
 
 class Diagram:
     """Root container for a sciviz figure.
@@ -58,19 +60,26 @@ class Diagram:
         fit at the authored font sizes a :class:`UserWarning` asks the
         author to reduce content; fonts are never silently shrunk.
         Default ``None`` keeps the legacy intrinsic-size behaviour.
-    target_aspect : float or (float, float), optional
-        Physical aspect target, expressed as height / width.  Only
-        meaningful together with ``target_width_pt``.  A tuple gives the
-        acceptable range (e.g. ``(1.0, 1.3)`` for "square to moderately
-        tall"); a single float is shorthand for ``(0.0, value)`` -- a
-        height cap.  When set, the target fitter balances the layout
-        toward the range instead of stopping at the first width fit: it
-        explores every reflowable container variant (see
-        ``EqualGrid(columns="auto")``) and keeps compressing spacing
-        while the figure is still too tall, so a 7-card diagram does not
-        export as a degenerate single corridor when a balanced
-        arrangement exists.  Fonts are never touched.  Default ``None``
-        keeps pure width fitting.
+    target_aspect : str, AspectSpec, float, or (float, float), optional
+        Physical aspect target.  Only meaningful together with
+        ``target_width_pt``.  Preferred form is an aspect *name* --
+        ``"portrait"``, ``"square"``, ``"landscape"``, ``"panorama"`` --
+        read the way people say it aloud (a landscape figure is wider
+        than it is tall); :class:`~sciviz.AspectSpec` tightens a name to
+        a specific width:height proportion.  Numbers keep their original
+        meaning of *height / width*: a tuple is the acceptable range
+        (e.g. ``(1.0, 1.3)`` for "square to moderately tall"), a single
+        float is shorthand for ``(0.0, value)`` -- a height cap.  When
+        set, the target fitter balances the layout toward the range
+        instead of stopping at the first width fit: it explores every
+        reflowable container variant (``EqualGrid(columns="auto")``,
+        ``BalancedColumns(columns="auto")``, ``Cycle(shape="auto")``)
+        and keeps compressing spacing while the figure is still too
+        tall, so a 7-card diagram does not export as a degenerate single
+        corridor when a balanced arrangement exists.  Fonts are never
+        touched.  Default ``None`` keeps pure width fitting -- unless
+        the body carries :class:`~sciviz.Aspect` annotations, whose
+        component-level goals drive the same search.
     min_effective_font_pt : float
         Legibility floor used by the ``target_width_pt`` overflow
         warning: the printed size the smallest text must keep when the
@@ -144,6 +153,7 @@ class Diagram:
         self.auto_trim = auto_trim
         self.target_width_pt = (float(target_width_pt)
                                 if target_width_pt is not None else None)
+        self.aspect_spec = AspectSpec.parse(target_aspect)
         self.target_aspect = self._normalise_aspect(target_aspect)
         self.min_effective_font_pt = float(min_effective_font_pt)
         # Lazily-resolved layout-compressed theme (``target_width_pt``
@@ -180,20 +190,43 @@ class Diagram:
     def _normalise_aspect(target_aspect) -> Optional[tuple[float, float]]:
         """Return ``(min_h_over_w, max_h_over_w)`` or ``None``.
 
-        A single float is shorthand for ``(0.0, value)`` (height cap).
+        Numbers keep their historical height-over-width reading (a single
+        float is shorthand for ``(0.0, value)``, a height cap).  Aspect
+        names and :class:`AspectSpec` values are declared in the
+        conventional width:height reading and converted here, so both
+        vocabularies land on the one internal band.
         """
-        if target_aspect is None:
-            return None
-        if isinstance(target_aspect, (int, float)):
-            return (0.0, float(target_aspect))
-        if isinstance(target_aspect, (tuple, list)) and len(target_aspect) == 2:
-            lo, hi = float(target_aspect[0]), float(target_aspect[1])
-            if lo > hi:
-                lo, hi = hi, lo
-            return (lo, hi)
-        raise TypeError(
-            "target_aspect must be None, a float, or a (min, max) pair"
-        )
+        spec = AspectSpec.parse(target_aspect)
+        return None if spec is None else spec.as_height_band()
+
+    # -- component-level aspect goals ------------------------------------
+
+    def _aspect_goals(self, body: Optional[Element] = None) -> list:
+        """Every :class:`~sciviz.Aspect` annotation inside ``body``.
+
+        Collected in the same stable depth-first order as reflowable
+        containers, so goals found on a deep copy of the tree line up
+        with the ones on the author's tree.
+        """
+        out: list = []
+        collect_aspect_goals(self.body if body is None else body, out)
+        return out
+
+    def _local_aspect_penalty(self, body: Element, theme: Theme) -> float:
+        """Summed miss of every component-level aspect goal in ``body``."""
+        total = 0.0
+        for goal in self._aspect_goals(body):
+            total += goal.aspect_penalty(theme)
+        return total
+
+    def _has_aspect_goal(self) -> bool:
+        return self.target_aspect is not None or bool(self._aspect_goals())
+
+    def _aspect_goal_required(self) -> bool:
+        """Did any declared shape say it outranks the width target?"""
+        if self.aspect_spec is not None and self.aspect_spec.is_required:
+            return True
+        return any(g.spec.is_required for g in self._aspect_goals())
 
     def _layout_theme(self) -> Theme:
         """The theme layout and rendering actually use.
@@ -309,12 +342,13 @@ class Diagram:
     def _reflow_assignments(self):
         """Cartesian product of every reflowable container's options.
 
-        Only explored when ``target_aspect`` is declared: without an
-        aspect goal there is no criterion for preferring one reflow over
-        another, so ``columns="auto"`` containers keep their intrinsic
-        default. The product is capped so a pathological tree cannot
-        make fitting quadratic."""
-        if self.target_aspect is None:
+        Only explored when an aspect goal exists -- ``target_aspect`` for
+        the whole figure, or any :class:`~sciviz.Aspect` annotation on a
+        component. Without a goal there is no criterion for preferring
+        one reflow over another, so ``columns="auto"`` containers keep
+        their intrinsic default. The product is capped so a pathological
+        tree cannot make fitting quadratic."""
+        if not self._has_aspect_goal():
             return [()]
         probes: list = []
         self._collect_reflowables(self.body, probes)
@@ -326,8 +360,29 @@ class Diagram:
         return assignments[:64]
 
     def _trial_size(self, theme: Theme, assignment=()) -> BBox:
-        """Total diagram size under ``theme``, measured on a throwaway
-        copy of the content.
+        """Total diagram size for one candidate (see :meth:`_trial`)."""
+        return self._trial(theme, assignment)[0]
+
+    def _legible_width_ceiling(self, target: float,
+                               min_text: Optional[float]) -> float:
+        """Widest canvas whose smallest text still clears the floor.
+
+        ``target_width_pt`` says where the figure *should* land;
+        ``min_effective_font_pt`` says how far past it the author is
+        willing to let the figure be scaled down before the type stops
+        being readable.  The second is the hard constraint, and it is
+        what makes an unreachable width target degrade gracefully
+        instead of vetoing every shape choice.
+        """
+        if not min_text or self.min_effective_font_pt <= 0.0:
+            return target * self._FIT_TOLERANCE
+        return max(target * self._FIT_TOLERANCE,
+                   target * float(min_text) / self.min_effective_font_pt)
+
+    def _trial(self, theme: Theme,
+               assignment=()) -> tuple[BBox, float, Optional[float]]:
+        """Total diagram size and component-goal miss under ``theme``,
+        measured on a throwaway copy of the content.
 
         Sibling-aware layouts (``equal_widths``, shape-peer
         normalisation) record sticky ``min_width`` floors on first
@@ -336,6 +391,13 @@ class Diagram:
         ``assignment`` optionally pins each reflowable container (in
         depth-first order) to one of its layout variants before
         measuring.
+
+        The second return value is the summed miss of every
+        :class:`~sciviz.Aspect` annotation in the tree, measured on the
+        same throwaway copy so component goals are scored against the
+        layout this candidate actually produces.  The third is the
+        smallest authored text size the trial inked, which turns the
+        author's ``min_effective_font_pt`` into a width ceiling.
         """
         from .connect._resolver import _FlowResolver
         from .composition import Flowed
@@ -351,20 +413,24 @@ class Diagram:
             self._collect_reflowables(body, probes)
             for elem, choice in zip(probes, assignment):
                 elem._apply_reflow(choice)
+        content = body
         if not isinstance(body, (Flowed, _FlowResolver)):
             body = _FlowResolver(body)
         sz = body.measure(theme)
         w, h = sz.w, sz.h
+        local_pen = self._local_aspect_penalty(content, theme)
         # Routed connectors, their labels, and margin detours paint ink
         # outside the measured layout box; a measure-only trial would
         # under-report the exported size (the render pass grows the
         # canvas around ink). Render the throwaway copy onto a scratch
         # canvas and widen the trial by any overflow so the fitter
         # optimises the true footprint.
+        min_text = None
         try:
             scratch = Canvas(default_font_family=theme.font_family)
             body.render(scratch, 0.0, 0.0, theme)
             ink = scratch.ink_bbox
+            min_text = scratch.min_text_size
         except Exception:  # pragma: no cover -- unrenderable trial copy
             ink = None
         if ink is not None:
@@ -380,7 +446,8 @@ class Diagram:
         if self.subtitle:
             w = max(w, theme.text_width(self.subtitle, "subtitle"))
         m = self._margin_for(theme)
-        return BBox(w + 2 * m, h + 2 * m + self._title_height_for(theme))
+        return (BBox(w + 2 * m, h + 2 * m + self._title_height_for(theme)),
+                local_pen, min_text)
 
     def _title_height_for(self, theme: Theme) -> float:
         h = 0.0
@@ -394,24 +461,26 @@ class Diagram:
 
     def _fit_density(self, target: float, assignment=()):
         """Width-then-aspect fixed-point iteration for one reflow
-        assignment.  Returns ``(theme, size, density)``.
+        assignment.  Returns
+        ``(theme, size, density, local_pen, min_text)``.
 
         Phase 1 is the historical width fit: compress spacing until the
-        canvas width approaches the target.  Phase 2 only runs when
-        ``target_aspect`` declares a height ceiling: while the figure is
-        still too tall (the exported canvas is widened to the target, so
-        printed aspect is ``h / max(w, target)``), spacing keeps
-        compressing -- height shrinks with it, width only gets safer.
+        canvas width approaches the target.  Phase 2 only runs when an
+        aspect goal exists: while the figure is still the wrong shape
+        (the exported canvas is widened to the target, so printed aspect
+        is ``h / max(w, target)``), spacing keeps compressing -- height
+        shrinks with it, width only gets safer -- and component-level
+        goals are scored alongside the figure-level one.
         """
         theme = self.theme
         density = 1.0
-        size = self._trial_size(theme, assignment)
+        size, local_pen, min_text = self._trial(theme, assignment)
         for _ in range(self._FIT_PASSES):
             if size.w <= target or density <= self._FIT_MIN_DENSITY:
                 break
             density = max(self._FIT_MIN_DENSITY, density * target / size.w)
             theme = self._compressed_theme(density)
-            size = self._trial_size(theme, assignment)
+            size, local_pen, min_text = self._trial(theme, assignment)
         # Phase 1b: the spacing floor alone could not reach the target,
         # so keep the fixed-point going on the wrap budget only.  Fonts
         # and paddings stay; wrap-enabled labels re-flow onto more lines
@@ -425,21 +494,24 @@ class Diagram:
             wrap_scale = max(self._FIT_MIN_WRAP,
                              wrap_scale * target / size.w)
             theme = self._compressed_theme(density, wrap_scale)
-            size = self._trial_size(theme, assignment)
-        if self.target_aspect is not None:
+            size, local_pen, min_text = self._trial(theme, assignment)
+        if self._has_aspect_goal():
             # Compression is not monotone in height (a tighter wrap
             # budget reflows text onto MORE lines, so cards get
             # narrower but taller), so probe a small density grid
             # around the width fit and keep the best candidate instead
             # of blindly walking downward.
-            _, hi = self.target_aspect
+            hi = (self.target_aspect[1] if self.target_aspect is not None
+                  else float("inf"))
 
-            def rank(sz: BBox, dens: float):
+            def rank(sz: BBox, dens: float, pen: float):
                 aspect = sz.h / max(sz.w, target)
+                over = 0.0 if hi == float("inf") else max(0.0, aspect - hi)
                 return (max(0.0, sz.w - target * self._FIT_TOLERANCE),
-                        max(0.0, aspect - hi), -dens, sz.h)
+                        over, pen, -dens, sz.h)
 
-            best = (rank(size, density), theme, size, density)
+            best = (rank(size, density, local_pen), theme, size, density,
+                    local_pen, min_text)
             steps = (self._FIT_ASPECT_STEP, self._FIT_ASPECT_STEP ** 2,
                      1.0 / self._FIT_ASPECT_STEP,
                      1.0 / self._FIT_ASPECT_STEP ** 2)
@@ -450,12 +522,14 @@ class Diagram:
                     continue
                 probed.add(round(dens, 3))
                 cand_theme = self._compressed_theme(dens, wrap_scale)
-                cand_size = self._trial_size(cand_theme, assignment)
-                cand = (rank(cand_size, dens), cand_theme, cand_size, dens)
+                cand_size, cand_pen, cand_min = self._trial(
+                    cand_theme, assignment)
+                cand = (rank(cand_size, dens, cand_pen), cand_theme,
+                        cand_size, dens, cand_pen, cand_min)
                 if cand[0] < best[0]:
                     best = cand
-            _, theme, size, density = best
-        return theme, size, density
+            _, theme, size, density, local_pen, min_text = best
+        return theme, size, density, local_pen, min_text
 
     def _fit_theme_to_target(self) -> Theme:
         """Resolve the theme (and reflow variant) that brings the canvas
@@ -464,32 +538,81 @@ class Diagram:
         font sizes.
 
         Candidates are ranked lexicographically: fit the width first,
-        then land the aspect in range, then prefer the least-compressed
-        spacing, then the shortest figure.  The density never drops
-        below :attr:`_FIT_MIN_DENSITY`; whatever width remains past the
-        target is reported by the legibility warning at render time
-        (see :meth:`_finalize_target_width`).
+        then land the figure-level aspect in range, then satisfy the
+        component-level :class:`~sciviz.Aspect` goals, then prefer the
+        least-compressed spacing, then the shortest figure.  The
+        figure-level goal outranks component goals because it is a
+        physical page constraint while a component goal is a
+        compositional preference.
+
+        When *no* variant can reach ``target_width_pt`` at the authored
+        font sizes, the width term would rank every candidate before the
+        shape ever mattered, quietly discarding the declared aspect to
+        save a few points of overshoot.  In that regime the hard
+        constraint becomes ``min_effective_font_pt`` instead: variants
+        that still print legibly are equally acceptable, the declared
+        shape chooses among them, and width comes back as a tie-break.
+        The density never drops below :attr:`_FIT_MIN_DENSITY`; whatever
+        width remains past the target is reported by the legibility
+        warning at render time (see :meth:`_finalize_target_width`).
         """
         target = float(self.target_width_pt)
-        if self.target_aspect is None:
+        if not self._has_aspect_goal():
             theme = self.theme
             if self._trial_size(theme).w <= target:
                 return theme
-            theme, _, _ = self._fit_density(target)
+            theme, _, _, _, _ = self._fit_density(target)
             return theme
 
-        lo, hi = self.target_aspect
-        best = None
+        lo, hi = self.target_aspect if self.target_aspect is not None \
+            else (0.0, float("inf"))
+        candidates = []
         for assignment in self._reflow_assignments():
-            theme, size, density = self._fit_density(target, assignment)
+            theme, size, density, local_pen, min_text = self._fit_density(
+                target, assignment)
             aspect = size.h / max(size.w, target)
-            width_pen = max(0.0, size.w - target * self._FIT_TOLERANCE)
-            aspect_pen = max(0.0, lo - aspect, aspect - hi)
-            score = (width_pen > 0.0, width_pen, aspect_pen > 1e-9,
-                     aspect_pen, -density, size.h)
-            if best is None or score < best[0]:
-                best = (score, theme, assignment)
-        _, theme, assignment = best
+            aspect_pen = max(0.0, lo - aspect)
+            if hi != float("inf"):
+                aspect_pen = max(aspect_pen, aspect - hi)
+            candidates.append(dict(
+                theme=theme, assignment=assignment, size=size,
+                density=density, local_pen=local_pen, min_text=min_text,
+                aspect_pen=aspect_pen,
+                width_pen=max(0.0, size.w - target * self._FIT_TOLERANCE),
+                legible_pen=max(0.0, size.w - self._legible_width_ceiling(
+                    target, min_text)),
+            ))
+        # Graceful degradation. When some variant reaches the target
+        # width, width is the first thing that must be right and shape
+        # only breaks ties -- the historical contract. When NO variant
+        # can reach it (the content is simply too wide at the authored
+        # font sizes), ranking by width would silently veto the declared
+        # shape for a couple of points of overshoot the reader never
+        # sees. In that regime the hard constraint becomes the
+        # legibility floor: every variant that still prints readably is
+        # acceptable, the declared shape decides among them, and width
+        # returns as the tie-break.
+        #
+        # A goal declared ``priority="required"`` enters that regime on
+        # purpose: the author has said the shape is the point of the
+        # figure and that they will pay for it in print scale, down to
+        # the legibility floor and no further.
+        fits = ([] if self._aspect_goal_required()
+                else [c for c in candidates if c["width_pen"] <= 0.0])
+        if fits:
+            def score(c):
+                return (c["aspect_pen"] > 1e-9, c["aspect_pen"],
+                        c["local_pen"] > 1e-9, c["local_pen"],
+                        -c["density"], c["size"].h)
+            best = min(fits, key=score)
+        else:
+            def score(c):
+                return (c["legible_pen"] > 0.0, c["legible_pen"],
+                        c["aspect_pen"] > 1e-9, c["aspect_pen"],
+                        c["local_pen"] > 1e-9, c["local_pen"],
+                        c["size"].w, -c["density"], c["size"].h)
+            best = min(candidates, key=score)
+        theme, assignment = best["theme"], best["assignment"]
         if assignment:
             probes: list = []
             self._collect_reflowables(self.body, probes)

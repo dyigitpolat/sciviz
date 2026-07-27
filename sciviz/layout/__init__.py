@@ -12,6 +12,7 @@ is bottom-up, rendering is top-down.
 """
 
 from ._aligned_stack import AlignedStack
+from ._aspect import Aspect, collect_aspect_goals
 from ._column import Column
 from ._panel import Panel
 from ._row import Row
@@ -20,6 +21,6 @@ from ._spacer import FixedSize, Spacer
 from ._wraprow import WrapRow
 
 __all__ = [
-    "Spacer", "FixedSize", "Row", "Column", "Grid", "Panel", "AlignedStack",
-    "WrapRow",
+    "Aspect", "Spacer", "FixedSize", "Row", "Column", "Grid", "Panel",
+    "AlignedStack", "WrapRow", "collect_aspect_goals",
 ]

@@ -1076,13 +1076,120 @@ all clear the default floor -- `micro` is 7 pt, one point below `tiny`
 on the same ladder -- so the warning only ever points at explicit raw
 sizes.
 
-`target_aspect` (height/width, a `(lo, hi)` range or a single
-height-cap float) additionally balances the layout toward the printed
-shape: the fitter explores every `columns="auto"` reflow variant and a
-small grid of spacing densities, ranking candidates by width fit
-first, then aspect, then least compression. Without it a multi-card
-figure can satisfy the width as one degenerate tall corridor; with it
-the balanced arrangement wins whenever one exists at the authored font
-sizes. If the content cannot reach the requested shape, the fitter
-returns the closest feasible layout -- it never trades fonts for
-geometry.
+`target_aspect` additionally balances the layout toward the printed
+shape: the fitter explores every reflow variant and a small grid of
+spacing densities, ranking candidates by width fit first, then aspect,
+then least compression. Without it a multi-card figure can satisfy the
+width as one degenerate tall corridor; with it the balanced
+arrangement wins whenever one exists at the authored font sizes. If
+the content cannot reach the requested shape, the fitter returns the
+closest feasible layout -- it never trades fonts for geometry.
+
+### Declaring a shape: the aspect vocabulary
+
+Say the shape you want by name instead of hand-tuning containers until
+the proportions come out right:
+
+```python
+cards = [Card(Text(f"Stage {i}", color="white", weight="700"),
+              Box("detail"), role=Palette.blue) for i in range(6)]
+body = EqualGrid(*cards, columns="auto")
+d = Diagram.for_paper(body, target_width_pt=505.0, target_aspect="landscape")
+```
+
+The names are read the way people say them aloud, as width:height --
+`"portrait"` (0.40-0.85), `"square"` (0.85-1.20), `"landscape"`
+(1.20-2.60), `"panorama"` (2.40-6.00). The bands are deliberately
+broad: a name states the intent, and `AspectSpec("landscape",
+ratio=(1.85, 2.4))` tightens it when a page budget demands a specific
+proportion. Numbers keep their original *height/width* meaning, so
+figures written before the vocabulary existed are unaffected.
+
+The same vocabulary applies to one component, not just the whole
+figure:
+
+```python
+def zone(name, n):
+    return EqualGrid(*[Box(f"{name} {i}", width=48, height=22)
+                       for i in range(n)], columns="auto")
+
+body = Row(zone("port", 4), Aspect("landscape", zone("stage", 6)),
+           zone("record", 4), gap="lg", align="stretch")
+d = Diagram.for_paper(body, target_width_pt=505.0)
+```
+
+`Aspect` is a fully transparent wrapper -- it measures and renders
+exactly like its child -- that declares a goal for its own subtree.
+Nothing is scaled, squeezed, or letterboxed: the engine reaches the
+goal only by choosing among layout alternatives that genuinely exist
+inside the subtree (`columns="auto"` containers, `Cycle` ring shapes).
+Sibling subtrees are left alone, several annotations can coexist
+(`weight=` orders them), and a component goal is ranked after the
+figure-level one, which is a physical page constraint rather than a
+compositional preference. An annotation alone is enough to start the
+search: no diagram-level `target_aspect` is required.
+
+**Priority.** By default a declared shape is *preferred*: the width
+target comes first and shape breaks ties. When the shape is the point
+of the figure and the author will pay for it in print scale, say so:
+
+```python
+d = Diagram.for_paper(
+    EqualGrid(*[Box(f"stage {i}", width=90, height=40) for i in range(6)],
+              columns="auto"),
+    target_width_pt=252.0,
+    target_aspect=AspectSpec("landscape", ratio=(1.85, 2.4),
+                             priority="required"),
+)
+```
+
+The hard width constraint then becomes `min_effective_font_pt` rather
+than `target_width_pt`: the figure may overshoot the column as far as
+the type stays readable, and the declared shape decides among the
+candidates that clear that floor. "Required" is not "at any cost" --
+a variant that would print below the floor is still rejected. The same
+graceful degradation applies automatically, without the flag, when *no*
+variant can reach the target width: ranking by width would otherwise
+veto the declared shape to save a few points of overshoot no reader
+sees.
+
+### Cycle -- a staged loop whose shape is the engine's choice
+
+A process that returns to its own start has one piece of layout freedom
+that matters: the shape of the ring. Six stages read equally well as
+three columns of two or two rows of three, and which is right depends
+on the page, not the process. `Cycle` makes that freedom explicit:
+
+```python
+def stage(name):
+    return Card(Text(name, color="white", weight="700"), Box("detail"),
+                role=Palette.blue)
+
+loop = Cycle(
+    Anchor("propose", stage("Propose")),
+    Anchor("screen", stage("Screen")),
+    Anchor("evaluate", stage("Evaluate")),
+    Anchor("record", stage("Record")),
+    edges=["propose()", None, {"label": "commit", "dashed": True}, None],
+    shape="auto",            # the layout engine picks the rectangle
+)
+d = Diagram.for_paper(Aspect("landscape", loop), target_width_pt=380.0)
+```
+
+Stages are given in cycle order and placed around a rectangle's
+perimeter; `edges[i]` describes the hand-off from stage `i` to stage
+`i + 1`, with the last entry closing the loop (`None` for a plain
+arrow, a string for its label, a dict of `Connect` keyword arguments,
+`False` for no connector). `Cycle` derives every connector's
+attachment side from the placement it actually chose, so re-shaping the
+ring never asks the author to restate a single side hint. `start=`
+and `direction=` set which corner stage one occupies and which way the
+loop winds; `shape="auto"` enters the reflow search, a pinned
+`(rows, cols)` opts out. Pre-wrapped `Anchor` children keep their names
+so feedback connectors declared elsewhere can address any stage.
+
+Corridor economics are worth knowing before writing edge labels: a
+caption on a *facing* pair (a right side toward a left side) reserves
+half its **width** on both cards, while a caption on a top/bottom pair
+reserves half its **height**. Words on side-by-side hand-offs are
+therefore the most expensive words in a wide figure.

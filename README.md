@@ -53,8 +53,9 @@ aligned stacks, structured text runs, and the rest of the vocabulary.
 
 ```
 sciviz/
-  core/           Element, BBox, Canvas, Theme
-  layout/         Row, Column, WrapRow, Panel, Spacer, FixedSize, AlignedStack
+  core/           Element, BBox, Canvas, Theme, AspectSpec
+  layout/         Row, Column, WrapRow, Panel, Spacer, FixedSize,
+                  AlignedStack, Aspect
   elements/       Text, TextBlock, Span, Box, Matrix (+ structured cells,
                   selections, ColorScale/ColorBar), Legend, Caption,
                   HarveyBall, TokenRow, Chip, Icon, Image, Separator
@@ -63,6 +64,7 @@ sciviz/
                   Group, Region (label_position/annotations/corner_badge),
                   LabeledChain, MatchSize, LoopIcon, DetailCallout
   connect/        Connect, Anchor       -- the only public connector API
+                  Cycle                 -- ordered loop on a reflowable ring
   grid/           Grid                  -- per-column alignment
   charts/         Table, AlignedColumns, BarChart, DonutChart
   primitives/     Heatmap, Histogram, MeshArray, VectorTiles, StackedBoxes
@@ -171,6 +173,14 @@ For paper figures whose captions already carry the title, use
 uses a tighter content margin. Pipeline and architecture diagrams should
 prefer `Card`, `EqualGrid`, `Stripe`, `StepCell`, `ConditionGlyph`, and
 `SoftLegend` over fixed-size boxes and spacer shims.
+
+Declare the printed shape by name rather than hand-tuning containers:
+`Diagram.for_paper(body, target_width_pt=505, target_aspect="landscape")`,
+or `Aspect("landscape", component)` for one subtree only. The engine
+reaches the declared shape by choosing among layout alternatives that
+already exist inside it (`columns="auto"` containers, `Cycle` ring
+shapes) -- nothing is ever scaled or letterboxed to fit. See
+*Declaring a shape* in `docs/AUTHORING.md`.
 
 ## Colour system
 
