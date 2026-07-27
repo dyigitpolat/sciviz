@@ -8,6 +8,17 @@ from ..core import BBox, Canvas, Element, Theme
 from ._row import Row, _validate_align
 
 
+_VALID_JUSTIFY = ("start", "center", "end", "between")
+
+
+def _validate_justify(container: str, justify: str) -> str:
+    if justify not in _VALID_JUSTIFY:
+        raise ValueError(
+            f"{container}(justify={justify!r}) is not a recognised justify "
+            f"value; expected one of {_VALID_JUSTIFY}.")
+    return justify
+
+
 class Column(Element):
     """Vertical container. See :class:`sciviz.layout.Row` for details.
 
@@ -28,6 +39,26 @@ class Column(Element):
         instead of just sharing a centring slot. Children that don't
         support inflation are still rendered at intrinsic width and
         centred within the column.
+    justify : str
+        Main-axis (vertical) distribution of surplus height when a parent
+        grants the column more room than its natural content needs (e.g.
+        ``Row(align="stretch")`` equalising zone heights): ``"between"``
+        (default, the historical behaviour) grows the existing gaps so
+        the first child stays pinned to the top and the last to the
+        bottom; ``"start"`` packs children at the top, ``"center"``
+        centres the block in the frame, ``"end"`` packs at the bottom.
+        A lone child centres under every mode except the pins. Surplus
+        is offered to ``grow`` children first; ``justify`` distributes
+        only the residual, so negative space is laid out deliberately
+        instead of pooling wherever content happens to stop.
+    grow : bool
+        Mark this column as the child that absorbs its parent column's
+        surplus main-axis height (the ``absorbs_main_axis_stretch``
+        protocol, previously internal). The canonical zone grammar is
+        ``Column(header, Column(*content, grow=True, justify=...))``:
+        the header stays in the shared top band while the content column
+        receives the zone's remaining height and distributes its
+        negative space per its own ``justify``.
     """
 
     # A Row that is itself stretched by a parent may contain a major stage
@@ -37,10 +68,14 @@ class Column(Element):
     absorbs_cross_axis_stretch = True
 
     def __init__(self, *children: Element, gap: Union[str, float] = "md",
-                 align: str = "center", equal_widths: bool = False):
+                 align: str = "center", equal_widths: bool = False,
+                 justify: str = "between", grow: bool = False):
         self.children: List[Element] = [c for c in children if c is not None]
         self.gap = gap
         self.align = _validate_align("Column", align)
+        self.justify = _validate_justify("Column", justify)
+        if grow:
+            self.absorbs_main_axis_stretch = True
         self.equal_widths = equal_widths
         self._equalised = False
         # Whether align="stretch" has broadcast the widest width to children.
@@ -340,9 +375,21 @@ class Column(Element):
         )
         residual = max(0.0, self.measure(theme).h - natural_h)
         effective_gap = g
-        if residual > 0.0 and len(visible) > 1:
-            effective_gap += residual / (len(visible) - 1)
-        cy = y + (residual / 2 if len(visible) == 1 else 0.0)
+        lead = 0.0
+        if residual > 0.0:
+            if len(visible) == 1:
+                # A lone child keeps optical centring in every mode except
+                # the explicit pins ("between" has no gaps to grow).
+                lead = (0.0 if self.justify == "start"
+                        else residual if self.justify == "end"
+                        else residual / 2)
+            elif self.justify == "between":
+                effective_gap += residual / (len(visible) - 1)
+            elif self.justify == "center":
+                lead = residual / 2
+            elif self.justify == "end":
+                lead = residual
+        cy = y + lead
         visible_index = 0
         for child, size, cb in zip(self.children, sizes, content):
             invisible = getattr(child, "is_layout_invisible", False)

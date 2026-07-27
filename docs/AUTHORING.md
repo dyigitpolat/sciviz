@@ -164,6 +164,48 @@ re-measure with the shared widths. Participants are `Table`, `Row`,
 and the named-row `Grid`. Children that don't expose column widths
 simply stack normally.
 
+### Deliberate negative space: `justify` and `grow`
+
+When a parent grants a `Column` more height than its content needs --
+most commonly `Row(align="stretch")` equalising the zones of a
+multi-zone overview -- the surplus is laid out deliberately instead of
+pooling below whatever content happened to stop first:
+
+- `justify="between"` (default, historical behaviour): surplus grows
+  the existing gaps; the first child stays pinned to the top edge and
+  the last to the bottom.
+- `justify="start" | "center" | "end"`: the block packs to the top,
+  centre, or bottom of the granted frame with natural gaps.
+- `grow=True` marks the child column that absorbs the parent's surplus
+  *before* any gap distribution.
+
+The canonical zone grammar combines them:
+
+```python
+def zone(title, *content, justify="between"):
+    return Column(
+        Text(title.upper(), size="tiny", weight="800"),
+        Column(*content, gap="md", align="center",
+               grow=True, justify=justify),
+        gap="sm", align="center",
+    )
+
+body = Row(
+    zone("Boundary",
+         Box("ports", width=70, height=90),
+         Box("adapters", width=70, height=30)),
+    zone("Core", Box("staged loop", width=90, height=200)),
+    zone("Evidence", Box("sealed stack", width=70, height=80),
+         justify="center"),
+    gap="lg", align="stretch",
+)
+```
+
+Headers stay on one shared top band; each zone's content column owns
+the zone's remaining height and distributes its whitespace (spread for
+a multi-block zone, optically centred for a lone card). This replaces
+`Spacer` shims and hand-tuned gaps for balancing multi-column figures.
+
 ### WrapRow and Chip -- flowing runs of tags
 
 `WrapRow` is the flow complement of `Row`: children run left-to-right
