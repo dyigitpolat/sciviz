@@ -133,19 +133,24 @@ def test_label_avoids_wire_drawn_later():
         Flow("c", "a", src_side="top", dst_side="bottom"),
     ])
     svg, canvas = _render(flowed)
-    m = re.search(r'<text ([^>]*)>labeled edge</text>', svg)
-    assert m, "label missing"
-    attrs = dict(_ATTR_RX.findall(m.group(1)))
+    # The caption may reach the canvas as one run or, when it was
+    # wrapped to a narrow corridor, as one run per line. Either way no
+    # run may straddle a wire.
     theme = Theme()
-    lx, ly = float(attrs["x"]), float(attrs["y"])
-    fs = float(attrs["font-size"])
-    lw = theme.text_width("labeled edge", fs)
-    anchor = attrs.get("text-anchor", "start")
-    x0 = lx - lw / 2 if anchor == "middle" else lx
-    rect = (x0, ly - fs, x0 + lw, ly + fs * 0.35)
-    for seg in _lines(svg):
-        assert not _seg_hits_rect(seg, rect, shrink=0.0), (
-            f"label rect {rect} straddles wire {seg}")
+    runs = [(m.group(2), dict(_ATTR_RX.findall(m.group(1))))
+            for m in re.finditer(r'<text ([^>]*)>([^<]*)</text>', svg)
+            if m.group(2) in ("labeled edge", "labeled", "edge")]
+    assert runs, "label missing"
+    for text, attrs in runs:
+        lx, ly = float(attrs["x"]), float(attrs["y"])
+        fs = float(attrs["font-size"])
+        lw = theme.text_width(text, fs)
+        anchor = attrs.get("text-anchor", "start")
+        x0 = lx - lw / 2 if anchor == "middle" else lx
+        rect = (x0, ly - fs, x0 + lw, ly + fs * 0.35)
+        for seg in _lines(svg):
+            assert not _seg_hits_rect(seg, rect, shrink=0.0), (
+                f"label rect {rect} straddles wire {seg}")
 
 
 # ---------------------------------------------------------------------------

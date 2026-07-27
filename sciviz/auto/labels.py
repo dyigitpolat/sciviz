@@ -79,6 +79,127 @@ def measure_label(text: str, theme: Theme, size="small", *,
     )
 
 
+def wrap_label(text: str, theme: Theme, size="small", *,
+               max_width: float, bold: bool = False) -> str:
+    """Greedily re-wrap a caption to ``max_width``, honouring hard breaks.
+
+    A caption's job is to sit next to its wire and be read; how its
+    words are distributed over lines is the layout's business, not the
+    author's. Authors used to insert ``"\n"`` by hand to make a caption
+    fit a narrow corridor -- and, failing that, deleted words. Both are
+    layout decisions leaking into content.
+
+    A word wider than the budget still gets its own line: the longest
+    word is the hard floor on how narrow a caption can be made, and the
+    corridor reservation is sized from exactly that floor.
+    """
+    out_lines = []
+    for hard in text.split("\n"):
+        words = hard.split()
+        if not words:
+            continue
+        line = words[0]
+        for word in words[1:]:
+            trial = f"{line} {word}"
+            if theme.text_width(trial, size, bold=bold) <= max_width:
+                line = trial
+            else:
+                out_lines.append(line)
+                line = word
+        out_lines.append(line)
+    return "\n".join(out_lines) if out_lines else text
+
+
+def narrowest_wrap(text: str, theme: Theme, size="small", *,
+                   bold: bool = False) -> str:
+    """The narrowest block a caption can be set in: one word per line."""
+    widest_word = 0.0
+    for hard in text.split("\n"):
+        for word in hard.split():
+            widest_word = max(widest_word,
+                              theme.text_width(word, size, bold=bold))
+    if widest_word <= 0.0:
+        return text
+    return wrap_label(text, theme, size, max_width=widest_word, bold=bold)
+
+
+@dataclass(frozen=True)
+class CaptionFit:
+    """How a caption will be set: the measured block and its orientation.
+
+    ``upright`` means the text reads horizontally. Beside a horizontal
+    wire that is the *along* form (the legible one, worth corridor);
+    beside a vertical wire it is the *across* form (also the legible
+    one, and free). Rotation is what is left when neither fits.
+    """
+
+    label: LabelBox
+    upright: bool
+
+
+def fitted_caption(text: str, theme: Theme, size="small", *,
+                   src_side: str, dst_side: str,
+                   neighbour_extent: Optional[float] = None,
+                   bold: bool = False) -> LabelBox:
+    """The caption as it will actually be set.
+
+    This is the single place the orientation/wrapping question is
+    answered. Corridor reservation and label placement both call it, so
+    what the layout pays for and what the placer draws can no longer
+    disagree -- that split was why captions ended up rotated inside
+    corridors that had been sized for rotated captions, a decision that
+    justified itself.
+
+    Two *facing* pinned sides form a direct corridor between neighbours,
+    which is narrow by construction. The caption is wrapped to its
+    narrowest block there so it can be set UPRIGHT and read along the
+    wire; rotation stays what it should be, a fallback for a corridor
+    that is genuinely walled. Every other geometry keeps the author's
+    line breaks: those routes have long arms in open space.
+    """
+    return caption_fit(text, theme, size, src_side=src_side,
+                       dst_side=dst_side,
+                       neighbour_extent=neighbour_extent,
+                       bold=bold).label
+
+
+def caption_fit(text: str, theme: Theme, size="small", *,
+                src_side: str, dst_side: str,
+                neighbour_extent: Optional[float] = None,
+                bold: bool = False) -> CaptionFit:
+    """Resolve caption wrapping and orientation in one place.
+
+    On a facing pair the caption is wrapped to its narrowest block so it
+    can be set upright and read along the wire. If even that block would
+    open a corridor wider than ``caption_corridor_ratio`` of the
+    narrower node it separates, the corridor would out-measure the
+    things it is separating: the caption is then set on one line to be
+    turned across the wire, which costs the corridor nothing.
+    """
+    sides = {src_side, dst_side}
+    one_line = measure_label(text, theme, size, bold=bold)
+    if sides == {"left", "right"}:
+        # A left/right corridor is narrow horizontally and tall
+        # vertically: wrapping the caption narrow buys exactly the
+        # dimension that is scarce, so it can be set upright and read
+        # along the wire.
+        block = measure_label(narrowest_wrap(text, theme, size, bold=bold),
+                              theme, size, bold=bold)
+        if neighbour_extent:
+            cap = float(neighbour_extent) * getattr(
+                theme, "caption_corridor_ratio", 0.35)
+            if block.width > cap:
+                return CaptionFit(one_line, False)
+        return CaptionFit(block, True)
+    if sides == {"top", "bottom"}:
+        # A top/bottom corridor is the mirror image: height is scarce
+        # and width is free. Wrapping narrow here would stack the
+        # caption into the one dimension that costs -- the caption stays
+        # on one line and reads across the wire, which is upright.
+        return CaptionFit(one_line, True)
+    return CaptionFit(one_line, True)
+
+
 def _try_place(segment, label_w, label_h, obstacles, prefer, gap):
     """Return ``(rect, anchor, total_overlap)`` from ``place_label``."""
     rect, anchor = place_label(

@@ -122,6 +122,16 @@ class Theme:
     # every end that carries a marker.
     arrow_shaft_ratio: float = 0.8
 
+    # A caption corridor may not out-measure the nodes it separates.
+    # Upright text reading along its wire is the legible form and is
+    # worth opening a corridor for -- but only up to this fraction of
+    # the narrower neighbouring node. Past it the caption is turned
+    # across the wire instead, which costs the corridor nothing. This is
+    # the knob that produces a MIX: short hand-off captions read along
+    # their arrows, long ones step aside, and neither choice is made by
+    # hand.
+    caption_corridor_ratio: float = 0.35
+
     # Connector caption size token. Routed-flow labels read at this size;
     # dense multi-panel overview figures may override it down one step
     # (e.g. "tiny") so edge captions stay subordinate to node labels.

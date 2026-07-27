@@ -13,6 +13,35 @@ from ._anchor import Anchor, _anchor_stack, _side_point, _side_point_frac
 from ._bus import Bus
 from ._flow import Flow, Labeled, _assign_edge_shares
 
+
+def _facing_extent_for(flow, src, dst, theme) -> float:
+    """Size of the narrower node a facing corridor separates.
+
+    Mirrors ``Flow._neighbour_extent`` at margin-application time, where
+    only the anchors (not their rendered boxes) are available, so the
+    corridor cap is the same number in both passes.
+    """
+    if src is None or dst is None:
+        return 0.0
+    a = src.child.measure(theme)
+    b = dst.child.measure(theme)
+    return float(min(a.w, b.w, a.h, b.h))
+
+
+def _facing_extent_for(spec, src, dst, theme) -> float:
+    """``_facing_extent`` on the axis the corridor actually runs."""
+    if src is None or dst is None:
+        return 0.0
+    a = src.child.measure(theme)
+    b = dst.child.measure(theme)
+    sides = {spec.src_side, spec.dst_side}
+    if sides == {"left", "right"}:
+        return float(min(a.w, b.w))
+    if sides == {"top", "bottom"}:
+        return float(min(a.h, b.h))
+    return float(min(a.w, b.w, a.h, b.h))
+
+
 class Flowed(Element):
     """Render ``child`` and overlay :class:`Flow` arrows between named anchors.
 

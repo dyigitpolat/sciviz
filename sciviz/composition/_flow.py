@@ -143,6 +143,30 @@ class Flow:
             return True, True
         raise ValueError("head must be bool or one of none/start/end/both")
 
+    def _neighbour_extent(self, src_box, dst_box) -> float:
+        """Size of the narrower node a facing corridor separates.
+
+        The cap on how much corridor a caption may open is expressed
+        relative to this, so it scales with the diagram instead of being
+        an absolute constant that stops working when nodes grow.
+        """
+        if src_box is None or dst_box is None:
+            return 0.0
+
+        def _wh(box):
+            if hasattr(box, "w"):
+                return float(box.w), float(box.h)
+            return float(box[2]), float(box[3])
+
+        sw, sh = _wh(src_box)
+        dw, dh = _wh(dst_box)
+        sides = {self.src_side, self.dst_side}
+        if sides == {"left", "right"}:
+            return float(min(sw, dw))     # corridor runs horizontally
+        if sides == {"top", "bottom"}:
+            return float(min(sh, dh))     # corridor runs vertically
+        return float(min(sw, dw, sh, dh))
+
     def _clearance_px(self, theme: Theme) -> float:
         """Resolve the obstacle-clearance margin for this flow."""
         if self.clearance is not None:
@@ -271,18 +295,24 @@ class Flow:
             # exist.
             label_extent = None
             label_rotatable = False
+            caption = self.label
+            neighbour_extent = self._neighbour_extent(src_box, dst_box)
             if self.label:
-                from ..auto.labels import measure_label as _measure_label
-                _probe = _measure_label(
+                from ..auto.labels import caption_fit as _fit
+                _probe_fit = _fit(
                     self.label, theme,
-                    getattr(theme, "connector_label_size", "small"))
+                    getattr(theme, "connector_label_size", "small"),
+                    src_side=self.src_side, dst_side=self.dst_side,
+                    neighbour_extent=neighbour_extent)
+                _probe = _probe_fit.label
+                caption = _probe.text
                 label_extent = (_probe.width, _probe.height)
                 # Single lines may be rotated by the placer; blocks are
                 # never set as columns of tilted text. The planner has to
                 # judge homes by the same rule the placer will apply, or
                 # the two disagree and the route runs away looking for an
                 # arm the caption does not need.
-                label_rotatable = len(_probe.lines) == 1
+                label_rotatable = not _probe_fit.upright
             plan = _rt.plan_path(
                 _rt.Endpoint(src_box, src_side, tap=tap,
                              tap_fraction=src_frac),
@@ -343,12 +373,15 @@ class Flow:
             def _label_pass():
                 from ..auto.ink import free_text_rects as _free_ink
                 from ..auto.labels import (
-                    measure_label, place_polyline_label,
+                    fitted_caption, place_polyline_label,
                     register_label_obstacle, registry_label_obstacles,
                     segment_rects,
                 )
                 sz_tok = getattr(theme, "connector_label_size", "small")
-                lbl = measure_label(self.label, theme, sz_tok)
+                lbl = fitted_caption(
+                    self.label, theme, sz_tok,
+                    src_side=self.src_side, dst_side=self.dst_side,
+                    neighbour_extent=neighbour_extent)
                 all_anchor_obstacles = [
                     (ox, oy, ox + ow, oy + oh)
                     for ox, oy, ow, oh in anchor_obstacles
@@ -381,7 +414,7 @@ class Flow:
                     gap=theme.unit * 1.0,
                     wire_width=sw,
                 )
-                _draw_placed_label(canvas, placed, self.label,
+                _draw_placed_label(canvas, placed, lbl.text,
                                    lbl.size_px, label_col,
                                    halo_fill=theme.color_of("bg"))
                 register_label_obstacle(registry, placed.rect, self.src)
@@ -543,7 +576,8 @@ class Flow:
 
 
 def label_corridor_reservation(spec, theme: Theme, side: str,
-                               other_side: str, base: float) -> float:
+                               other_side: str, base: float,
+                               neighbour_extent: float = 0.0) -> float:
     """Margin a labeled flow reserves on one pinned exit side.
 
     Labels are part of the route contract: a wire whose arms cannot
@@ -563,29 +597,35 @@ def label_corridor_reservation(spec, theme: Theme, side: str,
     corridors compact by breaking long captions instead of the layout
     growing to fit one long line.
 
-    A single-line caption on a facing left/right pair is costed at the
-    cheaper of its two orientations, because the placer will rotate it
-    into a narrow corridor rather than lose it. Reserving the full
-    horizontal length there is what makes side-by-side hand-offs
-    ruinously expensive in wide figures -- expensive enough that authors
-    start deleting words to fit, which is a layout failure wearing an
+    On a facing pair the caption is costed as
+    :func:`~sciviz.auto.labels.fitted_caption` will actually set it --
+    wrapped to its narrowest block, so the corridor pays for the
+    caption's longest WORD rather than its whole length. That is what
+    makes an upright caption affordable between two neighbours, and it
+    is the floor below which no wrapping can go. Reserving the full
+    one-line length was what made side-by-side hand-offs ruinously
+    expensive in wide figures -- expensive enough that authors start
+    deleting words to fit, which is a layout failure wearing an
     editorial disguise.
     """
     label = getattr(spec, "label", None)
     if not label:
         return base
-    from ..auto.labels import measure_label
-    lbl = measure_label(label, theme,
-                        getattr(theme, "connector_label_size", "small"))
+    from ..auto.labels import caption_fit
+    fit = caption_fit(
+        label, theme, getattr(theme, "connector_label_size", "small"),
+        src_side=spec.src_side, dst_side=spec.dst_side,
+        neighbour_extent=neighbour_extent)
+    lbl = fit.label
     gap = theme.unit
     horizontal_pair = {side, other_side} == {"left", "right"}
     vertical_pair = {side, other_side} == {"top", "bottom"}
     if horizontal_pair and side in ("left", "right"):
-        along = lbl.width
-        if len(lbl.lines) == 1:
-            along = min(along, lbl.height)
+        # Upright text reads along the wire and needs its own width of
+        # corridor; a caption turned across the wire needs only a line.
+        along = lbl.width if fit.upright else lbl.height
     elif vertical_pair and side in ("top", "bottom"):
-        along = lbl.height
+        along = lbl.height if fit.upright else lbl.width
     else:
         # Dog-leg: the route's long arm rides *inside* this reserved
         # side lane with the caption offset beside the wire, so the

@@ -69,21 +69,30 @@ def test_direct_corridor_reserves_room_for_a_placeable_caption():
         f"horizontal length {lbl_w:.1f}")
 
 
-def test_block_captions_cost_their_width_because_blocks_do_not_rotate():
-    """A multi-line caption reads as stacked horizontal lines; rotating
-    it would yield parallel columns of tilted text. So a block keeps the
-    horizontal reservation, and a single line -- which may rotate -- is
-    the cheaper form of the same words."""
+def test_facing_corridor_is_sized_by_the_longest_word():
+    """How a caption's words fall onto lines is the layout's business.
+
+    On a facing pair the caption is set at its narrowest block, so the
+    corridor pays for the longest WORD -- and the author's own line
+    breaks make no difference to what it costs. That is what stops a
+    caption being a width liability the author has to edit around.
+    """
     theme = Theme()
-    one_line = _facing_pair("earned parents, stage advance").measure(theme).w
-    two_line = _facing_pair("earned parents,\nstage advance").measure(theme).w
-    assert one_line < two_line, (
-        f"a rotatable single line should need less corridor than a "
-        f"block: {one_line} vs {two_line}")
-    # Breaking a block into narrower lines still shrinks its corridor.
-    three_line = _facing_pair(
-        "earned\nparents,\nstage advance").measure(theme).w
-    assert three_line < two_line
+    text = "earned parents, stage advance"
+    widths = {
+        variant: _facing_pair(variant).measure(theme).w
+        for variant in (text,
+                        "earned parents,\nstage advance",
+                        "earned\nparents,\nstage\nadvance")
+    }
+    assert len(set(round(w, 3) for w in widths.values())) == 1, (
+        f"author line breaks changed the corridor cost: {widths}")
+    size = getattr(theme, "connector_label_size", "small")
+    longest_word = max(theme.text_width(w, size) for w in text.split())
+    corridor = next(iter(widths.values())) - 120.0
+    assert corridor >= longest_word, "corridor cannot hold the longest word"
+    assert corridor < theme.text_width(text, size), (
+        "corridor still costed at the caption's full length")
 
 
 # ---------------------------------------------------------------------------
