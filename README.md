@@ -62,7 +62,8 @@ sciviz/
   composition/    Inline, Captioned, Badge, Brace (+ Brace.spanning),
                   Card, EqualGrid, Stripe, StepCell, SoftLegend,
                   Group, Region (label_position/annotations/corner_badge),
-                  LabeledChain, MatchSize, LoopIcon, DetailCallout
+                  LabeledChain, MatchSize, SizeGroup, LoopIcon,
+                  DetailCallout
   connect/        Connect, Anchor       -- the only public connector API
                   Cycle                 -- ordered loop on a reflowable ring
   grid/           Grid                  -- per-column alignment
