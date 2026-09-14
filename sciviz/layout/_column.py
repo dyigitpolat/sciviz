@@ -184,26 +184,37 @@ class Column(Element):
                 except Exception:
                     pass
             per_child.append([])
-        # Only propagate when at least two children contribute column
-        # widths — a single Row has nothing to align against, and
-        # forcing slot widths on it changes centering semantics.
-        contributing = sum(1 for widths in per_child if widths)
-        if contributing < 2:
-            return
-        max_cols = max((len(widths) for widths in per_child), default=0)
-        if max_cols == 0:
-            return
-        shared = [0.0] * max_cols
-        for widths in per_child:
-            for index, width in enumerate(widths):
-                shared[index] = max(shared[index], width)
-        for child in self.children:
-            apply = getattr(child, "_apply_shared_columns", None)
-            if apply is not None:
-                try:
-                    apply(shared)
-                except Exception:
-                    pass
+        # Only propagate between children that form THE SAME GRID, which
+        # means they agree on how many columns they have. Two contributing
+        # children were previously enough, and their width lists were merged
+        # index-wise from the left whatever their lengths, so a Column
+        # holding a three-slot row above an unrelated four-slot row had the
+        # four-slot row stretched onto the three-slot row's widths plus its
+        # own fourth. That silently rendered a row wider than every child in
+        # the column -- wide enough, in one thesis figure, to push the whole
+        # diagram 100 pt past its declared print width -- and an author had
+        # no way to opt out, because Column shares columns unconditionally.
+        # Grouping by column count keeps the intended behaviour (stacked
+        # rows of the same shape line up) and drops only the alignment
+        # between rows that were never the same grid. A lone contributor in
+        # its group still has nothing to align against and is left alone,
+        # since forcing slot widths on it changes centring semantics.
+        groups: dict = {}
+        for index, widths in enumerate(per_child):
+            if widths:
+                groups.setdefault(len(widths), []).append(index)
+        for count, members in groups.items():
+            if len(members) < 2:
+                continue
+            shared = [max(per_child[i][column] for i in members)
+                      for column in range(count)]
+            for i in members:
+                apply = getattr(self.children[i], "_apply_shared_columns", None)
+                if apply is not None:
+                    try:
+                        apply(shared)
+                    except Exception:
+                        pass
 
     def _shared_column_widths(self, theme: Theme) -> List[float]:
         """Expose aggregate semantic columns from nested row children."""
@@ -275,13 +286,10 @@ class Column(Element):
             return
         self._stretched = True
         sizes = [c.measure(theme) for c in self.children]
-        decorations = []
-        for c in self.children:
-            deco_fn = getattr(c, "stretch_decoration", None)
-            if deco_fn is not None:
-                decorations.append(max(0.0, float(deco_fn(theme)[0])))
-            else:
-                decorations.append(0.0)
+        decorations = [
+            l + r for l, r in
+            (self._deco_sides(c, theme) for c in self.children)
+        ]
         target_w = max(
             self._min_width,
             max((size.w - deco
@@ -291,6 +299,36 @@ class Column(Element):
             return
         for c, deco in zip(self.children, decorations):
             c.inflate_to(target_w + deco, 0.0)
+
+    @staticmethod
+    def _deco_sides(child, theme) -> tuple[float, float]:
+        """(left, right) immovable decoration of a child, via the
+        ``stretch_decoration_sides`` protocol when the child can split
+        its sides (flow-lane margins are asymmetric), else an even
+        split of ``stretch_decoration``'s width."""
+        sides_fn = getattr(child, "stretch_decoration_sides", None)
+        if sides_fn is not None:
+            l, r, _t, _b = sides_fn(theme)
+            return max(0.0, float(l)), max(0.0, float(r))
+        deco_fn = getattr(child, "stretch_decoration", None)
+        if deco_fn is not None:
+            w = max(0.0, float(deco_fn(theme)[0]))
+            return w / 2.0, w / 2.0
+        return 0.0, 0.0
+
+    def _stretch_face_frame(self, theme, sizes) -> tuple[float, float, float]:
+        """(left_lane, face_width, right_lane) of the co-located face
+        box shared by stretched children: every painted face spans
+        ``[left_lane, left_lane + face_width]`` in column coordinates,
+        so a flow corridor reserved by ONE margined anchor is honoured
+        by EVERY sibling instead of being stretched over."""
+        left = right = face = 0.0
+        for child, size in zip(self.children, sizes):
+            l, r = self._deco_sides(child, theme)
+            left = max(left, l)
+            right = max(right, r)
+            face = max(face, size.w - l - r)
+        return left, face, right
 
     def measure(self, theme: Theme) -> BBox:
         if not self.children:
@@ -305,7 +343,7 @@ class Column(Element):
         vis_sizes = [c.measure(theme) for c in visible]
         g = theme.gap_px(self.gap)
         content = [c.content_bbox(theme) for c in self.children]
-        left_extent, right_extent = self._cross_extents(sizes, content)
+        left_extent, right_extent = self._cross_extents(sizes, content, theme)
         w = left_extent + right_extent
         if self._min_width > w:
             w = self._min_width
@@ -314,7 +352,7 @@ class Column(Element):
         h = max(h, self._min_height)
         return BBox(w, h)
 
-    def _cross_extents(self, sizes, content) -> tuple[float, float]:
+    def _cross_extents(self, sizes, content, theme) -> tuple[float, float]:
         """Outer space required on each side of the shared content axis.
 
         Computing independent maxima for content width, left decoration,
@@ -323,15 +361,18 @@ class Column(Element):
         actual alignment axis gives the exact union instead.
         """
         if self.align == "stretch":
-            # Stretched children share one outer width and fill their
-            # slot edge to edge, so the union is the plain outer union.
+            # Stretched children share one co-located face box: the
+            # union is the widest same-side lane on each side of the
+            # common face (never narrower than the plain outer union).
             # Aligning on content landmarks here double-counts the
             # centring slack a stretched Row keeps around its content
             # (each inflated sibling re-widens the union, which re-
             # inflates the siblings) and can overshoot the true width
             # by half the narrowest child's slack.
+            lane_l, face, lane_r = self._stretch_face_frame(theme, sizes)
             left = 0.0
-            right = max(size.w for size in sizes)
+            right = max(max(size.w for size in sizes),
+                        lane_l + face + lane_r)
         elif self.align == "start":
             left = max(cb[0] for cb in content)
             right = max(size.w - cb[0]
@@ -361,7 +402,7 @@ class Column(Element):
         sizes = [c.measure(theme) for c in self.children]
         g = theme.gap_px(self.gap)
         content = [c.content_bbox(theme) for c in self.children]
-        left_extent, right_extent = self._cross_extents(sizes, content)
+        left_extent, right_extent = self._cross_extents(sizes, content, theme)
         natural_w = left_extent + right_extent
         # ``inflate_to`` widens the column's frame without widening its
         # children.  Keep the natural content band centred inside that
@@ -391,14 +432,21 @@ class Column(Element):
                 lead = residual
         cy = y + lead
         visible_index = 0
+        stretch_lane_l = 0.0
+        if self.align == "stretch":
+            stretch_lane_l, _face, _lane_r = (
+                self._stretch_face_frame(theme, sizes))
         for child, size, cb in zip(self.children, sizes, content):
             invisible = getattr(child, "is_layout_invisible", False)
             cb_x = cb[0]
             cb_w = cb[2]
             if self.align == "stretch":
-                # Stretched children fill the shared slot from the
-                # column origin (see the outer-union in _cross_extents).
-                cx = x
+                # Stretched children co-locate their painted faces: each
+                # child is offset so its face starts past the widest
+                # same-side lane (see _stretch_face_frame). A child with
+                # its own left decoration supplies that offset itself.
+                child_l, _child_r = self._deco_sides(child, theme)
+                cx = x + max(0.0, stretch_lane_l - child_l)
             elif self.align == "start":
                 axis_x = x + left_extent
                 cx = axis_x - cb_x

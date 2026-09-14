@@ -282,3 +282,39 @@ def test_fan_in_walled_center_falls_back_loudly():
     with pytest.warns(UserWarning), record_into(rec):
         render_walled()
     assert any("walled" in n for n in rec.notes), rec.notes
+
+
+def test_fan_in_offset_sink_puts_the_spine_in_the_separating_gap():
+    """A row of sources feeding one sink set BELOW AND TO THE SIDE.
+
+    The clusters overlap in x and are cleanly separated in y, so the only gap a
+    spine can occupy is the horizontal one between the row and the sink. The
+    centroid vector leans horizontal here (the sink is offset far enough right
+    that dx exceeds dy), and orienting on the centroid alone therefore laid a
+    VERTICAL spine straight across the sink card, landing the arrowhead inside
+    the box and leaving the outer taps dangling. Auto-orientation must pick the
+    axis on which the clusters actually separate.
+    """
+    theme = Theme()
+    cards = Row(*[Anchor(f"q{i}", Box(f"RQ{i}", width=70, height=30))
+                  for i in range(4)], gap="sm")
+    sink = Anchor("j", Box("JOINT", width=90, height=30))
+    body = Column(cards, Spacer(0, 40),
+                  Row(Spacer(210, 0), sink), gap="md")
+    svg, _, _ = _render(body, [
+        Bus(sources=[f"q{i}" for i in range(4)], sinks="j"),
+    ])
+    lines = _parse_lines(svg)
+    arrows = [l for l in lines if l["marker_end"]]
+    assert len(arrows) == 1, f"expected one sink arrow, got {len(arrows)}"
+    entry = arrows[0]
+    assert abs(entry["x1"] - entry["x2"]) < 0.5, (
+        f"the sink is below the sources, so its entry must be vertical: {entry}")
+
+    _, sink_top, _, _ = _rect_by_width(svg, 90.0)
+    for seg in lines:
+        if seg["marker_end"]:
+            continue
+        assert min(seg["y1"], seg["y2"]) <= sink_top + 0.5, (
+            f"no bus segment may run past the sink's top edge into its body: "
+            f"{seg} against sink top {sink_top}")

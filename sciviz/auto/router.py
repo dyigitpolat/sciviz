@@ -134,6 +134,14 @@ class CrossPolicy:
     tolerance: float = 0.5
     min_clearance: float = 8.0
     opposite_face_straight_threshold: float = 0.0
+    # A caption-feasible route may beat the label-free route only while it
+    # is not disproportionately longer: beyond this ratio (plus a small
+    # absolute slack, measured in ``label_gap`` units at the call site) the
+    # planner prefers the direct route and lets the label placer fall back
+    # to its on-wire halo. Without this bound a tight layout makes every
+    # short arm caption-infeasible and the route "runs away" across the
+    # figure hunting for an arm long enough to host its label.
+    label_detour_ratio: float = 2.0
 
 
 DEFAULT_POLICY = CrossPolicy()
@@ -189,6 +197,13 @@ def plan_path(src: Endpoint, dst: Endpoint, *,
     keeps searching (longer bridges, other corridors) before it ever
     degrades the requirement.  ``label_gap`` is the caption clearance
     used in that feasibility test.
+
+    The caption search is cost-bounded by ``policy.label_detour_ratio``:
+    at each clearance level the caption-feasible route is compared with
+    the label-free route, and when it is disproportionately longer the
+    label-free route wins (the label placer then uses its on-wire halo).
+    A caption is worth a modest detour, never a runaway sweep across the
+    figure.
     """
     clearance = max(0.0, policy.min_clearance)
     retried = False
@@ -212,6 +227,24 @@ def plan_path(src: Endpoint, dst: Endpoint, *,
                                label_extent=extent, label_gap=label_gap,
                                label_rotatable=label_rotatable)
         if plan is not None:
+            if extent is not None and policy.label_detour_ratio > 0:
+                # Cost-bound the caption search: hosting a caption is
+                # worth a modest detour over the label-free route, never
+                # a runaway sweep. Beyond the bound, fall through to the
+                # label-free rungs (halo placement on the direct route).
+                free = _plan_path_impl(
+                    src, dst, anchors=anchors, regions=regions,
+                    existing_segments=existing_segments,
+                    policy=policy, obstacle_pad=pad,
+                    label_extent=None, label_gap=label_gap,
+                    label_rotatable=label_rotatable)
+                if free is not None:
+                    ext_len = _path_length(plan.waypoints)
+                    free_len = _path_length(free.waypoints)
+                    slack = 4.0 * label_gap
+                    if ext_len > policy.label_detour_ratio * free_len + slack:
+                        retried = True
+                        continue
             _emit_route(owner, src, dst, anchors, regions, plan,
                         retried_without_clearance=retried,
                         min_clearance=pad)

@@ -292,7 +292,31 @@ class Bus:
         elif self.orientation == "vertical":
             horizontal = True    # spine perpendicular to vertical flow
         else:
-            horizontal = abs(flow_dy) >= abs(flow_dx)
+            # The centroid vector alone is not enough. A row of sources feeding
+            # one sink set below AND to the side has a centroid vector that
+            # leans horizontal while the only gap the spine can occupy is the
+            # vertical one, so the centroid rule lays the spine across the sink
+            # and the arrowhead lands inside a box. Decide instead on which
+            # axis the two clusters are actually separated: a spine needs a
+            # gap to sit in, and only a separating axis has one. Fall back to
+            # the centroid when both axes separate (a diagonal flow, where
+            # either spine is sound) or neither does (interleaved clusters,
+            # where no gap exists on either axis and the caller should be
+            # declaring the orientation).
+            v_gap = (min(b[1] for b in src_boxes)
+                     >= max(b[1] + b[3] for b in dst_boxes)
+                     or min(b[1] for b in dst_boxes)
+                     >= max(b[1] + b[3] for b in src_boxes))
+            h_gap = (min(b[0] for b in src_boxes)
+                     >= max(b[0] + b[2] for b in dst_boxes)
+                     or min(b[0] for b in dst_boxes)
+                     >= max(b[0] + b[2] for b in src_boxes))
+            if v_gap and not h_gap:
+                horizontal = True    # only the vertical axis separates them
+            elif h_gap and not v_gap:
+                horizontal = False   # only the horizontal axis separates them
+            else:
+                horizontal = abs(flow_dy) >= abs(flow_dx)
 
         rail_off = theme.unit * 2.0
         edge_inset = theme.unit

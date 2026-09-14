@@ -49,7 +49,7 @@ Package layout
 * ``sciviz.composition``-- :class:`Inline`, :class:`Captioned`, :class:`Badge`,
                            :class:`Brace`, :class:`Group`, :class:`Region`,
                            :class:`LabeledChain`, :class:`MatchSize`,
-                           :class:`LoopIcon`.
+                           :class:`SizeGroup`, :class:`LoopIcon`.
 * ``sciviz.connect``    -- :class:`Connect`, :class:`Anchor`.
 * ``sciviz.grid``       -- :class:`Grid` (declarative per-column alignment).
 * ``sciviz.charts``     -- :class:`Table`, :class:`AlignedColumns`,
@@ -108,6 +108,7 @@ from .elements import (
     ColorBar,
     Legend,
     LegendItem,
+    Marker,
     Caption,
     ConditionGlyph,
     Cylinder,
@@ -161,6 +162,7 @@ from .composition import (
     LoopIcon,
     Brace,
     MatchSize,
+    SizeGroup,
     Repeat,
     Group,
     Region,
@@ -208,7 +210,7 @@ __all__ = [
     # elements
     "Text", "TextBlock", "Span", "Box", "Chip",
     "Matrix", "MatrixCell", "MatrixGroup", "MatrixSelection", "ColorScale", "ColorBar",
-    "Legend", "LegendItem", "Caption", "ConditionGlyph", "Cylinder", "Document", "HarveyBall", "Mux", "TokenRow",
+    "Legend", "LegendItem", "Marker", "Caption", "ConditionGlyph", "Cylinder", "Document", "HarveyBall", "Mux", "TokenRow",
     "Icon", "Image", "Separator",
     # math
     "Math",
@@ -230,7 +232,8 @@ __all__ = [
     "Inline", "BalancedColumns", "Banner", "Card", "Captioned",
     "ConditionSpec", "EqualGrid", "LabeledChain",
     "Badge", "LoopIcon", "Brace",
-    "MatchSize", "Group", "Region", "Repeat", "DetailCallout", "Docked",
+    "MatchSize", "SizeGroup", "Group", "Region", "Repeat",
+    "DetailCallout", "Docked",
     "FeedbackPair", "SoftLegend",
     "StepCell",
     "StackedTiles", "Stripe",

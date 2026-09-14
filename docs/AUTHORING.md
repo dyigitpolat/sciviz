@@ -60,6 +60,14 @@ outlines each text run with the face matching its `font-weight` /
 `font-style`, so `weight="700"` and `italic=True` survive into the PDF
 exactly as they render in the PNG.
 
+`text_mode="hybrid"` prints exactly what `outline` prints and additionally
+lays an all-but-transparent copy of the original text over the glyph paths,
+so the PDF is selectable, searchable and readable by a screen reader while
+printing the reviewed geometry. That copy would otherwise be laid out by the
+converter's own font, which drifts off the ink it covers; every character is
+therefore placed at the x its own outlined glyph occupies, so a selection
+starts and ends where the printed word does.
+
 Text measurement is metrics-based: `Theme.text_width` measures the
 actual glyph advance widths of the resolved theme font (selecting the
 real bold face for bold text), matching what the exporters render.
@@ -74,9 +82,10 @@ Signatures at call sites:
 Row(*children, gap="md", align="center", equal_widths=False, equal_heights=None, balance_outer=False)
 Column(*children, gap="md", align="center")
 WrapRow(*children, gap="sm", max_width=..., line_align="start", hang=0.0)
-Panel(tag, title, child)
+Panel(tag, title, child, content_align="auto")
 Grid(*children, cols=..., col_align=...)
 AlignedStack(*children, axis="vertical", gap="md")
+SizeGroup(axis="width").add(child)
 Spacer(w, h)
 FixedSize(child, width=..., height=...)
 Separator(length=..., orientation="horizontal", style="solid")
@@ -96,10 +105,25 @@ siblings (e.g. two `Panel`s) share one outer height, then top-aligns
 them; `Column` inflates every child to the widest child's width so a
 stacked spine of `Card`s or `Box`es shares one outer width, then
 left-aligns them. Children that can grow (`Panel`, `Box`, `Card`) do;
-leaf text is left at its natural size. Use it instead of padding shims
+leaf text is left at its natural size. A stretched `Column` co-locates
+*painted faces*: a flow-lane margin declared by one `Anchor` (e.g. a
+feedback corridor down the left of a spine) offsets every sibling's
+face past it, so the corridor is a real column-level lane -- wires
+routed in it clear all cards, and the stacked faces (hence their
+connector ports) stay collinear. Use it instead of padding shims
 or hand-set uniform widths when adjacent framed siblings should line
 up edge to edge -- a stretched `Panel` centres its content in the
 enlarged box automatically.
+
+**Panel content alignment.** A peer-matched `Panel` is taller than its
+own content, and `content_align` says where the child sits in that
+surplus. The `"auto"` default pins a *structural* body (a Column/Card
+stack) to the content top so comparative panels share a first-row
+baseline, while compact leaf visuals centre. When the panels hold
+**independent** diagrams -- row i of one means nothing to row i of the
+other -- declare `content_align="center"`; sciviz cannot infer
+correspondence from structure alone. `"start"` / `"end"` pin
+explicitly, and an unknown value raises `ValueError`.
 
 **Sibling-frame rule.** A `Row` whose visible children are all *framed*
 siblings (`Panel`, `Card`, `StepCell`) equalises their heights by
@@ -163,6 +187,49 @@ per-column width, broadcasts the max back, and tells each child to
 re-measure with the shared widths. Participants are `Table`, `Row`,
 and the named-row `Grid`. Children that don't expose column widths
 simply stack normally.
+
+### SizeGroup -- one shared size for blocks in different parents
+
+`MatchSize` equalizes children it lays out itself, so it only reaches
+siblings inside one container. The blocks that most need equalizing
+usually are not: one per row of a `Table`, one per cell of a `Grid`,
+one per branch of a tree. Auto-sized blocks in that position come out
+ragged -- each as wide as its own longest word -- and a column of
+ragged blocks reads as unrelated objects rather than as rungs of one
+ladder.
+
+A `SizeGroup` is the membership those blocks are missing. Register each
+block and place what `add` returns:
+
+```python
+from sciviz import Box, Diagram, SizeGroup, Table, TextBlock
+
+ladder = [(2, "Analytic cost model", "Counts times per-operation costs."),
+          (1, "Algorithmic proxy", "Operation counts and spike counts.")]
+
+rungs = SizeGroup()                        # axis="width" (default)
+rows = [[rungs.add(Box(title=f"Rung {n}", label=name,
+                       wrap=True, max_width=90)),
+         TextBlock(reports, max_width=160)]
+        for n, name, reports in ladder]
+d = Diagram.for_paper(Table(rows, col_align=("start", "start"),
+                            row_align="start"))
+```
+
+Every member then renders at the widest member's width, so the column
+aligns on both edges. `axis="height"` equalizes heights instead (blocks
+laid out in a row), and `axis="both"` gives one silhouette. `group(box)`
+is shorthand for `group.add(box)`.
+
+Members are grown with the same `inflate_to` request `align="stretch"`
+uses, so a member that cannot grow (leaf text) is left at its natural
+size rather than centred in an empty slot, and the shared size is
+resolved against the theme that measures the figure -- a group inside a
+`Diagram` fitted to `target_width_pt` equalizes at the geometry the
+figure actually prints.
+
+Reach for `AlignedStack` when whole *rows* must share a column grid, and
+for `SizeGroup` when a set of individual blocks must share one size.
 
 ### Deliberate negative space: `justify` and `grow`
 
@@ -262,6 +329,28 @@ body = EqualGrid(phase, columns=1, equal="both")
 `StepCell` wraps full names, reserves room for a thumbnail, and displays
 conditional structure with a `ConditionGlyph` rather than code-like text
 such as `if act_q`.
+
+### Titled blocks
+
+A block that carries both a name and a description should not fold them
+into one string. `Box(title=...)` heads the block with a line of its own:
+
+```python
+from sciviz import Box
+
+block = Box(title="Rung 4", label="Cycle-accurate simulation",
+            wrap=True, max_width=90, text_size="small")
+```
+
+The title is drawn above the label, bold by default, and it takes part
+in the box's wrapping and auto-sizing -- so a titled block still grows to
+fit rather than overflowing. `title_size`, `title_weight` and
+`title_color` override the defaults (the title inherits the label's size
+and colour otherwise). Written as one string, `"Rung 4: Cycle-accurate
+simulation"` lets the wrap decide where the name ends, and the name lands
+mid-line; as a title it always heads the block. A `Card` remains the
+right choice when the body is an element rather than a line of text and
+the block wants a filled header band.
 
 ### Separator
 
@@ -437,7 +526,12 @@ that generically:
   no arm long and clear enough to host the caption (beside the arm,
   rotated along a vertical arm, or centred on the arm) while
   alternatives exist; clearance degrades before the caption's home is
-  ever given up.
+  ever given up. The search is cost-bounded
+  (`CrossPolicy.label_detour_ratio`, default 2.0): a caption-feasible
+  route wins only while it is not disproportionately longer than the
+  label-free route, so a tight layout (e.g. a compressed paper theme)
+  produces a direct wire with a halo label, never a runaway sweep
+  hunting for an arm (`tests/test_route_label_containment.py`).
 * *Two-phase placement with a halo fallback.* Wires draw first, then
   every label is placed against the complete set of wires, cards, free
   text, and earlier labels. In a corridor walled on both sides the
@@ -445,6 +539,13 @@ that generically:
   wire over a background halo. A placed label overlapping other ink is
   treated as an error (`tests/test_label_route_contract.py` locks the
   zero-overlap invariant).
+* *Region containment.* A framed container that registers itself as a
+  routing region (`Panel` does) is a hard boundary for the wires it
+  contains -- and for their captions: the placer treats the innermost
+  region enclosing both endpoints as bounds, so a label near a panel
+  frame stays inside the frame (falling back to the on-wire halo, and
+  clamping as a last resort) instead of escaping into a neighbouring
+  panel's territory.
 
 Label orientation follows the wire: horizontal legs take horizontal
 labels, and a vertical leg takes a 90-degree rotated label only when
@@ -455,7 +556,21 @@ so sibling edges in one spine share one reading direction regardless of
 label length; the other orientation remains a collision fallback either
 way. Multi-line captions never prefer rotation regardless of leg
 length: a block reads as stacked horizontal lines, and rotating it
-yields parallel columns of tilted text. Routed-flow captions read at `Theme.connector_label_size`
+yields parallel columns of tilted text.
+
+**The rotated-label wrap budget.** Rotation turns the arm into the
+caption's whole reading width, so the arm is its wrap budget and the
+caption is re-set to *that* arm before the arm is judged. A run long
+enough to carry the words gets them back on one line even when an
+earlier, narrower corridor folded them -- a caption folded for a place
+it no longer occupies is a stale layout decision, and the placer is the
+last party that knows which arm the caption ended up on. An arm that
+cannot carry them on one line forfeits rotation entirely and the caption
+stays upright beside the wire, because a rotated block is not reading
+matter in any orientation. Authored `"\n"` is exempt from both halves:
+a break you wrote is content, so it is never reflowed and never tilted.
+The placer reports what it set on `PlacedLabel.text`; renderers draw
+that rather than the string they passed in. Routed-flow captions read at `Theme.connector_label_size`
 (default `"small"`); dense multi-panel overviews may override it one
 step down, e.g.
 `Theme().with_overrides(connector_label_size="tiny")`. If a label still
@@ -744,6 +859,56 @@ legend = Legend(
 )
 ```
 
+### Legends that reuse the chart's own marker
+
+`Marker` is the chart marker vocabulary (`"circle"`, `"square"`,
+`"triangle"`, `"diamond"`; `fill="solid"|"hollow"`) as a standalone
+element, so a legend shows the glyph the chart actually plots instead of
+a coloured box that drops the shape. `LineChart`, `Scatter` and
+`Slopegraph` draw through the same helper: pass the series' own `color`,
+`marker_size` and `marker_fill` and the swatch cannot drift from the
+plot.
+
+```python
+from sciviz import Diagram, Legend, LegendItem, LineChart, Marker, Palette, Series
+
+policies = [("measured", "diamond", Palette.red, "solid"),
+            ("baseline", "circle", Palette.gray, "hollow")]
+chart = LineChart(
+    [Series([(0, 1), (1, 2)], marker=m, marker_size="sm",
+            marker_fill=f, color=c)
+     for _label, m, c, f in policies],
+    size="sm",
+)
+legend = Legend(*[LegendItem(Marker(m, color=c, size="sm", fill=f), label)
+                  for label, m, c, f in policies])
+d = Diagram.for_paper(chart)
+```
+
+A long key is still subordinate to the figure it explains, so it must
+not be what sets the figure's width. `Legend(..., max_width=376)` flows
+the items onto a second line inside that budget instead of pushing the
+whole figure past it (`orientation="vertical"` remains the choice when
+the key should read as a stacked list).
+
+The gap between a swatch and the label it names is a bearing on the
+label's own size, not a spacing token, so it survives compression: a
+figure squeezed towards a print width drives `theme.unit` down, and a
+unit-based gap goes under a point while the type it separates barely
+moves, leaving the label touching its swatch. Pass `gap=` on a
+`LegendItem` only to override that deliberately.
+
+### Axis titles are prose and wrap
+
+`x_label` / `y_label` wrap to the span they are centred over, so a real
+sentence claims another title line in its own gutter instead of drawing
+outside the chart's measured box and over whatever sits beside it. Only
+a single word too wide to break grows the chart. Use `Theme.wrap_lines`
+for the same greedy, font-measured wrap in your own elements, and
+`Theme.text_ink_extents` to reserve a text line's true ink (which is
+taller than `text_height`, the layout footprint) when you place glyphs
+against a hard edge.
+
 ### Relational line charts and part-to-whole charts
 
 Key line series when another encoding refers to them. `FillBetween` derives a
@@ -891,7 +1056,46 @@ honoured verbatim. Axis gutters are derived from the labels they hold:
 the left pad is the measured width of the y tick labels (plus the title
 band), and axis titles sit a fixed small gap from the nearest tick
 label rather than a fixed distance from the axis, so the plot area
-claims every pixel the labels do not need.
+claims every pixel the labels do not need. The top and right gutters
+hold no labels, so they reserve only what the chart pushes past those
+edges: a marker centred on the top row, a stroke on the last x value,
+a tick label centred on an edge tick, an annotation pinned near a
+corner.
+
+An explicit range is a *window*, not a suggestion. `LineChart` and
+`Scatter` clip series geometry to the plot rectangle: a polyline is cut
+at the edge (and comes back as several runs if it leaves and returns),
+a marker is drawn whole when its centre is inside and dropped when it
+is not, and a `FillBetween` band is clipped as a polygon. So you can
+hand a chart a 500-point curve and show the 130 points the figure is
+about without the rest being painted over the tick labels and the
+neighbouring panel. With an automatic range the rectangle already
+contains the data and clipping changes nothing. Annotations are labels
+rather than data and are never clipped; they are measured instead, so
+one placed near an edge grows that gutter rather than escaping the box.
+
+When a second quantity shares the x axis but not the units (a hazard
+beside a transfer curve, a cost beside an accuracy), give its series
+`axis="right"`. That alone grows a secondary y axis: it auto-fits its
+own range, snaps to its own nice tick step, draws its own spine, ticks,
+and `y2_label`, and claims a right gutter measured from those labels.
+It draws no gridlines, so the two quantities stay distinguishable, and
+legend placement treats right-axis ink as an obstacle exactly like
+left-axis ink (each axis expands its own headroom when needed). A
+`FillBetween` or `SeriesDelta` spanning both axes is rejected, since
+the area or difference between them has no meaning.
+
+```python
+from sciviz import Diagram, LineChart, Series
+
+chart = LineChart(
+    [Series([(0, 0.0), (1, 1.0)], label="accuracy", color="blue"),
+     Series([(0, 0.02), (1, 0.11)], label="energy", color="amber",
+            dash="4,3", axis="right")],
+    x_label="scale", y_label="accuracy", y2_label="energy (J)",
+)
+d = Diagram.for_paper(chart)
+```
 
 An inside legend corner (`legend="inside-top-right"` and friends) is a
 *preference*, not a fixed position. The chart projects every series
@@ -1011,6 +1215,10 @@ Avoid it. Ninety-five percent of the time the answer is:
 * "I want stacked cards the same width" -> `Column(..., align="stretch")`.
 * "I want shared column widths across rows" -> `Grid`.
 * "I want shared column widths across *different parents*" -> `AlignedStack`.
+* "I want these blocks the same width, and they sit in different
+  parents" -> `SizeGroup`.
+* "I want the block's name to head it, not run into its text" ->
+  `Box(title=...)`.
 * "I want a rule between sections" -> `Separator`.
 * "I want a brace that matches this group's width" -> `Brace.spanning(...)`.
 * "I want an annotated rectangle" -> `Region(..., annotations=..., corner_badge=...)`.

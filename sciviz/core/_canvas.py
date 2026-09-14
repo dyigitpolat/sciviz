@@ -17,10 +17,89 @@ import re
 from typing import List, Optional
 
 
+# One line of text inks this far above and below its baseline, as a
+# multiple of the font size. Single source of truth for both the ink
+# accounting in Canvas.text and the gutter reservations elements make
+# for text they are about to draw (Theme.text_ink_extents), so a label
+# can never be drawn taller than the box its owner measured for it.
+TEXT_INK_ASCENT = 1.0
+TEXT_INK_DESCENT = 0.35
+
+
 def _xml_escape(s: str) -> str:
     return (s.replace("&", "&amp;")
              .replace("<", "&lt;")
              .replace(">", "&gt;"))
+
+
+# ---------------------------------------------------------------------------
+# Synthetic semibold
+# ---------------------------------------------------------------------------
+# A text family normally ships Regular and Bold and nothing between, so a
+# document that wants its figure text a little heavier than Regular has no face
+# to ask for: Bold overshoots, and it is already spoken for as the structural
+# tier (titles, headers, lane labels). Painting a thin stroke of the glyph's own
+# colour under the glyph adds that stroke's width to every stem, which is a
+# synthetic semibold and lands between the two real faces.
+#
+# It is applied HERE, over the finished body, rather than in each element:
+# six call sites emit <text> (Canvas.text, Canvas.text_with_sub, Text, Box,
+# GroupedBars, Heatmap), and a weight policy that has to be remembered at six
+# call sites is a weight policy that will be forgotten at the seventh.
+_TEXT_SCAN_RE = re.compile(r"<(text|tspan)\b[^>]*>|</text>")
+_ATTR_RE = re.compile(r'\b([a-zA-Z-]+)="([^"]*)"')
+
+
+def _paintable(fill: Optional[str]) -> bool:
+    """True when ``fill`` is a colour a stroke of the same value can thicken."""
+    if not fill:
+        return False
+    fill = fill.strip().lower()
+    return fill not in ("none", "transparent") and not fill.startswith("url(")
+
+
+def apply_text_stroke(body: str, ratio: float) -> str:
+    """Add a same-colour stroke to every ``<text>`` / ``<tspan>`` in ``body``.
+
+    ``ratio`` is a fraction of each run's own font size, so every tier is
+    thickened by the same proportion and the size hierarchy is untouched.
+    ``paint-order="stroke"`` puts the stroke under the fill, which keeps the
+    glyph's outline crisp instead of letting the stroke bleed over it.
+
+    A ``<tspan>`` inherits size and fill from its ``<text>`` when it does not
+    override them, so the scan carries the enclosing element's values forward;
+    a run at 0.72x the base size gets 0.72x the stroke rather than the base
+    one, which would print a subscript visibly heavier than its own line.
+    """
+    if ratio <= 0.0 or not body:
+        return body
+
+    ctx: list[tuple[float, str]] = []          # (font-size, fill) of the <text>
+
+    def _sub(match: re.Match) -> str:
+        tag = match.group(0)
+        if tag == "</text>":
+            if ctx:
+                ctx.pop()
+            return tag
+        attrs = dict(_ATTR_RE.findall(tag))
+        base_size, base_fill = ctx[-1] if ctx else (0.0, "")
+        try:
+            size = float(attrs.get("font-size", base_size))
+        except ValueError:
+            size = base_size
+        fill = attrs.get("fill", base_fill)
+        if match.group(1) == "text":
+            ctx.append((size, fill))
+        # Never overwrite an author's own stroke, and never stroke a run that
+        # has no colour to stroke with or no size to scale by.
+        if "stroke" in attrs or not _paintable(fill) or size <= 0.0:
+            return tag
+        extra = (f' stroke="{fill}" stroke-width="{size * ratio:.4f}"'
+                 f' paint-order="stroke" stroke-linejoin="round"')
+        return tag[:-1].rstrip() + extra + ">"
+
+    return _TEXT_SCAN_RE.sub(_sub, body)
 
 
 def _build_text_runs(content: str) -> str:
@@ -52,7 +131,8 @@ class Canvas:
     # thick connectors -- matching the tight arrowheads in paper figures.
     ARROW_HEAD_SCALE: float = 4.5
 
-    def __init__(self, default_font_family: Optional[str] = None):
+    def __init__(self, default_font_family: Optional[str] = None,
+                 text_stroke_ratio: float = 0.0):
         self._defs: List[str] = []
         self._styles: List[str] = []
         self._body: List[str] = []
@@ -72,6 +152,12 @@ class Canvas:
         #: theme). ``None`` falls back to a conservative per-character
         #: estimate.
         self._default_font_family = default_font_family
+        #: Synthetic-semibold stroke as a fraction of each run's font size
+        #: (set by :class:`sciviz.diagram.Diagram` from the theme). ``0.0``
+        #: disables it, which is the library default: text weight is a
+        #: document-level typographic choice, not something a diagram should
+        #: acquire silently.
+        self._text_stroke_ratio = float(text_stroke_ratio)
 
     @property
     def ink_bbox(self) -> Optional[tuple[float, float, float, float]]:
@@ -359,7 +445,7 @@ class Canvas:
             x0, x1 = x - width, x
         else:
             x0, x1 = x, x + width
-        y0, y1 = y - size, y + size * 0.35
+        y0, y1 = y - size * TEXT_INK_ASCENT, y + size * TEXT_INK_DESCENT
         if rotate:
             # Rotated text inks the rotated rectangle, not the
             # horizontal one -- a 90-degree connector label is tall and
@@ -573,7 +659,7 @@ class Canvas:
             style_block = "<style>\n" + "\n".join(styles) + "\n</style>"
         defs_parts = [p for p in [style_block, *self._defs] if p]
         defs = "\n  ".join(defs_parts) if defs_parts else ""
-        body = "\n".join(self._body)
+        body = apply_text_stroke("\n".join(self._body), self._text_stroke_ratio)
         font_attr = _xml_escape(font_family).replace('"', "&quot;")
         size_attrs = ""
         if physical_unit:

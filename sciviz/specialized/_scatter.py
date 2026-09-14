@@ -6,7 +6,8 @@ import math as _m
 from typing import List, Optional, Sequence, Tuple, Union
 
 from ..core import BBox, Canvas, Element, Theme
-from ._linechart import Annotate
+from ._clip import clip_polyline, contains
+from ._linechart import Annotate, LineChart
 
 
 class Scatter(Element):
@@ -97,16 +98,54 @@ class Scatter(Element):
             return f"{val:g}"
         return f"10^{p}"
 
+    _TITLE_SIZE = "small"
+
+    def _axis_title_lines(self, label: str, theme: Theme,
+                          budget: float) -> List[str]:
+        """Wrap one axis title to the span it is centred over."""
+        return theme.wrap_lines(label, self._TITLE_SIZE, max(budget, 1.0))
+
+    def _pads(self, theme: Theme) -> Tuple[float, float, float, float]:
+        """Padding (left, top, right, bottom) around the plot area.
+
+        Axis titles are prose and wrap to the span they are centred over
+        (see :class:`LineChart`), so a title longer than the plot claims
+        another line in its own gutter instead of drawing outside the
+        measured box.
+        """
+        title_h = theme.text_height(self._TITLE_SIZE)
+        top = 6.0
+        right = 8.0
+        y_lines = self._axis_title_lines(
+            self.y_label, theme, self.height + 2.0 * top) if self.y_label else []
+        left = 42.0 + (title_h * len(y_lines) + 4 if y_lines else 0.0)
+        bot = theme.text_height("small") * 2.3
+        x_lines = self._axis_title_lines(
+            self.x_label, theme, self.width + 2.0 * right) if self.x_label else []
+        if x_lines:
+            bot += title_h * len(x_lines) + 4
+        spill_x = LineChart._lines_overflow(
+            x_lines, theme, self._TITLE_SIZE, self.width, left, right)
+        left += spill_x
+        right += spill_x
+        spill_y = LineChart._lines_overflow(
+            y_lines, theme, self._TITLE_SIZE, self.height, top, bot)
+        top += spill_y
+        bot += spill_y
+        return left, top, right, bot
+
     def measure(self, theme: Theme) -> BBox:
-        left_pad = 42.0 + (theme.text_height("small") + 4 if self.y_label else 0)
-        bot_pad = theme.text_height("small") * 2.3 + (theme.text_height("small") + 4 if self.x_label else 0)
-        return BBox(left_pad + self.width + 8,
-                    self.height + bot_pad + 6)
+        left, top, right, bot = self._pads(theme)
+        return BBox(left + self.width + right, self.height + top + bot)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
-        left_pad = 42.0 + (theme.text_height("small") + 4 if self.y_label else 0)
+        left_pad, top_pad, right_pad, _bot_pad = self._pads(theme)
         plot_x = x + left_pad
-        plot_y = y + 6
+        plot_y = y + top_pad
+        # The axis range is the declared window; ink outside it is clipped
+        # rather than drawn over the axes and past the measured box. See
+        # sciviz.specialized._clip.
+        window = (plot_x, plot_y, plot_x + self.width, plot_y + self.height)
 
         # tick positions
         if self.log_x:
@@ -163,20 +202,27 @@ class Scatter(Element):
                        label, size=theme.size_px("tiny"),
                        fill=theme.color_of("text_muted"), anchor="end")
 
-        # axis labels
+        # axis labels, wrapped by _pads to the span they are centred over
+        title_h = theme.text_height(self._TITLE_SIZE)
+        title_px = theme.size_px(self._TITLE_SIZE)
         if self.x_label:
-            canvas.text(plot_x + self.width / 2,
-                       plot_y + self.height + theme.size_px("small") * 2.8,
-                       self.x_label,
-                       size=theme.size_px("small"),
-                       fill=theme.color_of("text"), anchor="middle")
+            base = plot_y + self.height + theme.size_px("small") * 2.8
+            for row, line in enumerate(self._axis_title_lines(
+                    self.x_label, theme, self.width + 2.0 * right_pad)):
+                canvas.text(plot_x + self.width / 2, base + row * title_h,
+                            line, size=title_px,
+                            fill=theme.color_of("text"), anchor="middle")
         if self.y_label:
             # canvas.text (not raw SVG) so the rotated label's ink is
             # tracked -- otherwise auto-trim can crop the y-axis title.
-            canvas.text(plot_x - 34, plot_y + self.height / 2,
-                        self.y_label, size=theme.size_px("small"),
-                        fill=theme.color_of("text"),
-                        anchor="middle", rotate=-90)
+            y_lines = self._axis_title_lines(
+                self.y_label, theme, self.height + 2.0 * top_pad)
+            for row, line in enumerate(y_lines):
+                canvas.text(plot_x - 34 - (len(y_lines) - 1 - row) * title_h,
+                            plot_y + self.height / 2,
+                            line, size=title_px,
+                            fill=theme.color_of("text"),
+                            anchor="middle", rotate=-90)
 
         # separate line series (drawn before markers so markers are on top)
         for lspec in self.lines:
@@ -192,17 +238,19 @@ class Scatter(Element):
                 continue
             mapped = [(plot_x + self._x_to_px(px), plot_y + self._y_to_px(py))
                       for px, py in pts]
-            d = "M " + " L ".join(f"{px:.2f},{py:.2f}" for px, py in mapped)
-            canvas.path(d, stroke=theme.color_of(col), stroke_width=lw,
-                       dasharray=dash)
+            for run in clip_polyline(mapped, window):
+                d = "M " + " L ".join(f"{px:.2f},{py:.2f}" for px, py in run)
+                canvas.path(d, stroke=theme.color_of(col), stroke_width=lw,
+                            dasharray=dash)
 
         # connect markers (legacy; discouraged)
         if self.connect and len(self.points) >= 2:
             col = theme.color_of(self.connect_color)
             pts = [(plot_x + self._x_to_px(p[0]), plot_y + self._y_to_px(p[1]))
                    for p in self.points]
-            d = "M " + " L ".join(f"{px:.2f},{py:.2f}" for px, py in pts)
-            canvas.path(d, stroke=col, stroke_width=theme.line)
+            for run in clip_polyline(pts, window):
+                d = "M " + " L ".join(f"{px:.2f},{py:.2f}" for px, py in run)
+                canvas.path(d, stroke=col, stroke_width=theme.line)
 
         # points: collect first, then place labels avoiding collisions
         plotted = []
@@ -215,6 +263,8 @@ class Scatter(Element):
             anchor_hint = p[5] if len(p) >= 6 else None    # "ne","nw","se","sw","n","s","e","w" or None
             cx = plot_x + self._x_to_px(px_v)
             cy = plot_y + self._y_to_px(py_v)
+            if not contains(window, (cx, cy)):
+                continue
             canvas.circle(cx, cy, r,
                          fill=theme.color_of(col),
                          stroke=theme.color_of("text"),

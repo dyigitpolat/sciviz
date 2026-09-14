@@ -21,16 +21,28 @@ class LegendItem(Element):
         Visual swatch (rendered verbatim at its intrinsic size).
     text : str
         Label text, rendered to the right of the swatch.
-    gap : str or float
-        Horizontal spacing between swatch and text (default ``"xs"``).
+    gap : str or float, optional
+        Horizontal spacing between swatch and text. Left unset it is a
+        TEXT-RELATIVE bearing (see :attr:`_LABEL_BEARING`), which is the
+        thing a key actually needs; pass a token or a number to override.
     text_size : str
         Theme size token for the label.
     text_color : str
         Colour for the label (default ``"muted"``).
     """
 
+    # The swatch-to-label gap belongs to the TYPE, not to the layout grid.
+    # It was ``"xs"``, a spacing token that scales with ``theme.unit``, and a
+    # figure compressed towards a print width drives ``unit`` down until the
+    # gap prints under one point: the label then touches the swatch it names
+    # and the key reads as one smeared run instead of discrete entries. A
+    # bearing proportional to the label's own size holds a visible word-space
+    # at every scale, and stays smaller than ``Legend``'s between-item gap, so
+    # an item still binds tighter to its own swatch than to its neighbour.
+    _LABEL_BEARING = 0.42
+
     def __init__(self, swatch: Element, text: str, *,
-                 gap: Union[str, float] = "xs",
+                 gap: Optional[Union[str, float]] = None,
                  text_size: str = "small",
                  text_color: str = "muted"):
         self.swatch = swatch
@@ -39,19 +51,24 @@ class LegendItem(Element):
         self.text_size = text_size
         self.text_color = text_color
 
-    def _row(self):
+    def _gap_px(self, theme: Theme) -> float:
+        if self.gap is not None:
+            return theme.gap_px(self.gap)
+        return theme.size_px(self.text_size) * self._LABEL_BEARING
+
+    def _row(self, theme: Theme):
         from ..layout import Row
         return Row(
             self.swatch,
             Text(self.text, size=self.text_size, color=self.text_color),
-            gap=self.gap, align="center",
+            gap=self._gap_px(theme), align="center",
         )
 
     def measure(self, theme: Theme) -> BBox:
-        return self._row().measure(theme)
+        return self._row(theme).measure(theme)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
-        self._row().render(canvas, x, y, theme)
+        self._row(theme).render(canvas, x, y, theme)
 
 
 class Legend(Element):
@@ -74,7 +91,8 @@ class Legend(Element):
                  label: Optional[str] = None,
                  swatch_size: float = 14.0,
                  orientation: str = "horizontal",
-                 gap: Union[str, float] = "md"):
+                 gap: Union[str, float] = "md",
+                 max_width: Optional[float] = None):
         self._children = list(children)
         self.items = items
         self.scale = scale
@@ -82,6 +100,11 @@ class Legend(Element):
         self.swatch_size = swatch_size
         self.orientation = orientation
         self.gap = gap
+        # A key is subordinate to the thing it explains, so it must not be
+        # what sets the figure's width. With a budget the items flow onto a
+        # second line instead of pushing the whole figure past it; without
+        # one the legend keeps its historical single-row behaviour.
+        self.max_width = max_width
 
     def _resolved_items(self, theme: Theme) -> List[Tuple[str, str]]:
         if self.items is not None:
@@ -103,15 +126,30 @@ class Legend(Element):
         return []
 
     def _positional_container(self):
-        from ..layout import Row, Column
-        cls = Row if self.orientation == "horizontal" else Column
-        children = list(self._children)
-        if self.label:
-            children.insert(
-                0,
-                Text(self.label, size="small", color="text", weight="700"),
-            )
-        return cls(*children, gap=self.gap, align="center")
+        """The legend's title is not another item, and is not spaced like one.
+
+        Inserting the title into the item run gave it the SAME gap as the gap
+        between an item's swatch and its neighbour, so a bold title read as
+        glued to the first swatch. The items keep their own even rhythm and the
+        title is separated from that run by a wider gap, which is what makes it
+        read as a heading for the run rather than as part of it.
+        """
+        from ..layout import Column, Row, WrapRow
+        horizontal = self.orientation == "horizontal"
+        cls = Row if horizontal else Column
+        if horizontal and self.max_width is not None:
+            items = WrapRow(*self._children, gap=self.gap,
+                            line_gap="xs", max_width=self.max_width,
+                            align="center")
+        else:
+            items = cls(*self._children, gap=self.gap, align="center")
+        if not self.label:
+            return items
+        return cls(
+            Text(self.label, size="small", color="text", weight="700"),
+            items,
+            gap="md", align="center",
+        )
 
     def measure(self, theme: Theme) -> BBox:
         if self._children:

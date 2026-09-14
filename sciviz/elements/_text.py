@@ -271,7 +271,14 @@ class Text(Element):
         # size metadata explicitly. Without this, Diagram.for_paper() trims
         # rich-run captions out of the viewBox even though measure() reserves
         # their space.
-        canvas._mark_ink(x, y, x + bbox.w, y + bbox.h)
+        # The kind matters as much as the rectangle: the connector subsystem
+        # asks the canvas for ``ink_items("text")`` when it builds the
+        # free-standing-text obstacles that keep wires and labels off glyphs
+        # (sciviz.auto.ink). Marked as the default "shape", a rich-run line
+        # was invisible to that rule, so a routed leader could be planned
+        # straight through a multi-run sentence while the same sentence set
+        # as plain text blocked it.
+        canvas._mark_ink(x, y, x + bbox.w, y + bbox.h, kind="text")
         max_size = max(
             [theme.size_px(self.size)]
             + [theme.size_px(style.get("size", self.size))

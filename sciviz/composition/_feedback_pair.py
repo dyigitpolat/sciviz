@@ -151,7 +151,8 @@ class FeedbackPair(Element):
     def _bottom_content_in_core(self, theme: Theme):
         sizes = [child.measure(theme) for child in self.core.children]
         content = [child.content_bbox(theme) for child in self.core.children]
-        left_extent, _right_extent = self.core._cross_extents(sizes, content)
+        left_extent, _right_extent = self.core._cross_extents(
+            sizes, content, theme)
         bottom_cb = content[-1]
         bx = left_extent - bottom_cb[2] / 2
         by = sizes[0].h + sizes[1].h + bottom_cb[1]

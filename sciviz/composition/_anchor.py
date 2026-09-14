@@ -65,6 +65,17 @@ class Anchor(Element):
         return (self.margin_left + self.margin_right,
                 self.margin_top + self.margin_bottom)
 
+    def stretch_decoration_sides(self, theme: Theme
+                                 ) -> tuple[float, float, float, float]:
+        """Per-side split of :meth:`stretch_decoration` (left, right,
+        top, bottom). Flow-lane margins are asymmetric by nature (a
+        feedback corridor lives on ONE side), and a stretch container
+        needs the split to co-locate painted faces: every sibling's
+        face starts past the widest same-side corridor, so the corridor
+        is a real container-level lane instead of a per-child indent."""
+        return (self.margin_left, self.margin_right,
+                self.margin_top, self.margin_bottom)
+
     def content_bbox(self, theme: Theme):
         """The inner child bbox, excluding margins.  Layout containers use
         this to align siblings on their *content* box, not on the

@@ -209,22 +209,30 @@ def test_annotate_dot_false_suppresses_anchor_dot():
 
 def test_rotated_y_label_ink_is_tracked():
     """The rotated y-axis title must feed the ink bbox, or auto-trim
-    (Diagram.for_paper) crops it off the left edge."""
+    (Diagram.for_paper) crops it off the left edge.
+
+    Stated against the chart's own gutter rather than against a
+    label-less sibling: the title band now reserves the rotated line's
+    real ink extent, so the title sits just inside the measured box
+    instead of a hair outside it, and a cross-chart comparison would
+    read that fix as a regression.
+    """
+    theme = DEFAULT_THEME
     chart = LineChart(
         series=[Series(points=[(0, 0), (1, 1)])],
         x_range=(0, 1), y_range=(0, 1),
         y_label="membrane share (%)",
     )
-    c = Canvas()
-    chart.render(c, 0, 0, DEFAULT_THEME)
+    c = Canvas(default_font_family=theme.font_family)
+    chart.render(c, 0, 0, theme)
     assert c.ink_bbox is not None
     x0 = c.ink_bbox[0]
-    # Without the label, ink starts at the tick labels (> 10px in). The
-    # rotated title sits further left, so tracked ink must reach there.
-    c2 = Canvas()
-    LineChart(series=[Series(points=[(0, 0), (1, 1)])],
-              x_range=(0, 1), y_range=(0, 1)).render(c2, 0, 0, DEFAULT_THEME)
-    assert x0 < c2.ink_bbox[0]
+    left = chart._pad(theme)[0]
+    tick_label_left = left - chart._TICK_GAP - chart._y_tick_width(theme)
+    # The rotated title inks left of the y tick labels ...
+    assert x0 < tick_label_left
+    # ... and still inside the box the chart measured for itself.
+    assert x0 >= -0.5
 
 
 def test_line_chart_log_scale():

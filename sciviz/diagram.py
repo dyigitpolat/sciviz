@@ -427,7 +427,8 @@ class Diagram:
         # optimises the true footprint.
         min_text = None
         try:
-            scratch = Canvas(default_font_family=theme.font_family)
+            scratch = Canvas(default_font_family=theme.font_family,
+                             text_stroke_ratio=theme.text_stroke_ratio)
             body.render(scratch, 0.0, 0.0, theme)
             ink = scratch.ink_bbox
             min_text = scratch.min_text_size
@@ -717,7 +718,8 @@ class Diagram:
     def _render_canvas(self, size: BBox, *, offset_x: float = 0.0,
                        offset_y: float = 0.0) -> Canvas:
         theme = self._layout_theme()
-        canvas = Canvas(default_font_family=theme.font_family)
+        canvas = Canvas(default_font_family=theme.font_family,
+                        text_stroke_ratio=theme.text_stroke_ratio)
         m = self._margin()
         # paper: title left-aligned at content origin
         body_for_render = self._body_for_render()
@@ -898,10 +900,16 @@ class Diagram:
             system).  192 gives a 2x-retina render.
         scale : float, optional
             Direct scale multiplier for PNG (overrides ``dpi``).
-        text_mode : {"auto", "live", "outline"}
+        text_mode : {"auto", "live", "outline", "hybrid"}
             ``auto`` preserves live SVG text so PNG/PDF follow the same font
             stack as SVG. Use ``outline`` only when a PDF pipeline cannot
             resolve the needed fonts and glyph-path output is preferred.
+            ``hybrid`` prints exactly what ``outline`` prints -- the same
+            glyph paths, so every codepoint renders even on a converter
+            without font fallback -- and lays an invisible live-text layer
+            over them, so the result is also selectable, searchable and
+            copyable. It is the mode to reach for whenever text matters to a
+            reader and the converter cannot be trusted with fonts.
         """
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -929,14 +937,7 @@ class Diagram:
                 svg_source = re.sub(
                     r'\swidth="[0-9.]+pt" height="[0-9.]+pt"',
                     "", svg_source, count=1)
-            if text_mode == "outline":
-                svg_source = outline_svg_text(
-                    svg_source,
-                    FontRegistry.default(self.theme.font_family),
-                    self.theme.font_family,
-                )
-            elif text_mode not in ("auto", "live"):
-                raise ValueError("text_mode must be 'auto', 'outline', or 'live'")
+            svg_source = self._apply_text_mode(svg_source, text_mode)
             data = resvg_py.svg_to_bytes(
                 svg_string=svg_source,
                 width=int(size.w * scale),
@@ -965,6 +966,26 @@ class Diagram:
             out_paths.append(self.save(f"{base}.{fmt}", dpi=dpi, **save_kwargs))
         return out_paths
 
+    def _apply_text_mode(self, svg_source: str, text_mode: str) -> str:
+        """Resolve ``text_mode`` into the SVG the converter actually sees.
+
+        One place, because PNG and PDF must never disagree about what a mode
+        means; the review PNG of a figure is supposed to be a picture of the
+        PDF that ships.
+        """
+        if text_mode in ("outline", "hybrid"):
+            return outline_svg_text(
+                svg_source,
+                FontRegistry.default(self.theme.font_family),
+                self.theme.font_family,
+                selectable=(text_mode == "hybrid"),
+            )
+        if text_mode not in ("auto", "live"):
+            raise ValueError(
+                "text_mode must be 'auto', 'live', 'outline', or 'hybrid'"
+            )
+        return svg_source
+
     def _save_pdf(self, svg_source: str, out: Path, *, backend: str,
                   text_mode: str) -> None:
         chosen = backend
@@ -978,7 +999,9 @@ class Diagram:
                 if backend != "auto":
                     raise
                 chosen = "cairosvg"
-                text_mode = "outline"
+                # The font-aware converter is gone, so outlining is the only
+                # way to keep every glyph; ``hybrid`` keeps the text too.
+                text_mode = "hybrid"
         if chosen != "cairosvg":
             raise ValueError(
                 "pdf_backend must be 'auto', 'cairosvg', 'rsvg-convert', or 'inkscape'"
@@ -990,14 +1013,7 @@ class Diagram:
                 "Exporting to .pdf requires cairosvg when no font-aware "
                 "external converter is available. Install with: pip install cairosvg"
             ) from e
-        if text_mode == "outline":
-            svg_source = outline_svg_text(
-                svg_source,
-                FontRegistry.default(self.theme.font_family),
-                self.theme.font_family,
-            )
-        elif text_mode not in ("auto", "live"):
-            raise ValueError("text_mode must be 'auto', 'outline', or 'live'")
+        svg_source = self._apply_text_mode(svg_source, text_mode)
         cairosvg.svg2pdf(bytestring=svg_source.encode("utf-8"),
                          write_to=str(out))
 

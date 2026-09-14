@@ -22,6 +22,7 @@ from ._mux import Mux
 from ._icon import Icon
 from ._image import Image
 from ._legend import Legend, LegendItem
+from ._marker import Marker, draw_marker, marker_radius
 from ._matrix import (
     ColorBar,
     ColorScale,
@@ -38,6 +39,7 @@ from ._tokenrow import TokenRow
 __all__ = [
     "Text", "TextBlock", "Span", "Box", "Chip", "Matrix", "MatrixCell",
     "MatrixSelection", "MatrixGroup", "ColorScale", "ColorBar", "Legend", "LegendItem",
+    "Marker", "draw_marker", "marker_radius",
     "Caption", "ConditionGlyph", "Cylinder", "Document", "HarveyBall", "Mux", "TokenRow", "Icon", "Image", "Separator",
     # Internal; kept for backwards-compatible intra-package imports.
     "Arrow", "Connector",

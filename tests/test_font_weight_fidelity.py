@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import warnings
+import matplotlib
 
 import pytest
 
@@ -257,3 +258,117 @@ def test_theme_micro_token_clears_default_floor():
     theme = Theme()
     assert theme.font_micro == pytest.approx(theme.font_tiny - 1.0)
     assert theme.font_micro >= 6.0  # Diagram's default min_effective_font_pt
+
+
+# ---------------------------------------------------------------------------
+# 4. Per-glyph fallback across the family stack when outlining for PDF
+# ---------------------------------------------------------------------------
+
+def test_outline_segments_a_run_the_preferred_face_cannot_draw():
+    """A theme's font_family is a STACK, and outlining must honour it.
+
+    Live SVG and the resvg PNG exporter fall back per glyph, so a check mark
+    outside the preferred face still draws. Outlining resolves one face per
+    run, so the same glyph used to become a .notdef box in the PDF while the
+    PNG of the same figure looked correct.
+    """
+    from pathlib import Path
+
+    from sciviz.core._fonts import _segment_by_coverage, _codepoints
+
+    dejavu_sans = Path(matplotlib.get_data_path()) / "fonts" / "ttf" / "DejaVuSans.ttf"
+    dejavu_serif = Path(matplotlib.get_data_path()) / "fonts" / "ttf" / "DejaVuSerif.ttf"
+    if not (dejavu_sans.is_file() and dejavu_serif.is_file()):
+        pytest.skip("matplotlib font data unavailable")
+
+    # A codepoint one bundled face has and the other does not.
+    only_in_sans = next(
+        (cp for cp in sorted(_codepoints(str(dejavu_sans)))
+         if cp not in _codepoints(str(dejavu_serif)) and cp > 0x2000),
+        None,
+    )
+    if only_in_sans is None:
+        pytest.skip("no distinguishing codepoint between the bundled faces")
+    text = f"ok {chr(only_in_sans)} ok"
+
+    # Covered entirely by the preferred face: one run, untouched behaviour.
+    assert _segment_by_coverage("plain ascii", dejavu_serif, (dejavu_sans,)) == [
+        ("plain ascii", dejavu_serif)
+    ]
+
+    # Not covered: split, and the uncovered glyph goes to the fallback face.
+    segments = _segment_by_coverage(text, dejavu_serif, (dejavu_sans,))
+    assert len(segments) > 1
+    assert "".join(t for t, _ in segments) == text
+    assert any(face == dejavu_sans and chr(only_in_sans) in t
+               for t, face in segments)
+
+
+def test_outline_draws_a_run_made_entirely_of_fallback_glyphs():
+    """ONE coverage segment does not mean the PREFERRED face draws it.
+
+    A matrix cell carries one mark and nothing else, so its text node is a
+    single run of a glyph the preferred family lacks: one segment, sitting on
+    the FALLBACK face. Outlining that with the preferred face produced an empty
+    vertex array, which matplotlib raises on, so a figure whose cells are check
+    marks and crosses could not be exported at all.
+    """
+    from pathlib import Path
+
+    from sciviz.core._fonts import _codepoints
+
+    stack = "cmr10, DejaVu Sans"
+    reg = FontRegistry.default(stack)
+    dejavu_sans = (Path(matplotlib.get_data_path()) / "fonts" / "ttf"
+                   / "DejaVuSans.ttf")
+    if not dejavu_sans.is_file():
+        pytest.skip("matplotlib font data unavailable")
+    preferred = _codepoints(str(reg.primary.ttf_path))
+    mark = next((cp for cp in sorted(_codepoints(str(dejavu_sans)))
+                 if cp > 0x2500 and cp not in preferred), None)
+    if mark is None:
+        pytest.skip("the preferred face covers everything the fallback has")
+
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 20">'
+           f'<text x="10" y="15" font-size="10">{chr(mark)}</text></svg>')
+    out = outline_svg_text(svg, reg, stack)
+    paths = re.findall(r'<path d="([^"]+)"', out)
+    assert paths, "a run of fallback-only glyphs must still outline to ink"
+    assert _path_ink_width(paths[0]) > 0.0
+
+    # And it is the FALLBACK face's glyph, not the preferred face's notdef
+    # box: outlining through the stack must print what a figure whose
+    # preferred family is the fallback prints.
+    direct = outline_svg_text(svg, FontRegistry.default("DejaVu Sans"),
+                              "DejaVu Sans")
+    assert paths[0] == re.search(r'<path d="([^"]+)"', direct).group(1)
+
+
+def test_outline_keeps_every_character_when_nothing_covers_a_glyph():
+    """An unknown codepoint stays on the authored face rather than vanishing."""
+    from pathlib import Path
+
+    from sciviz.core._fonts import _segment_by_coverage
+
+    serif = Path(matplotlib.get_data_path()) / "fonts" / "ttf" / "DejaVuSerif.ttf"
+    if not serif.is_file():
+        pytest.skip("matplotlib font data unavailable")
+    text = "a\U000F0000b"          # private-use codepoint no face covers
+    segments = _segment_by_coverage(text, serif, ())
+    assert "".join(t for t, _ in segments) == text
+
+
+def test_font_stack_falls_through_a_missing_first_family():
+    """A stack is a fallback list: an unavailable family must not abandon it.
+
+    ``findfont`` raises for a family the machine does not have, and the
+    resolver used to catch that around the whole loop -- so a theme naming
+    one missing face first exported in the DejaVu Sans default and ignored
+    every family the author listed behind it.
+    """
+    from sciviz.core._fonts import FontRegistry
+
+    have = FontRegistry.default("'DejaVu Serif', serif").primary.ttf_path
+    behind_a_missing_one = FontRegistry.default(
+        "'No Such Family At All', 'DejaVu Serif', serif").primary.ttf_path
+    assert behind_a_missing_one == have

@@ -14,6 +14,17 @@ class Box(Element):
     Good defaults for diagrams of NN layers, pipeline stages, and callout
     cards.  The box will automatically grow to accommodate the label if no
     explicit width/height is given.
+
+    ``title=`` heads the block with a line of its own::
+
+        Box(title="Rung 4", label="Cycle-accurate simulation",
+            wrap=True, max_width=90)
+
+    which is the alternative to folding both into one string
+    (``"Rung 4: Cycle-accurate simulation"``), where the wrap decides where
+    the name ends and lands it mid-line. To give a column of such blocks one
+    shared width, register them with a
+    :class:`~sciviz.composition.SizeGroup`.
     """
 
     # Keep wrapping and intrinsic measurement on one outer-width contract.
@@ -41,6 +52,10 @@ class Box(Element):
                  text_size: Optional[Union[str, float]] = None,
                  text_weight: Optional[str] = None,
                  radius: Optional[Union[str, float]] = None,
+                 title: Optional[str] = None,
+                 title_size: Optional[Union[str, float]] = None,
+                 title_weight: str = "700",
+                 title_color: Optional[str] = None,
                  sub_label: Optional[str] = None,
                  sub_color: str = "muted",
                  badge: Optional[str] = None,
@@ -80,6 +95,20 @@ class Box(Element):
         if isinstance(radius, str) and radius != "pill":
             raise ValueError("Box.radius must be numeric, 'pill', or None")
         self.radius = radius
+        # ``title`` HEADS the block: it is drawn on its own line(s) above the
+        # label, in its own weight, so "Rung 4" names the block and
+        # "Cycle-accurate simulation" is what the block says. Running the two
+        # together into one wrapped label makes the name a random prefix of
+        # whichever line it lands on. Both halves share the box's wrapping
+        # rules, so a titled block still auto-sizes and still honours
+        # ``max_width`` / ``wrap``.
+        if title is not None and vertical_text:
+            raise ValueError(
+                "Box(title=...) is not supported with vertical_text=True")
+        self.title = title
+        self.title_size = title_size
+        self.title_weight = title_weight
+        self.title_color = title_color
         self.sub_label = sub_label
         self.sub_color = sub_color
         # ``badge`` is a small chip in the TOP-RIGHT corner, the
@@ -145,10 +174,31 @@ class Box(Element):
         as a unit, centred inside the box."""
         return self.label is not None and isinstance(self.label, Element)
 
+    def _title_size(self) -> Union[str, float]:
+        """The title's font size: its own token, or the label's by default."""
+        return self.title_size if self.title_size is not None else self.text_size
+
+    def _title_lines(self, theme: Optional[Theme] = None):
+        """The title's lines, wrapped on the same budget as the label."""
+        if not self.title:
+            return []
+        return self._wrapped_lines(self.title, self._title_size(),
+                                   self.title_weight, theme)
+
     def _label_lines(self, theme: Optional[Theme] = None):
         if not self.label or self._label_is_element():
             return []
-        raw = self.label.split("\n")
+        return self._wrapped_lines(self.label, self.text_size,
+                                   self.text_weight, theme)
+
+    def _wrapped_lines(self, text: str, size, weight, theme: Optional[Theme]):
+        """Word-wrap one run of the box's text onto the box's own budget.
+
+        Shared by the label and the title so a titled block wraps as one
+        object: both halves see the same budget, so neither can silently
+        widen the box past the other.
+        """
+        raw = text.split("\n")
         if not self.wrap or theme is None:
             return raw
         # The default wrap budget is theme-derived
@@ -160,14 +210,14 @@ class Box(Element):
         # raised ``min_width``) widens the wrap budget so the label fills
         # the box it was actually given, so it participates in the key.
         forced_w = self.width if self.width is not None else self.min_width
-        key = (self.label, self.text_size, self.text_weight, self.max_width,
+        key = (text, size, weight, self.max_width,
                forced_w,
                round(theme.unit, 4),
                round(theme.wrap_budget_px(), 4),
-               round(theme.size_px(self.text_size), 4))
+               round(theme.size_px(size), 4))
         if key in self._wrap_cache:
             return self._wrap_cache[key]
-        bold = self.text_weight in ("bold", "600", "700")
+        bold = weight in ("bold", "600", "700", "800", "900")
         # When a parent has stretched this Box to a wider slot (sibling
         # equalisation, AlignedStack stretch, ...) the label should
         # re-wrap to fill the box's actual inner width instead of
@@ -186,8 +236,8 @@ class Box(Element):
             if len(words) <= 1:
                 out.append(line)
                 continue
-            longest = max(theme.text_width(w, self.text_size, bold=bold) for w in words)
-            total = theme.text_width(line, self.text_size, bold=bold)
+            longest = max(theme.text_width(w, size, bold=bold) for w in words)
+            total = theme.text_width(line, size, bold=bold)
             if self.max_width is not None:
                 target = float(self.max_width)
             else:
@@ -196,7 +246,7 @@ class Box(Element):
             cur = ""
             for word in words:
                 trial = (cur + " " + word).strip()
-                if not cur or theme.text_width(trial, self.text_size, bold=bold) <= target:
+                if not cur or theme.text_width(trial, size, bold=bold) <= target:
                     cur = trial
                 else:
                     out.append(cur)
@@ -229,6 +279,24 @@ class Box(Element):
         bh = theme.text_height(self._BADGE_SIZE)
         return bw, bh
 
+    # Air between a title and the body it heads, in theme units. A title is
+    # part of the same block, so this is a hair of separation, not a gap
+    # wide enough to read as two stacked boxes.
+    _TITLE_GAP_UNITS = 0.35
+
+    def _title_metrics(self, theme: Theme, has_body: bool) -> Tuple[float, float, float]:
+        """Width, height and trailing gap of the title strip, or zeros."""
+        lines = self._title_lines(theme)
+        if not lines:
+            return 0.0, 0.0, 0.0
+        size = self._title_size()
+        bold = self.title_weight in ("bold", "600", "700", "800", "900")
+        line_h = theme.text_height(size)
+        w = max(theme.text_width(l, size, bold=bold) for l in lines)
+        h = line_h * len(lines) + line_h * 0.05 * max(0, len(lines) - 1)
+        gap = theme.unit * self._TITLE_GAP_UNITS if has_body else 0.0
+        return w, h, gap
+
     def _intrinsic(self, theme: Theme) -> Tuple[float, float]:
         bold = self.text_weight in ("bold", "600", "700")
         lines = self._label_lines(theme)
@@ -245,6 +313,13 @@ class Box(Element):
         else:
             label_w = 0.0
             label_h = 0.0
+        # The title heads the block, so it widens the box like any other line
+        # and adds its own strip to the height.
+        title_w, title_h, title_gap = self._title_metrics(
+            theme, has_body=label_h > 0.0)
+        if title_h:
+            label_w = max(label_w, title_w)
+            label_h = title_h + title_gap + label_h
         sub_w, sub_h = self._sub_metrics(theme)
         badge_w, badge_h = self._badge_metrics(theme)
         if self.vertical_text:
@@ -333,6 +408,25 @@ class Box(Element):
             return theme.color_of("text")
         return theme.text_on(fill_hex)
 
+    def _render_title(self, canvas: Canvas, x: float, top: float,
+                      width: float, theme: Theme) -> None:
+        """Draw the title strip whose top edge is ``top``, centred on ``x``."""
+        lines = self._title_lines(theme)
+        if not lines:
+            return
+        sz = theme.size_px(self._title_size())
+        _, strip_h, _ = self._title_metrics(theme, has_body=False)
+        line_h = sz * 1.15
+        drawn = line_h * len(lines)
+        first = top + max(0.0, (strip_h - drawn) / 2)
+        fill = (theme.color_of(self.title_color) if self.title_color
+                else self._resolved_text_color(theme))
+        for i, ln in enumerate(lines):
+            canvas.text(
+                x + width / 2, first + i * line_h + sz * 0.85, ln,
+                size=sz, fill=fill, weight=self.title_weight, anchor="middle",
+            )
+
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         size = self.measure(theme)
         if self.radius == "pill":
@@ -380,9 +474,15 @@ class Box(Element):
             _, badge_h = self._badge_metrics(theme)
             top_reserve = (badge_h + sub_pad) if self.badge else 0.0
             eb = self.label.measure(theme)
+            title_w, title_h, title_gap = self._title_metrics(
+                theme, has_body=True)
             region_h = size.h - bottom_reserve - top_reserve
+            block_h = title_h + title_gap + eb.h
+            block_top = y + top_reserve + max(0.0, (region_h - block_h) / 2)
+            if title_h:
+                self._render_title(canvas, x, block_top, size.w, theme)
             ex = x + (size.w - eb.w) / 2
-            ey = y + top_reserve + max(0.0, (region_h - eb.h) / 2)
+            ey = block_top + title_h + title_gap
             self.label.render(canvas, ex, ey, theme)
             if self.sub_label:
                 sub_sz = theme.size_px(self._SUB_LABEL_SIZE)
@@ -394,7 +494,7 @@ class Box(Element):
                 )
             return
         lines = self._label_lines(theme)
-        if not lines:
+        if not lines and not self.title:
             return
         text_fill = self._resolved_text_color(theme)
         sz = theme.size_px(self.text_size)
@@ -424,11 +524,16 @@ class Box(Element):
             _, badge_h = self._badge_metrics(theme)
             top_reserve = (badge_h + sub_pad) if self.badge else 0.0
             line_h = sz * 1.15
-            block_h = line_h * len(lines)
+            title_w, title_h, title_gap = self._title_metrics(
+                theme, has_body=bool(lines))
+            block_h = title_h + title_gap + line_h * len(lines)
             region_h = size.h - bottom_reserve - top_reserve
             block_top = y + top_reserve + max(0.0, (region_h - block_h) / 2)
+            if title_h:
+                self._render_title(canvas, x, block_top, size.w, theme)
+            body_top = block_top + title_h + title_gap
             for i, ln in enumerate(lines):
-                baseline_y = block_top + i * line_h + sz * 0.85
+                baseline_y = body_top + i * line_h + sz * 0.85
                 canvas.text(
                     x + size.w / 2, baseline_y, ln,
                     size=sz, fill=text_fill,

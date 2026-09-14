@@ -12,7 +12,7 @@ the values here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Union
+from typing import List, Tuple, Union
 
 
 @dataclass
@@ -57,6 +57,15 @@ class Theme:
     text_light: str = "#4b5563"
     text_faint: str = "#6b7280"
     text_inverse: str = "#ffffff"
+    # A same-colour stroke painted under every glyph, as a fraction of that
+    # run's font size: a synthetic semibold for families that ship Regular and
+    # Bold with nothing between. Bold is already the structural tier (titles,
+    # headers, lane labels), so it cannot also serve as "a little heavier";
+    # this token thickens every tier by the same proportion instead, which
+    # darkens small running text without disturbing the weight hierarchy.
+    # ``0.0`` disables it and is the default: it is a document-level choice.
+    # Useful values are small -- around 0.01 to 0.015 of the font size.
+    text_stroke_ratio: float = 0.0
 
     # -- disabled ----------------------------------------------------------
     disabled_fill: str = "#e5e7eb"
@@ -544,6 +553,49 @@ class Theme:
     def text_height(self, size: Union[str, float]) -> float:
         """Vertical footprint (ascender + descender + gutter) of one text line."""
         return self.size_px(size) * 1.25
+
+    def text_ink_extents(self, size: Union[str, float]) -> Tuple[float, float]:
+        """Ink reach (above, below) the baseline for one line of text.
+
+        The exact reservation an element must make for text it is about
+        to draw -- :meth:`text_height` is the *layout* footprint of a
+        line (it includes the inter-line gutter), which is smaller than
+        the glyph box above the baseline. Shares its constants with
+        :meth:`Canvas.text`'s ink accounting.
+        """
+        from ._canvas import TEXT_INK_ASCENT, TEXT_INK_DESCENT
+        px = self.size_px(size)
+        return px * TEXT_INK_ASCENT, px * TEXT_INK_DESCENT
+
+    def wrap_lines(self, s: str, size: Union[str, float], max_width: float,
+                   bold: bool = False) -> List[str]:
+        """Greedy word-wrap of ``s`` into lines no wider than ``max_width``.
+
+        Measured with :meth:`text_width`, so the result respects the real
+        font the exporters embed. Explicit newlines are honoured as hard
+        breaks. A word wider than ``max_width`` claims a line of its own
+        rather than being split mid-word, so callers that own a hard
+        width budget must re-measure the returned lines and grow their
+        own box for the overflow -- the wrap never silently truncates.
+        """
+        if not s:
+            return []
+        lines: List[str] = []
+        for paragraph in s.splitlines():
+            words = paragraph.split()
+            if not words:
+                lines.append("")
+                continue
+            current = words[0]
+            for word in words[1:]:
+                trial = f"{current} {word}"
+                if self.text_width(trial, size, bold=bold) <= max_width:
+                    current = trial
+                else:
+                    lines.append(current)
+                    current = word
+            lines.append(current)
+        return lines
 
     _PALETTE_MAP = {
         "blues": "sequential_blues",

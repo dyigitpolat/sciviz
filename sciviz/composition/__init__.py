@@ -12,6 +12,7 @@ These eliminate the most common patterns we kept writing manually:
   between named elements, resolved after their bboxes are known.
 * :class:`Labeled`      -- a source element annotated by a short arrow to a label.
 * :class:`MatchSize`    -- stretch siblings to share a major-axis dimension.
+* :class:`SizeGroup`    -- one shared width/height across separate parents.
 * :class:`Group`        -- Row with an automatic brace + label beneath.
 * :class:`Region`       -- labeled bordered container with outside label.
 * :class:`Bus`          -- multi-endpoint connector routed through a single spine.
@@ -50,6 +51,7 @@ from ._labeledchain import LabeledChain
 from ._loopicon import LoopIcon
 from ._matchsize import MatchSize
 from ._region import Region
+from ._sizegroup import SizeGroup
 from ._repeat import Repeat
 from ._stackedtiles import StackedTiles
 
@@ -60,7 +62,8 @@ __all__ = [
     "card_header",
     "LabeledChain", "Badge", "LoopIcon", "Brace",
     "Anchor", "Flow", "Flowed", "Labeled",
-    "MatchSize", "Group", "Region", "Repeat", "DetailCallout", "Docked",
+    "MatchSize", "SizeGroup", "Group", "Region", "Repeat",
+    "DetailCallout", "Docked",
     "FeedbackPair", "Bus",
     "StackedTiles",
 ]

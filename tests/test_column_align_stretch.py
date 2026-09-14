@@ -120,3 +120,29 @@ def test_unrecognized_align_raises(container):
 @pytest.mark.parametrize("align", ["start", "center", "end", "stretch"])
 def test_valid_align_values_accepted(container, align):
     assert container(Text("x"), align=align).align == align
+
+
+def test_stretch_colocates_faces_over_flow_corridor():
+    """A flow-lane margin on ONE anchored child is a column-level
+    corridor: every stretched sibling's painted face starts past it,
+    so wires routed in the corridor clear all cards and the stacked
+    faces (and their connector ports) stay collinear."""
+    from sciviz.composition import Anchor
+
+    margined = Anchor(
+        "corridor",
+        Box("first card", fill=Palette.blue.soft(), stroke=Palette.blue),
+        margin_left=30.0,
+    )
+    plain = Box("second card", fill=Palette.amber.soft(),
+                stroke=Palette.amber)
+    col = Column(margined, plain, gap="md", align="stretch")
+    svg, theme = _render(col)
+    rects = _box_rects(svg)
+    assert len(rects) == 2, rects
+    top, bottom = rects
+    assert abs(top["x"] - bottom["x"]) < 0.51, (
+        f"faces not co-located: {rects}")
+    assert abs(top["width"] - bottom["width"]) < 0.51, rects
+    assert top["x"] >= 29.5, f"corridor not honoured: {rects}"
+    assert col.measure(theme).w >= top["x"] + top["width"] - 0.5

@@ -26,7 +26,13 @@ def _draw_placed_label(canvas: Canvas, placed, text: str, size_px: float,
     When the placer fell back to an *inline* placement (label centred on
     its own wire), a ``halo_fill`` background rectangle is painted first
     so the wire reads as passing behind the text.
+
+    The placer may have re-set the caption to the arm it chose (the
+    rotated-label wrap budget), in which case its own text wins over the
+    caller's: the rectangle was measured for those lines, and drawing any
+    others paints ink the layout never reserved.
     """
+    text = getattr(placed, "text", None) or text
     x0, y0, x1, y1 = placed.rect
     cx = (x0 + x1) / 2.0
     cy = (y0 + y1) / 2.0
@@ -185,6 +191,34 @@ class Flow:
         if abs(dx) > abs(dy):
             return "right" if dx > 0 else "left"
         return "bottom" if dy > 0 else "top"
+
+    @staticmethod
+    def _containment_bounds(registry: dict, sb, db):
+        """Innermost registered ``__region_*`` rect fully containing both
+        endpoint boxes. A wire that lives inside a framed container (e.g.
+        a Panel) must keep its caption inside that container's frame.
+        Returns ``(x0, y0, x1, y1)`` or ``None``."""
+        def _inside(box, region):
+            bx, by, bw, bh = box
+            rx, ry, rw, rh = region
+            eps = 0.5
+            return (bx >= rx - eps and by >= ry - eps
+                    and bx + bw <= rx + rw + eps
+                    and by + bh <= ry + rh + eps)
+        best = None
+        best_area = None
+        for name, region in registry.items():
+            if not name.startswith("__region_"):
+                continue
+            if not (isinstance(region, tuple) and len(region) == 4):
+                continue
+            if _inside(sb, region) and _inside(db, region):
+                area = region[2] * region[3]
+                if best_area is None or area < best_area:
+                    best = (region[0], region[1],
+                            region[0] + region[2], region[1] + region[3])
+                    best_area = area
+        return best
 
     def _render(self, canvas: Canvas, theme: Theme, registry: dict,
                 defer_label: bool = False):
@@ -413,6 +447,7 @@ class Flow:
                     prefer="above",
                     gap=theme.unit * 1.0,
                     wire_width=sw,
+                    bounds=self._containment_bounds(registry, sb, db),
                 )
                 _draw_placed_label(canvas, placed, lbl.text,
                                    lbl.size_px, label_col,
@@ -460,6 +495,7 @@ class Flow:
                 placed = place_segment_label(
                     ((sx, sy), (dx, dy)), lbl, obstacles,
                     prefer="above", gap=theme.unit * 1.0,
+                    bounds=self._containment_bounds(registry, sb, db),
                 )
                 _draw_placed_label(canvas, placed, self.label,
                                    lbl.size_px, label_col)
@@ -532,6 +568,17 @@ class Flow:
             c1 = (arch_x, sy)
             c2 = (arch_x, dy)
 
+        # A framed container (Panel) is a hard boundary for the wire's
+        # ink: clamp the arc's control points so the bow stays inside
+        # the innermost region that contains both endpoints.
+        _cb = self._containment_bounds(registry, sb, db)
+        if _cb is not None:
+            m = theme.unit * 0.6
+            c1 = (min(max(c1[0], _cb[0] + m), _cb[2] - m),
+                  min(max(c1[1], _cb[1] + m), _cb[3] - m))
+            c2 = (min(max(c2[0], _cb[0] + m), _cb[2] - m),
+                  min(max(c2[1], _cb[1] + m), _cb[3] - m))
+
         d = (f"M {sx:.2f},{sy:.2f} "
              f"C {c1[0]:.2f},{c1[1]:.2f} {c2[0]:.2f},{c2[1]:.2f} "
              f"{dx:.2f},{dy:.2f}")
@@ -564,6 +611,7 @@ class Flow:
             placed = place_curve_label(
                 [(sx, sy), c1, c2, (dx, dy)], lbl, obstacles,
                 prefer="above", gap=theme.unit * 1.0,
+                bounds=self._containment_bounds(registry, sb, db),
             )
             _draw_placed_label(canvas, placed, self.label,
                                lbl.size_px, label_col)

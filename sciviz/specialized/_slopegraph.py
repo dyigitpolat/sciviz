@@ -24,8 +24,9 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional, Sequence, Tuple, Union
 
 from ..core import BBox, Canvas, Element, Theme
+from ..elements._marker import SHAPES, draw_marker, marker_radius
 
-_MARKERS = (None, "circle", "square", "triangle", "diamond")
+_MARKERS = (None,) + SHAPES
 
 
 @dataclass
@@ -380,11 +381,7 @@ class Slopegraph(Element):
         return (1.0 - (v - lo) / (hi - lo)) * self.height
 
     def _marker_radius(self, theme: Theme) -> float:
-        if isinstance(self.marker_size, (int, float)):
-            return max(0.5, float(self.marker_size))
-        if self.marker_size not in self._MARKER_FACTORS:
-            raise ValueError("marker_size must be xs/sm/md/lg or a number")
-        return theme.unit * self._MARKER_FACTORS[self.marker_size]
+        return marker_radius(self.marker_size, theme)
 
     @staticmethod
     def _dodge(centers: List[float], half: float, lo: float, hi: float,
@@ -551,20 +548,4 @@ class Slopegraph(Element):
     @staticmethod
     def _draw_marker(canvas: Canvas, marker: str, px: float, py: float,
                      radius: float, color: str, theme: Theme) -> None:
-        if marker == "circle":
-            canvas.circle(px, py, radius, fill=color, stroke="white",
-                          stroke_width=theme.hairline)
-        elif marker == "square":
-            canvas.rect(px - radius, py - radius, 2 * radius, 2 * radius,
-                        fill=color, stroke="white", stroke_width=theme.hairline)
-        elif marker == "triangle":
-            canvas.polygon([(px, py - radius),
-                            (px + radius, py + radius),
-                            (px - radius, py + radius)],
-                           fill=color, stroke="white",
-                           stroke_width=theme.hairline)
-        elif marker == "diamond":
-            canvas.polygon([(px, py - radius), (px + radius, py),
-                            (px, py + radius), (px - radius, py)],
-                           fill=color, stroke="white",
-                           stroke_width=theme.hairline)
+        draw_marker(canvas, marker, px, py, radius, color, theme)

@@ -15,7 +15,9 @@ from typing import Callable, List, Optional, Sequence, Tuple, Union
 
 from ..auto.labelplacer import overlap_area
 from ..core import BBox, Canvas, Element, Theme
+from ..elements._marker import draw_marker, marker_radius
 from ..palette import ColorRef
+from ._clip import clamp_rect, clip_polygon, clip_polyline, contains
 
 
 @dataclass
@@ -46,6 +48,13 @@ class Series:
         When ``False`` the connecting polyline is suppressed and only
         markers render — a marker-only overlay series. The legend sample
         then shows just the marker.
+    axis : str
+        Which y axis this series is measured against: ``"left"``
+        (default) or ``"right"``. Put a series on the right axis when it
+        carries a *different quantity* from the left ones (a hazard next
+        to a transfer curve, a cost next to an accuracy). The chart then
+        grows a secondary axis with its own range, ticks, and title;
+        see :class:`LineChart`.
     """
 
     points: Sequence[Tuple[float, float]]
@@ -58,6 +67,7 @@ class Series:
     marker_size: Union[str, float] = "xs"
     marker_fill: str = "solid"
     show_line: bool = True
+    axis: str = "left"
 
 
 @dataclass(frozen=True)
@@ -143,6 +153,17 @@ class LineChart(Element):
         "nice" tick step, so plots carry no dead whitespace and ticks
         land on round values. An explicit tuple is always honoured
         verbatim.
+    y2_range : tuple (low, high), optional
+        Range of the secondary (right) y axis, which exists whenever any
+        series sets ``axis="right"``. ``None`` (default) auto-fits it to
+        the right-axis series exactly as the left axis auto-fits. The
+        secondary axis is always linear, carries its own ticks and
+        title, and never draws gridlines, so the two quantities stay
+        visually distinguishable.
+    y2_label : str
+        Title of the secondary axis.
+    y2_ticks, y2_tick_format
+        As ``y_ticks`` / ``y_tick_format``, for the secondary axis.
     width, height : float
         Plot area (excluding axis labels).
     x_label, y_label : str
@@ -186,10 +207,18 @@ class LineChart(Element):
                  x_ticks: Union[str, Sequence[float]] = "auto",
                  y_ticks: Union[str, Sequence[float]] = "auto",
                  x_tick_format: Union[str, Callable[[float], str]] = "g",
-                 y_tick_format: Union[str, Callable[[float], str]] = "g"):
+                 y_tick_format: Union[str, Callable[[float], str]] = "g",
+                 y2_range: Optional[Tuple[float, float]] = None,
+                 y2_label: str = "",
+                 y2_ticks: Union[str, Sequence[float]] = "auto",
+                 y2_tick_format: Union[str, Callable[[float], str]] = "g"):
         self.series = [self._coerce_series(s) for s in series]
         self.x_range = x_range
         self.y_range = y_range
+        self.y2_range = y2_range
+        self.y2_label = y2_label
+        self.y2_ticks = y2_ticks
+        self.y2_tick_format = y2_tick_format
         if size not in self._PLOT_SIZES:
             allowed = ", ".join(self._PLOT_SIZES)
             raise ValueError(f"LineChart.size must be one of {allowed}")
@@ -247,11 +276,20 @@ class LineChart(Element):
         if len(keys) != len(set(keys)):
             raise ValueError("LineChart series keys/labels must be unique")
         known = set(keys)
+        axis_of = {k: s.axis for k, s in zip(keys, self.series)}
+        for series in self.series:
+            if series.axis not in ("left", "right"):
+                raise ValueError(
+                    f"Series.axis must be 'left' or 'right'; got {series.axis!r}")
         for fill in self.fills:
             if fill.lower not in known or fill.upper not in known:
                 raise ValueError(
                     f"FillBetween references unknown series: "
                     f"{fill.lower!r}, {fill.upper!r}")
+            if axis_of[fill.lower] != axis_of[fill.upper]:
+                raise ValueError(
+                    "FillBetween spans two axes; the area between series on "
+                    "different y axes has no meaning")
             if not (0.0 <= fill.opacity <= 1.0):
                 raise ValueError("FillBetween opacity must be between 0 and 1")
             if fill.labels is not None and not callable(fill.labels):
@@ -262,6 +300,10 @@ class LineChart(Element):
                     "SeriesDelta references unknown series: "
                     f"{delta.source!r}, {delta.target!r}"
                 )
+            if axis_of[delta.source] != axis_of[delta.target]:
+                raise ValueError(
+                    "SeriesDelta spans two axes; a difference between series "
+                    "on different y axes has no meaning")
         for series in self.series:
             if series.marker not in (None, "circle", "square", "triangle", "diamond"):
                 raise ValueError(
@@ -304,31 +346,50 @@ class LineChart(Element):
             nhi = nlo + step
         return nlo, nhi, step
 
+    # ---- axis membership -------------------------------------------------
+
+    def has_secondary_axis(self) -> bool:
+        """True when any series is measured against the right axis."""
+        return any(s.axis == "right" for s in self.series)
+
     def _data_extent(self) -> Tuple[Optional[Tuple[float, float]],
+                                    Optional[Tuple[float, float]],
                                     Optional[Tuple[float, float]]]:
+        """Return ``(x, y_left, y_right)`` data extents (None when empty).
+
+        Annotations are authored in left-axis coordinates and extend the
+        left extent only.
+        """
         xs: List[float] = []
         ys: List[float] = []
+        ys2: List[float] = []
         for s in self.series:
+            target = ys2 if s.axis == "right" else ys
             for px, py in s.points:
                 xs.append(float(px))
-                ys.append(float(py))
+                target.append(float(py))
         for ann in self.annotations:
             xs.append(float(ann.x))
             ys.append(float(ann.y))
-        if not xs:
-            return None, None
-        return (min(xs), max(xs)), (min(ys), max(ys))
+        return (
+            (min(xs), max(xs)) if xs else None,
+            (min(ys), max(ys)) if ys else None,
+            (min(ys2), max(ys2)) if ys2 else None,
+        )
 
     def _resolve_ranges(self) -> None:
         """Fix the ranges used for projection this render.
 
-        Explicit ``x_range``/``y_range`` pass through verbatim. ``None``
-        (automatic) axes fit the data extent and snap outward to a nice
-        tick step; the step is kept so auto ticks land on round values.
+        Explicit ``x_range``/``y_range``/``y2_range`` pass through
+        verbatim. ``None`` (automatic) axes fit their own data extent and
+        snap outward to a nice tick step; the step is kept so auto ticks
+        land on round values. The secondary axis resolves independently,
+        which is the point of having it.
         """
-        x_ext, y_ext = self._data_extent()
+        x_ext, y_ext, y2_ext = self._data_extent()
         self._x_step: Optional[float] = None
         self._y_step: Optional[float] = None
+        self._y2_step: Optional[float] = None
         if self.x_range is not None:
             self._xr: Tuple[float, float] = tuple(self.x_range)
         elif x_ext is None:
@@ -343,6 +404,15 @@ class LineChart(Element):
         else:
             lo, hi, self._y_step = self._nice_bounds(*y_ext, self.log_y)
             self._yr = (lo, hi)
+        if not self.has_secondary_axis():
+            self._yr2: Optional[Tuple[float, float]] = None
+        elif self.y2_range is not None:
+            self._yr2 = tuple(self.y2_range)
+        elif y2_ext is None:
+            self._yr2 = (0.0, 1.0)
+        else:
+            lo, hi, self._y2_step = self._nice_bounds(*y2_ext, False)
+            self._yr2 = (lo, hi)
 
     # ---- projection helpers ---------------------------------------------
 
@@ -354,7 +424,10 @@ class LineChart(Element):
             x1 = _m.log10(max(x1, 1e-12))
         return (v - x0) / (x1 - x0) * self.width
 
-    def _y_to_px(self, v: float) -> float:
+    def _y_to_px(self, v: float, right: bool = False) -> float:
+        if right and self._yr2 is not None:
+            y0, y1 = self._yr2
+            return self.height - (v - y0) / (y1 - y0) * self.height
         y0, y1 = self._yr
         if self.log_y:
             v = _m.log10(max(v, 1e-12))
@@ -441,43 +514,15 @@ class LineChart(Element):
         lower_points = [(x, self._interpolate(lower.points, x)) for x in xs]
         return upper_points + list(reversed(lower_points))
 
-    @staticmethod
-    def _marker_radius(marker_size: Union[str, float], theme: Theme) -> float:
-        if isinstance(marker_size, (int, float)):
-            return max(0.5, float(marker_size))
-        factors = {"xs": 0.42, "sm": 0.58, "md": 0.75, "lg": 0.95}
-        if marker_size not in factors:
-            raise ValueError("marker_size must be xs/sm/md/lg or a number")
-        return theme.unit * factors[marker_size]
+    # The marker vocabulary is shared with Scatter, Slopegraph, and the
+    # standalone Marker element a legend pairs with a label, so a legend
+    # glyph can never drift from the mark the chart plots.
+    _marker_radius = staticmethod(marker_radius)
 
     def _draw_marker(self, canvas: Canvas, marker: str, px: float, py: float,
                      radius: float, color: str, theme: Theme,
                      fill_mode: str = "solid") -> None:
-        if fill_mode == "hollow":
-            fill = theme.color_of("bg")
-            stroke = color
-            sw = theme.line
-        else:
-            fill = color
-            stroke = "white"
-            sw = theme.hairline
-        if marker == "circle":
-            canvas.circle(px, py, radius, fill=fill, stroke=stroke,
-                          stroke_width=sw)
-        elif marker == "square":
-            canvas.rect(px - radius, py - radius, 2 * radius, 2 * radius,
-                        fill=fill, stroke=stroke, stroke_width=sw)
-        elif marker == "triangle":
-            canvas.polygon([(px, py - radius),
-                            (px + radius, py + radius),
-                            (px - radius, py + radius)],
-                           fill=fill, stroke=stroke,
-                           stroke_width=sw)
-        elif marker == "diamond":
-            canvas.polygon([(px, py - radius), (px + radius, py),
-                            (px, py + radius), (px - radius, py)],
-                           fill=fill, stroke=stroke,
-                           stroke_width=sw)
+        draw_marker(canvas, marker, px, py, radius, color, theme, fill_mode)
 
     # ---- layout ----------------------------------------------------------
 
@@ -487,13 +532,118 @@ class LineChart(Element):
         """Tick-label -> axis-title gap."""
         return theme.unit * 0.75
 
-    def _y_tick_width(self, theme: Theme) -> float:
+    def _y_axis_ticks(self, right: bool = False) -> List[float]:
+        if right:
+            if self._yr2 is None:
+                return []
+            return self._ticks(self.y2_ticks, self._yr2, False, self._y2_step)
+        return self._ticks(self.y_ticks, self._yr, self.log_y, self._y_step)
+
+    def _y_tick_width(self, theme: Theme, right: bool = False) -> float:
         """Measured width of the widest resolved y tick label."""
-        y_ticks = self._ticks(self.y_ticks, self._yr, self.log_y,
-                              self._y_step)
-        return max((theme.text_width(
-            self._tick_label(v, self.log_y, self.y_tick_format), "small")
-            for v in y_ticks), default=0.0)
+        log = False if right else self.log_y
+        fmt = self.y2_tick_format if right else self.y_tick_format
+        return max((theme.text_width(self._tick_label(v, log, fmt), "small")
+                    for v in self._y_axis_ticks(right)), default=0.0)
+
+    _TITLE_SIZE = "label"
+    _X_TITLE_BASELINE = 0.78   # first x-title baseline, in title line-heights
+
+    def _axis_title_lines(self, label: str, theme: Theme,
+                          budget: float) -> List[str]:
+        """Wrap one axis title to the span it is centred over."""
+        return theme.wrap_lines(label, self._TITLE_SIZE, max(budget, 1.0))
+
+    @staticmethod
+    def _lines_overflow(lines: List[str], theme: Theme, size: str,
+                        span: float, near: float, far: float) -> float:
+        """Extra room one side needs so a centred label block stays inside.
+
+        ``lines`` are centred over ``span`` with ``near``/``far`` already
+        reserved on the two sides; the return value is how much more the
+        block's half-width demands than the smaller reservation offers.
+        """
+        if not lines:
+            return 0.0
+        widest = max(theme.text_width(line, size) for line in lines)
+        return max(0.0, widest / 2.0 - (span / 2.0 + min(near, far)))
+
+    # The top and right gutters exist only to hold ink that overhangs the
+    # plot rectangle, so their floor is the axis stroke's own half width
+    # plus a hairline of relief.
+    _EDGE_FLOOR = 1.5
+
+    def _edge_overhang(self, theme: Theme) -> Tuple[float, float]:
+        """How far ink reaches above and to the right of the plot area.
+
+        The left and bottom gutters hold the tick labels and axis titles
+        that live there. Nothing lives above or right of the plot, so
+        those two gutters only have to hold what the chart itself pushes
+        past the edge: a marker centred on the top row, a stroke on the
+        last x value, the topmost y tick label (centred on its tick), the
+        right-most x tick label (also centred on its tick), and any
+        annotation pinned near a corner. Reserving a flat constant
+        instead costs a short paper figure a fifth of its plot height,
+        which is exactly the height such a figure has least of.
+
+        Ranges must already be resolved; :meth:`_pad` does that first.
+        """
+        top = self._EDGE_FLOOR
+        right = self._EDGE_FLOOR
+        window = (0.0, 0.0, self.width, self.height)
+
+        # Only ink that survives clipping counts: a curve leaving the
+        # declared window is cut at the edge, so it can overhang by no
+        # more than its own stroke.
+        for series in self.series:
+            on_right = series.axis == "right"
+            radius = (self._marker_radius(series.marker_size, theme)
+                      if series.marker else 0.0)
+            stroke = (series.width if series.width is not None
+                      else theme.line) / 2.0
+            projected = [(self._x_to_px(float(vx)),
+                          self._y_to_px(float(vy), on_right))
+                         for vx, vy in series.points]
+            drawn: List[Tuple[Tuple[float, float], float]] = []
+            if series.show_line and len(projected) >= 2:
+                for run in clip_polyline(projected, window):
+                    drawn.extend((point, stroke) for point in run)
+            if series.marker:
+                drawn.extend((point, radius) for point in projected
+                             if contains(window, point))
+            for (px, py), reach in drawn:
+                top = max(top, reach - py)
+                right = max(right, px + reach - self.width)
+
+        # Tick labels: y labels are centred on their tick, x labels on
+        # theirs, so a tick at an edge spills half a line past it.
+        tick_px = theme.size_px("small")
+        ascent, _descent = theme.text_ink_extents("small")
+        for on_right in (False, True):
+            for value in self._y_axis_ticks(right=on_right):
+                py = self._y_to_px(value, right=on_right)
+                top = max(top, ascent - tick_px * 0.33 - py)
+        for value in self._ticks(self.x_ticks, self._xr, self.log_x,
+                                 self._x_step):
+            px = self._x_to_px(value)
+            label = self._tick_label(value, self.log_x, self.x_tick_format)
+            half = theme.text_width(label, "small") / 2.0
+            right = max(right, px + half - self.width)
+
+        for ann in self.annotations:
+            lines = ann.text.splitlines() or [ann.text]
+            width = max(theme.text_width(line, ann.size) for line in lines)
+            x0 = self._x_to_px(float(ann.x)) + ann.dx
+            if ann.anchor == "middle":
+                x0 -= width / 2.0
+            elif ann.anchor == "end":
+                x0 -= width
+            ink_top = (self._y_to_px(float(ann.y)) + ann.dy
+                       - theme.text_height(ann.size) * 0.75)
+            top = max(top, -ink_top)
+            right = max(right, x0 + width - self.width)
+
+        return top, right
 
     def _pad(self, theme: Theme) -> Tuple[float, float, float, float]:
         """Return padding (left, top, right, bottom) around the plot area.
@@ -506,24 +656,68 @@ class LineChart(Element):
         gap from the nearest tick label instead of a fixed distance from
         the axis. Resolves ranges and the inside legend first, so the
         gutters reflect the final ticks.
+
+        Axis titles are prose, so they wrap to the span they are centred
+        over (the plot plus its own margins) instead of spilling out of
+        the chart's measured box: a long title claims another title line
+        in its gutter rather than silently drawing over a neighbour. A
+        single word too wide to wrap grows the box symmetrically, so the
+        bbox always contains every glyph :meth:`render` draws.
         """
         self._resolve_ranges()
         self._place_inside_legend(theme)
         tick_h = theme.text_height("small")
-        title_h = theme.text_height("label")
+        title_h = theme.text_height(self._TITLE_SIZE)
         gap = self._axis_gap(theme)
-        left = self._TICK_GAP + self._y_tick_width(theme) + (
-            gap + title_h if self.y_label else 0.0) + 2.0
-        bot = tick_h * 1.35 + (
-            gap * 0.6 + title_h if self.x_label else 0.0)
-        top = 10.0
-        right = 8.0
+        top, right = self._edge_overhang(theme)
         if self.legend == "top":
             top += theme.text_height("small") + 6
         if self.legend == "bottom":
-            bot += theme.text_height("small") + 6
+            extra_bottom_legend = theme.text_height("small") + 6
+        else:
+            extra_bottom_legend = 0.0
         if self.legend == "right":
             right += 92.0
+
+        # A rotated title line inks `ascent` to one side of its anchor and
+        # `descent` to the other, which is wider than the line's layout
+        # height; reserve the ink, not the layout box.
+        ascent, descent = theme.text_ink_extents(self._TITLE_SIZE)
+        y_lines = self._axis_title_lines(
+            self.y_label, theme, self.height + 2.0 * top) if self.y_label else []
+        left = self._TICK_GAP + self._y_tick_width(theme) + (
+            gap + (len(y_lines) - 1) * title_h + ascent + descent
+            if y_lines else 0.0) + 2.0
+        bot = tick_h * 1.35 + extra_bottom_legend
+
+        # The secondary axis claims a mirrored gutter on the right.
+        y2_lines = self._axis_title_lines(
+            self.y2_label, theme, self.height + 2.0 * top) if (
+                self.y2_label and self.has_secondary_axis()) else []
+        if self.has_secondary_axis():
+            right += self._TICK_GAP + self._y_tick_width(theme, right=True) + (
+                gap + (len(y2_lines) - 1) * title_h + ascent + descent
+                if y2_lines else 0.0)
+
+        x_lines = self._axis_title_lines(
+            self.x_label, theme, self.width + 2.0 * right) if self.x_label else []
+        if x_lines:
+            bot += (gap * 0.6 + title_h * self._X_TITLE_BASELINE
+                    + (len(x_lines) - 1) * title_h + descent)
+
+        # A word wider than its wrap budget still has to fit in the box.
+        spill_x = self._lines_overflow(
+            x_lines, theme, self._TITLE_SIZE, self.width, left, right)
+        left += spill_x
+        right += spill_x
+        spill_y = max(
+            self._lines_overflow(
+                y_lines, theme, self._TITLE_SIZE, self.height, top, bot),
+            self._lines_overflow(
+                y2_lines, theme, self._TITLE_SIZE, self.height, top, bot),
+        )
+        top += spill_y
+        bot += spill_y
         return left, top, right, bot
 
     def measure(self, theme: Theme) -> BBox:
@@ -569,6 +763,10 @@ class LineChart(Element):
                     stroke=axis_color, stroke_width=theme.line)
         canvas.line(plot_x, plot_y, plot_x, plot_y + self.height,
                     stroke=axis_color, stroke_width=theme.line)
+        if self.has_secondary_axis():
+            canvas.line(plot_x + self.width, plot_y,
+                        plot_x + self.width, plot_y + self.height,
+                        stroke=axis_color, stroke_width=theme.line)
 
         # tick labels
         tick_h = theme.text_height("small")
@@ -582,34 +780,67 @@ class LineChart(Element):
         for yv in y_ticks:
             py = plot_y + self._y_to_px(yv)
             label = self._tick_label(yv, self.log_y, self.y_tick_format)
-            canvas.text(plot_x - 4.0,
+            canvas.text(plot_x - self._TICK_GAP,
                         py + tick_px * 0.33,
                         label, size=tick_px,
                         fill=muted, anchor="end")
+        for yv in self._y_axis_ticks(right=True):
+            py = plot_y + self._y_to_px(yv, right=True)
+            label = self._tick_label(yv, False, self.y2_tick_format)
+            canvas.text(plot_x + self.width + self._TICK_GAP,
+                        py + tick_px * 0.33,
+                        label, size=tick_px,
+                        fill=muted, anchor="start")
 
-        # axis titles sit one small gap beyond the tick labels they follow.
-        title_h = theme.text_height("label")
+        # axis titles sit one small gap beyond the tick labels they follow,
+        # wrapped by _pad to the span they are centred over.
+        title_h = theme.text_height(self._TITLE_SIZE)
+        title_px = theme.size_px(self._TITLE_SIZE)
         gap = self._axis_gap(theme)
+        _ascent, descent = theme.text_ink_extents(self._TITLE_SIZE)
         if self.x_label:
-            canvas.text(plot_x + self.width / 2,
-                        plot_y + self.height + tick_h * 1.35
-                        + gap * 0.6 + title_h * 0.78,
-                        self.x_label, size=theme.size_px("label"),
-                        fill=text_col, anchor="middle")
+            x_lines = self._axis_title_lines(
+                self.x_label, theme, self.width + 2.0 * R)
+            base = (plot_y + self.height + tick_h * 1.35
+                    + gap * 0.6 + title_h * self._X_TITLE_BASELINE)
+            for row, line in enumerate(x_lines):
+                canvas.text(plot_x + self.width / 2, base + row * title_h,
+                            line, size=title_px,
+                            fill=text_col, anchor="middle")
         if self.y_label:
             # canvas.text (not raw SVG) so the rotated label's ink is
             # tracked -- otherwise auto-trim can crop the y-axis title.
-            canvas.text(plot_x - self._TICK_GAP - self._y_tick_width(theme)
-                        - gap - title_h / 2,
-                        plot_y + self.height / 2,
-                        self.y_label, size=theme.size_px("label"),
-                        fill=text_col, anchor="middle", rotate=-90)
+            y_lines = self._axis_title_lines(
+                self.y_label, theme, self.height + 2.0 * T)
+            inner = (plot_x - self._TICK_GAP - self._y_tick_width(theme)
+                     - gap - descent)
+            for row, line in enumerate(y_lines):
+                canvas.text(inner - (len(y_lines) - 1 - row) * title_h,
+                            plot_y + self.height / 2,
+                            line, size=title_px,
+                            fill=text_col, anchor="middle", rotate=-90)
+        if self.y2_label and self.has_secondary_axis():
+            y2_lines = self._axis_title_lines(
+                self.y2_label, theme, self.height + 2.0 * T)
+            inner = (plot_x + self.width + self._TICK_GAP
+                     + self._y_tick_width(theme, right=True) + gap + descent)
+            for row, line in enumerate(y2_lines):
+                canvas.text(inner + (len(y2_lines) - 1 - row) * title_h,
+                            plot_y + self.height / 2,
+                            line, size=title_px,
+                            fill=text_col, anchor="middle", rotate=90)
 
         # relational fills are painted beneath all line work.
         series_by_key = {
             self._series_key(series, i): series
             for i, series in enumerate(self.series)
         }
+        # The axis range is the window the figure declares, so every piece
+        # of series geometry is clipped to the plot rectangle before it is
+        # drawn; see sciviz.specialized._clip. With an automatic range the
+        # rectangle already holds the data and this changes nothing.
+        window = (plot_x, plot_y, plot_x + self.width, plot_y + self.height)
+
         for fill in self.fills:
             data_polygon = self._fill_polygon(fill, series_by_key)
             if len(data_polygon) < 3:
@@ -620,11 +851,14 @@ class LineChart(Element):
             if color_name is None:
                 color_name = (upper.color if upper.color != "auto"
                               else theme.role_for_index(upper_i))
-            points = [
+            fill_right = upper.axis == "right"
+            points = clip_polygon([
                 (plot_x + self._x_to_px(px),
-                 plot_y + self._y_to_px(py))
+                 plot_y + self._y_to_px(py, fill_right))
                 for px, py in data_polygon
-            ]
+            ], window)
+            if len(points) < 3:
+                continue
             canvas.polygon(points, fill=theme.color_of(color_name),
                            stroke="none", opacity=fill.opacity)
 
@@ -633,17 +867,21 @@ class LineChart(Element):
             color_name = ser.color if ser.color != "auto" else theme.role_for_index(i)
             stroke = theme.color_of(color_name)
             sw = ser.width if ser.width is not None else theme.line
+            right = ser.axis == "right"
             pts = [(plot_x + self._x_to_px(vx),
-                    plot_y + self._y_to_px(vy))
+                    plot_y + self._y_to_px(vy, right))
                    for vx, vy in ser.points]
             if len(pts) >= 2 and ser.show_line:
-                d = f"M {pts[0][0]:.2f} {pts[0][1]:.2f}" + "".join(
-                    f" L {px:.2f} {py:.2f}" for px, py in pts[1:])
-                canvas.path(d, fill="none", stroke=stroke, stroke_width=sw,
-                            dasharray=ser.dash)
+                for run in clip_polyline(pts, window):
+                    d = f"M {run[0][0]:.2f} {run[0][1]:.2f}" + "".join(
+                        f" L {px:.2f} {py:.2f}" for px, py in run[1:])
+                    canvas.path(d, fill="none", stroke=stroke,
+                                stroke_width=sw, dasharray=ser.dash)
             if ser.marker:
                 radius = self._marker_radius(ser.marker_size, theme)
                 for px, py in pts:
+                    if not contains(window, (px, py)):
+                        continue
                     self._draw_marker(canvas, ser.marker, px, py, radius,
                                       stroke, theme, ser.marker_fill)
 
@@ -675,7 +913,7 @@ class LineChart(Element):
                     continue
                 px = plot_x + self._x_to_px(xv)
                 value = low_value + (high_value - low_value) * 0.48
-                py = plot_y + self._y_to_px(value)
+                py = plot_y + self._y_to_px(value, upper.axis == "right")
                 anchor = "middle"
                 if index == 0:
                     anchor = "start"
@@ -703,8 +941,9 @@ class LineChart(Element):
                 plot_x + edge_inset,
                 min(plot_x + self.width - edge_inset, data_x),
             )
-            source_y = plot_y + self._y_to_px(source_value)
-            target_y = plot_y + self._y_to_px(target_value)
+            delta_right = series_by_key[delta.target].axis == "right"
+            source_y = plot_y + self._y_to_px(source_value, delta_right)
+            target_y = plot_y + self._y_to_px(target_value, delta_right)
             # When the endpoints draw markers and the arrow runs in the
             # marker's column, stop at the marker edge instead of its
             # centre so the arrowhead never occludes the data point.
@@ -791,13 +1030,16 @@ class LineChart(Element):
         return [(i, s) for i, s in enumerate(self.series) if s.label]
 
     def _legend_font(self, theme: Theme) -> float:
-        """Inside-legend font in px: slightly smaller than tick text.
+        """Inside-legend font in px: one ladder step under tick text.
 
         The legend competes with data for plot area, and an oversized
         box forces large headroom expansion when no corner is clear, so
-        the inside legend runs compact by default.
+        the inside legend runs compact by default. It steps down the
+        theme's own size ladder rather than scaling tick text by a
+        factor: an off-ladder size is the one text a figure can carry
+        below the legibility floor without any token being set there.
         """
-        return theme.size_px("small") * 0.85
+        return min(theme.size_px("small"), theme.size_px("micro"))
 
     def _legend_box_size(self, theme: Theme) -> Optional[
             Tuple[float, float, float, float, float, float]]:
@@ -828,35 +1070,42 @@ class LineChart(Element):
             List[Tuple[float, float, float, float]]]:
         """Data ink in plot pixels, plus range-expansion constraints.
 
-        Returns ``(rects, top_cons, bot_cons)``. ``rects`` are obstacle
+        Returns ``(rects, left_cons, right_cons)``. ``rects`` are obstacle
         bboxes used to score legend corners. Long polyline segments are
         subdivided so a diagonal's bbox does not block corners the line
-        never visits. Each constraint is ``(x0, x1, v, off)``: over the
-        x-pixel span ``[x0, x1]`` the ink tied to data value ``v``
-        reaches ``off`` pixels above (top) or below (bottom) that
-        value's projection, which the headroom solver must clear.
+        never visits. Each ``*_cons`` is a ``(top, bot)`` pair of
+        constraint lists for that y axis, since only its own axis's
+        range can move ink off a corner. Each constraint is
+        ``(x0, x1, v, off)``: over the x-pixel span ``[x0, x1]`` the ink
+        tied to data value ``v`` reaches ``off`` pixels above (top) or
+        below (bottom) that value's projection, which the headroom
+        solver must clear.
         """
         rects: List[Tuple[float, float, float, float]] = []
-        top_cons: List[Tuple[float, float, float, float]] = []
-        bot_cons: List[Tuple[float, float, float, float]] = []
-        y0, y1 = self._yr
+        cons = {"left": ([], []), "right": ([], [])}
 
-        def inv_y(py: float) -> float:
+        def inv_y(py: float, axis: str) -> float:
+            y0, y1 = (self._yr2 if axis == "right" and self._yr2 is not None
+                      else self._yr)
             return y0 + (self.height - py) / self.height * (y1 - y0)
 
         for s in self.series:
-            pts = [(self._x_to_px(float(px)), self._y_to_px(float(py)))
+            right = s.axis == "right"
+            top_cons, bot_cons = cons[s.axis]
+            pts = [(self._x_to_px(float(px)), self._y_to_px(float(py), right))
                    for px, py in s.points]
             r = (self._marker_radius(s.marker_size, theme)
                  if s.marker else 0.0)
             pad = max(r, (s.width if s.width is not None else theme.line)) + 2.0
 
-            def add_ink(x0: float, py0: float, x1: float, py1: float) -> None:
+            def add_ink(x0: float, py0: float, x1: float, py1: float,
+                        axis: str = s.axis, top_cons=top_cons,
+                        bot_cons=bot_cons, pad: float = pad) -> None:
                 rects.append((min(x0, x1) - pad, min(py0, py1) - pad,
                               max(x0, x1) + pad, max(py0, py1) + pad))
                 span = (min(x0, x1) - pad, max(x0, x1) + pad)
-                top_cons.append((*span, inv_y(min(py0, py1)), pad))
-                bot_cons.append((*span, inv_y(max(py0, py1)), pad))
+                top_cons.append((*span, inv_y(min(py0, py1), axis), pad))
+                bot_cons.append((*span, inv_y(max(py0, py1), axis), pad))
 
             if s.show_line and len(pts) >= 2:
                 for (ax, ay), (bx, by) in zip(pts, pts[1:]):
@@ -868,6 +1117,7 @@ class LineChart(Element):
             for px, py in pts:
                 add_ink(px, py, px, py)
 
+        top_cons, bot_cons = cons["left"]
         for ann in self.annotations:
             ax = self._x_to_px(float(ann.x))
             ay = self._y_to_px(float(ann.y))
@@ -881,29 +1131,40 @@ class LineChart(Element):
                 x0 -= w
             ry0 = ay + ann.dy - theme.text_height(ann.size) * 0.75
             rects.append((x0, ry0, x0 + w, ry0 + h))
-            top_cons.append((x0, x0 + w, inv_y(ay), ay - ry0))
-            bot_cons.append((x0, x0 + w, inv_y(ay), (ry0 + h) - ay))
+            top_cons.append((x0, x0 + w, inv_y(ay, "left"), ay - ry0))
+            bot_cons.append((x0, x0 + w, inv_y(ay, "left"), (ry0 + h) - ay))
             if ann.dot:
                 rects.append((ax - 3.0, ay - 3.0, ax + 3.0, ay + 3.0))
-        return rects, top_cons, bot_cons
+        # render() clips ink to the plot rectangle, so ink the window cuts
+        # away must not block a legend corner either.
+        window = (0.0, 0.0, self.width, self.height)
+        on_plot = [clamp_rect(rect, window) for rect in rects]
+        return ([rect for rect in on_plot if rect is not None],
+                cons["left"], cons["right"])
 
-    def _expand_y_for_corner(self, corner: str, rect, cons, margin: float
-                             ) -> bool:
-        """Grow the automatic y range so ``rect`` clears the data under it.
+    def _expand_y_for_corner(self, corner: str, rect, cons, margin: float,
+                             right: bool = False) -> bool:
+        """Grow one automatic y range so ``rect`` clears the data under it.
 
         Solves in data space: for a top corner, the range top ``y1`` rises
         until every constrained value projects below the legend bottom
         plus ``margin`` (symmetrically, the bottom drops for a bottom
-        corner). The result snaps outward to the auto tick step. Returns
-        False when no finite expansion can clear the corner.
+        corner). The result snaps outward to the auto tick step. Only the
+        named axis moves, and only when it is automatic: an axis with an
+        explicit range is never mutated, so it reports failure instead
+        (unless it has no ink under the corner at all). Returns False
+        when no finite expansion can clear the corner.
         """
-        y0, y1 = self._yr
-        H = self.height
         x0, _, x1, _ = rect
         active = [(v, off) for (cx0, cx1, v, off) in cons
                   if cx1 >= x0 - margin and cx0 <= x1 + margin]
         if not active:
-            return True
+            return True                       # this axis inks nothing here
+        explicit = (self.y2_range if right else self.y_range) is not None
+        if explicit or (self.log_y and not right):
+            return False
+        y0, y1 = self._yr2 if right else self._yr
+        H = self.height
         if corner.startswith("top"):
             B = rect[3] + margin          # legend bottom edge + clearance
             needed = y1
@@ -916,12 +1177,17 @@ class LineChart(Element):
                 needed = max(needed, y0 + (v - y0) * H / free)
             if needed > y1 + (y1 - y0) * 4.0:
                 return False
-            step = self._y_step or self._nice_step((needed - y0) / 4.0)
+            step = ((self._y2_step if right else self._y_step)
+                    or self._nice_step((needed - y0) / 4.0))
             # Snap the expansion outward on the half-step grid: ticks stay
             # nice while the range grows no more than necessary.
             half_step = step / 2.0
-            self._yr = (y0, y0 + _m.ceil((needed - y0) / half_step - 1e-9)
-                        * half_step)
+            grown = (y0, y0 + _m.ceil((needed - y0) / half_step - 1e-9)
+                     * half_step)
+            if right:
+                self._yr2 = grown
+            else:
+                self._yr = grown
         else:
             T = rect[1] - margin          # legend top edge - clearance
             if T <= 1.0:
@@ -937,10 +1203,15 @@ class LineChart(Element):
                 needed = min(needed, (v - q_eff * y1) / (1.0 - q_eff))
             if needed < y0 - (y1 - y0) * 4.0:
                 return False
-            step = self._y_step or self._nice_step((y1 - needed) / 4.0)
+            step = ((self._y2_step if right else self._y_step)
+                    or self._nice_step((y1 - needed) / 4.0))
             half_step = step / 2.0
-            self._yr = (y1 - _m.ceil((y1 - needed) / half_step - 1e-9)
-                        * half_step, y1)
+            grown = (y1 - _m.ceil((y1 - needed) / half_step - 1e-9)
+                     * half_step, y1)
+            if right:
+                self._yr2 = grown
+            else:
+                self._yr = grown
         return True
 
     def _place_inside_legend(self, theme: Theme) -> None:
@@ -963,7 +1234,7 @@ class LineChart(Element):
         order = [preferred] + [c for c in self._INSIDE_CORNERS
                                if c != preferred]
         rects = {c: self._corner_rect(c, box_w, box_h, theme) for c in order}
-        obstacles, top_cons, bot_cons = self._legend_obstacles(theme)
+        obstacles, left_cons, right_cons = self._legend_obstacles(theme)
         scores = {c: sum(overlap_area(rects[c], ob) for ob in obstacles)
                   for c in order}
         margin = theme.unit * 0.75
@@ -974,13 +1245,17 @@ class LineChart(Element):
             if scores[c] <= 1e-9:
                 self._legend_rect = rects[c]
                 return
-        y_is_auto = self.y_range is None and not self.log_y
-        if y_is_auto:
-            cons = top_cons if preferred.startswith("top") else bot_cons
-            if self._expand_y_for_corner(preferred, rects[preferred],
-                                         cons, margin):
-                self._legend_rect = rects[preferred]
-                return
+        # Every axis with ink under the corner must be able to move it;
+        # each clears its own series, so they expand independently.
+        side = 0 if preferred.startswith("top") else 1
+        before = (self._yr, self._yr2)
+        if all(self._expand_y_for_corner(preferred, rects[preferred],
+                                         cons[side], margin, right=is_right)
+               for cons, is_right in ((left_cons, False),
+                                      (right_cons, True))):
+            self._legend_rect = rects[preferred]
+            return
+        self._yr, self._yr2 = before          # partial expansion is not a fix
         best = min(order, key=lambda c: scores[c])
         self._legend_rect = rects[best]
 
