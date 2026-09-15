@@ -121,3 +121,39 @@ def test_badge_independent_of_sub_label():
     sx0, sy0, sx1, sy1 = _text_rect(theme, labels["FP8"])
     # badge above sub_label
     assert by1 < sy0
+
+
+def test_multi_tag_badge_stacks_one_tag_per_line():
+    """A badge naming several things stacks instead of running wide."""
+    theme = Theme()
+    box = Box("Cascade", badge=("C4+C5", "C8+C10"))
+    svg, w, h = _render_svg(box, theme)
+    texts = _parse_texts(svg)
+    tags = {t["text"]: t for t in texts}
+    assert {"C4+C5", "C8+C10"} <= set(tags)
+    first = _text_rect(theme, tags["C4+C5"], bold=True)
+    second = _text_rect(theme, tags["C8+C10"], bold=True)
+    # second tag sits below the first, both right-anchored to the edge
+    assert first[3] <= second[1] + 0.5, (first, second)
+    assert w - first[2] < 4.0 and w - second[2] < 4.0
+    # neither collides with the label
+    main = _text_rect(theme, tags["Cascade"])
+    assert not _overlap(main, first) and not _overlap(main, second)
+
+
+def test_multi_tag_badge_is_as_wide_as_its_widest_tag():
+    """Stacking is what keeps a multi-tag box from inflating: the box
+    must be narrower than the same tags joined onto one line."""
+    theme = Theme()
+    stacked = Box("go", badge=("C4+C5", "C8+C10")).measure(theme)
+    joined = Box("go", badge="C4+C5+C8+C10").measure(theme)
+    one_tag = Box("go", badge="C8+C10").measure(theme)
+    assert stacked.w < joined.w, (stacked.w, joined.w)
+    assert abs(stacked.w - one_tag.w) < 0.5, (stacked.w, one_tag.w)
+    # the extra line costs height, not width
+    assert stacked.h > one_tag.h
+
+
+def test_empty_badge_sequence_is_no_badge():
+    theme = Theme()
+    assert Box("go", badge=()).measure(theme) == Box("go").measure(theme)

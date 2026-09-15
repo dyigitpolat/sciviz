@@ -58,7 +58,7 @@ class Box(Element):
                  title_color: Optional[str] = None,
                  sub_label: Optional[str] = None,
                  sub_color: str = "muted",
-                 badge: Optional[str] = None,
+                 badge: Optional[Union[str, Sequence[str]]] = None,
                  badge_color: str = "muted",
                  dashed: bool = False,
                  opacity: float = 1.0,
@@ -114,7 +114,12 @@ class Box(Element):
         # ``badge`` is a small chip in the TOP-RIGHT corner, the
         # semantic counterpart to ``sub_label`` (bottom-right). Good
         # for section-number tags like "§2" or version chips like
-        # "v2.0" without composing a Row + Spacer by hand.
+        # "v2.0" without composing a Row + Spacer by hand. A sequence
+        # of tags stacks, one per line, so a box tagged with several
+        # things stays as wide as its widest TAG rather than as wide as
+        # all of them joined -- a single-line run of tags otherwise sets
+        # the box's minimum width and, through sibling equalisation,
+        # every box beside it.
         self.badge = badge
         self.badge_color = badge_color
         self.dashed = dashed
@@ -272,11 +277,20 @@ class Box(Element):
         sub_h = theme.text_height(self._SUB_LABEL_SIZE)
         return sub_w, sub_h
 
-    def _badge_metrics(self, theme: Theme) -> Tuple[float, float]:
+    def _badge_lines(self) -> Tuple[str, ...]:
+        """The badge as a tuple of tag lines (empty when there is none)."""
         if not self.badge:
+            return ()
+        if isinstance(self.badge, str):
+            return (self.badge,)
+        return tuple(str(tag) for tag in self.badge if str(tag))
+
+    def _badge_metrics(self, theme: Theme) -> Tuple[float, float]:
+        lines = self._badge_lines()
+        if not lines:
             return 0.0, 0.0
-        bw = theme.text_width(self.badge, self._BADGE_SIZE, bold=True)
-        bh = theme.text_height(self._BADGE_SIZE)
+        bw = max(theme.text_width(t, self._BADGE_SIZE, bold=True) for t in lines)
+        bh = theme.text_height(self._BADGE_SIZE) * len(lines)
         return bw, bh
 
     # Air between a title and the body it heads, in theme units. A title is
@@ -454,17 +468,20 @@ class Box(Element):
                 register_routing_region(self, x, y, size.w, size.h)
             else:
                 _register_implicit_obstacle(x, y, size.w, size.h)
-        if self.badge:
+        badge_lines = self._badge_lines()
+        if badge_lines:
             # Top-right corner chip. Same bump-in as sub_label on the
-            # bottom so the box feels symmetric.
-            bw, bh = self._badge_metrics(theme)
+            # bottom so the box feels symmetric; several tags stack
+            # downward from the corner, one line each.
             pad = theme.unit * 0.25
             bsz = theme.size_px(self._BADGE_SIZE)
-            canvas.text(
-                x + size.w - pad, y + pad + bsz * 0.85, self.badge,
-                size=bsz, fill=theme.color_of(self.badge_color),
-                weight="700", anchor="end",
-            )
+            line_h = theme.text_height(self._BADGE_SIZE)
+            for i, tag in enumerate(badge_lines):
+                canvas.text(
+                    x + size.w - pad, y + pad + bsz * 0.85 + i * line_h, tag,
+                    size=bsz, fill=theme.color_of(self.badge_color),
+                    weight="700", anchor="end",
+                )
         if self._label_is_element():
             # Element label: reserve the sub_label strip at the bottom
             # (if any) and centre the element in the remaining area.
