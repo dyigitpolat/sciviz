@@ -10,7 +10,8 @@
 
 from ._groupedbars import Bar, BarGroup, BarSeries, GroupedBarChart
 from ._linechart import Annotate, FillBetween, LineChart, Series, SeriesDelta
-from ._mini import MiniGraph, MiniMatrix, MiniRaster, MiniTimeline, SparkLine, Sparkline
+from ._mini import (MiniGraph, MiniMatrix, MiniPoint, MiniRaster, MiniScatter,
+                    MiniTimeline, SparkLine, Sparkline)
 from ._pyramid import Pyramid
 from ._scatter import Scatter
 from ._slopegraph import SlopeRecord, SlopeReference, Slopegraph
@@ -22,5 +23,5 @@ __all__ = [
     "GroupedBarChart", "Bar", "BarGroup", "BarSeries",
     "Slopegraph", "SlopeRecord", "SlopeReference",
     "SparkLine", "Sparkline", "MiniMatrix", "MiniGraph",
-    "MiniTimeline", "MiniRaster",
+    "MiniTimeline", "MiniRaster", "MiniScatter", "MiniPoint",
 ]

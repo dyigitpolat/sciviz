@@ -736,7 +736,7 @@ Timeline([...])
 Scatter(points, x_range=..., y_range=..., grid=True, annotations=[Annotate(...)])
 LineChart([Series(points, ...), ...], x_label=..., y_label=..., annotations=[Annotate(...)])
 Slopegraph([(label, before, after), ...], left_title=..., right_title=...)
-BarChart(rows, orientation="horizontal")
+BarChart(rows, orientation="horizontal", label_size=..., value_size=...)
 GroupedBarChart([(title, [values], annotation), ...], series=[BarSeries(...), ...])
 Table(rows, col_align=..., gap_x="md")
 AlignedColumns(*groups, ...)
@@ -857,6 +857,70 @@ legend = Legend(
     LegendItem(coverage(0.5), "proxied"),
     LegendItem(coverage(0.0), "not reported"),
 )
+```
+
+### Instrument primitives: `Funnel`, `Gauge`, `Balance`
+
+Three shapes that a reader already knows how to read, for three facts a
+bar chart states badly.
+
+`Funnel` is *selection*: a population enters, a rule keeps part of it, and
+the ratio is in the silhouette rather than in two numbers the reader has
+to divide. Stages are `(label, value)` in order, the first value sets the
+full width, and `neck_ratio` gives the last stage a straight neck so a
+two-stage funnel still reads as a funnel.
+
+`Gauge` is *one bounded reading with the limits that bound it*. A share, a
+utilisation, a duty cycle carries two facts -- where it sits, and what
+stops it going further -- and `marks` puts the floor and the ceiling on
+the same track as the needle. `style="dial"` reads as an instrument and
+`style="bar"` packs into a card or a table row; a mark caption longer than
+a word belongs on the bar, whose track carries it underneath.
+
+`Balance` is *which of two is winning*. The beam tilts by the relative
+difference `(l - r) / (l + r)`, never by the raw values, so two large
+numbers and two small ones in the same ratio tilt the same way and no pair
+can tip the beam past `max_tilt`. Give each pan its own colour and the
+verdict is legible without reading a single digit.
+
+```python
+from sciviz import (Balance, BalancePan, Column, Diagram, Funnel, Gauge,
+                    GaugeMark, Palette, Row)
+
+screen = Funnel([("pool", 4), ("kept", 1)], role=Palette.teal,
+                width=48, height=34, show_values=False)
+share = Gauge(0.62, marks=[GaugeMark(0.25, "floor")], style="bar",
+              width=60, height=8, role=Palette.teal, show_value=False,
+              end_labels=("none", "all"))
+credit = Balance(BalancePan("guided", 1.6, Palette.teal),
+                 BalancePan("control", 1.0, Palette.gray),
+                 width=64, height=24, show_values=False)
+d = Diagram.for_paper(Row(screen, Column(credit, share, gap="xs"), gap="lg"))
+```
+
+### `MiniScatter` -- a point cloud that fits inside a card
+
+The scatter counterpart of `Sparkline`: no ticks, no axis titles, an
+optional hairline corner, and a size measured in tens of pixels, because a
+thumbnail carries a shape and the card around it carries the words. Points
+may be bare `(x, y)` pairs or `MiniPoint` values with their own colour,
+radius and `hollow` flag, so one cloud can show ranks, or measured members
+beside derived ones. `path` joins a subset with a hairline (a front, a
+trajectory) and `vectors` draws `(x, y, dx, dy)` displacement arrows in
+data units: where each member is being nudged, rather than replaced.
+
+```python
+from sciviz import Diagram, MiniPoint, MiniScatter, Palette, Row
+
+front = [(0.10, 0.82), (0.28, 0.66), (0.46, 0.52), (0.68, 0.40)]
+nudged = MiniScatter([MiniPoint(x, y, Palette.teal) for x, y in front],
+                     path=front, path_color=Palette.teal,
+                     vectors=[(0.28, 0.66, -0.09, 0.09)],
+                     width=52, height=34, role=Palette.teal)
+ranked = MiniScatter([(0.2, 0.7), MiniPoint(0.5, 0.4, size=2.4),
+                      MiniPoint(0.8, 0.6, hollow=True)],
+                     width=52, height=34, role=Palette.gray)
+d = Diagram.for_paper(Row(nudged, ranked, gap="lg"))
 ```
 
 ### Legends that reuse the chart's own marker

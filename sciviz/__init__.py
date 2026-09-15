@@ -132,7 +132,8 @@ from .charts import (
 # ----- specialized ---------------------------------------------------------
 from .specialized import (
     Annotate, Bar, BarGroup, BarSeries, FillBetween, GroupedBarChart, LineChart, Pyramid,
-    MiniGraph, MiniMatrix, MiniRaster, MiniTimeline, Scatter, Series,
+    MiniGraph, MiniMatrix, MiniPoint, MiniRaster, MiniScatter,
+    MiniTimeline, Scatter, Series,
     SeriesDelta, SlopeRecord, SlopeReference, Slopegraph, SparkLine, Sparkline,
     Timeline,
 )
@@ -141,7 +142,9 @@ from .specialized import (
 from .structures import Section, BlockGroup
 
 # ----- general primitives -------------------------------------------------
-from .primitives import Heatmap, Histogram, MeshArray, VectorTiles, StackedBoxes
+from .primitives import (Balance, BalancePan, Funnel, FunnelStage, Gauge,
+                         GaugeMark, Heatmap, Histogram, MeshArray,
+                         VectorTiles, StackedBoxes)
 
 # ----- color system --------------------------------------------------------
 from .palette import Palette, ColorRef
@@ -222,10 +225,12 @@ __all__ = [
     "GroupedBarChart", "Bar", "BarGroup", "BarSeries", "SparkLine", "Sparkline",
     "Slopegraph", "SlopeRecord", "SlopeReference",
     "MiniMatrix", "MiniGraph", "MiniTimeline", "MiniRaster",
+    "MiniScatter", "MiniPoint",
     # structures
     "Section", "BlockGroup",
     # primitives
     "Heatmap", "Histogram", "MeshArray", "VectorTiles", "StackedBoxes",
+    "Balance", "BalancePan", "Funnel", "FunnelStage", "Gauge", "GaugeMark",
     # color
     "Palette", "ColorRef",
     # composition

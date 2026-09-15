@@ -190,3 +190,142 @@ class MiniRaster(Element):
                 canvas.rect(x + c * self.cell, y + r * self.cell,
                             self.cell * 0.82, self.cell * 0.82,
                             fill=on if val else off, stroke="none", rx=0.3)
+
+
+@dataclass(frozen=True)
+class MiniPoint:
+    """One member of a :class:`MiniScatter` cloud.
+
+    Parameters
+    ----------
+    x, y : float
+        Position in the thumbnail's own data domain.
+    color : ColorRef or str, optional
+        Per-point colour; falls back to the scatter's ``role``.
+    size : float, optional
+        Radius in px; falls back to the scatter's ``radius``.
+    hollow : bool
+        Draw the point as an open ring, the conventional encoding for a
+        member that is derived, dominated, or not yet measured.
+    """
+
+    x: float
+    y: float
+    color: object = None
+    size: float | None = None
+    hollow: bool = False
+
+
+class MiniScatter(Element):
+    """Axis-free point-cloud thumbnail, with optional displacement arrows.
+
+    The scatter counterpart of :class:`Sparkline`: a cloud small enough to
+    live inside a card, drawn with no ticks and no axis titles, because a
+    thumbnail carries a *shape* and its parent card carries the words. An
+    optional hairline corner marks the two directions when the cloud sits
+    in an objective plane.
+
+    ``vectors`` draws a short arrow from a point toward a second position,
+    both in data units: where each member came from, or where the next
+    step is taking it. It is the encoding for a set that is being nudged
+    rather than replaced.
+
+    Parameters
+    ----------
+    points : sequence
+        :class:`MiniPoint` values or bare ``(x, y)`` pairs.
+    domain, range : (float, float)
+        The data window the thumbnail shows.
+    width, height : float
+        Extent in px.
+    role : ColorRef or str
+        Default point colour.
+    radius : float
+        Default point radius in px.
+    path : sequence, optional
+        ``(x, y)`` pairs joined by a hairline, e.g. a front through the
+        non-dominated members.
+    vectors : sequence, optional
+        ``(x, y, dx, dy)`` displacement arrows in data units.
+    corner : bool
+        Draw the hairline left/bottom axis corner.
+    """
+
+    def __init__(self, points: Sequence, *,
+                 domain: Tuple[float, float] = (0.0, 1.0),
+                 range: Tuple[float, float] = (0.0, 1.0),
+                 width: float = 52.0, height: float = 34.0,
+                 role="primary", radius: float = 1.5,
+                 path: Sequence[Tuple[float, float]] = (),
+                 path_color=None, path_dash: str | None = None,
+                 vectors: Sequence[Tuple[float, float, float, float]] = (),
+                 vector_color=None,
+                 corner: bool = True,
+                 pad: float = 2.0):
+        self.points = [p if isinstance(p, MiniPoint) else MiniPoint(*p)
+                       for p in points]
+        self.domain = (float(domain[0]), float(domain[1]))
+        self.range = (float(range[0]), float(range[1]))
+        self.width = float(width)
+        self.height = float(height)
+        self.role = role
+        self.radius = float(radius)
+        self.path = [(float(a), float(b)) for a, b in path]
+        self.path_color = path_color
+        self.path_dash = path_dash
+        self.vectors = [tuple(float(v) for v in vec) for vec in vectors]
+        self.vector_color = vector_color
+        self.corner = bool(corner)
+        self.pad = float(pad)
+
+    def measure(self, theme: Theme) -> BBox:
+        return BBox(self.width, self.height)
+
+    def _to_px(self, x0: float, y0: float, px: float, py: float):
+        xmin, xmax = self.domain
+        ymin, ymax = self.range
+        w = self.width - self.pad * 2
+        h = self.height - self.pad * 2
+        fx = 0.0 if xmax == xmin else (px - xmin) / (xmax - xmin)
+        fy = 0.0 if ymax == ymin else (py - ymin) / (ymax - ymin)
+        return x0 + self.pad + fx * w, y0 + self.pad + (1.0 - fy) * h
+
+    def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        if self.corner:
+            edge = theme.color_of("border")
+            canvas.line(x + self.pad * 0.4, y, x + self.pad * 0.4,
+                        y + self.height - self.pad * 0.4,
+                        stroke=edge, stroke_width=theme.hairline)
+            canvas.line(x + self.pad * 0.4, y + self.height - self.pad * 0.4,
+                        x + self.width, y + self.height - self.pad * 0.4,
+                        stroke=edge, stroke_width=theme.hairline)
+        if len(self.path) > 1:
+            color = theme.color_of(self.path_color if self.path_color is not None
+                                   else self.role)
+            pts = [self._to_px(x, y, *p) for p in self.path]
+            for a, b in zip(pts, pts[1:]):
+                canvas.line(a[0], a[1], b[0], b[1], stroke=color,
+                            stroke_width=theme.hairline,
+                            dasharray=self.path_dash)
+        if self.vectors:
+            color = theme.color_of(self.vector_color
+                                   if self.vector_color is not None
+                                   else self.role)
+            head = canvas.define_arrow_marker(
+                color=color, stroke_width=theme.hairline,
+                arrow_size=max(2.4, theme.arrow_size * 0.6),
+                name_hint="mininudge")
+            for vx, vy, dx, dy in self.vectors:
+                ax, ay = self._to_px(x, y, vx, vy)
+                bx, by = self._to_px(x, y, vx + dx, vy + dy)
+                canvas.line(ax, ay, bx, by, stroke=color,
+                            stroke_width=theme.hairline, marker_end=head)
+        for p in self.points:
+            cxp, cyp = self._to_px(x, y, p.x, p.y)
+            color = theme.color_of(p.color if p.color is not None else self.role)
+            r = p.size if p.size is not None else self.radius
+            if p.hollow:
+                canvas.circle(cxp, cyp, r, fill=theme.bg,
+                              stroke=color, stroke_width=theme.hairline)
+            else:
+                canvas.circle(cxp, cyp, r, fill=color, stroke="none")

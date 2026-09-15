@@ -6,6 +6,8 @@ label-to-source arrow.
 
 from __future__ import annotations
 
+import re as _re
+
 from typing import List, Optional, Sequence, Union
 
 from ..core import BBox, Canvas, Element, Theme
@@ -47,9 +49,16 @@ def _draw_placed_label(canvas: Canvas, placed, text: str, size_px: float,
     # edge: short identifiers and symbolic expressions remain italic,
     # ordinary words/phrases are upright and substantially easier to read.
     stripped = text.strip()
+    # A hyphen between two word characters is punctuation, not a minus
+    # sign: "held-back", "drop-in" and "sign-flip" are prose, and setting
+    # them in italic beside upright siblings reads as an error. Intra-word
+    # hyphens are therefore removed before the operator test; a hyphen with
+    # space around it, or one that opens a token, still reads as an
+    # operator and still italicises.
+    probe = _re.sub(r"(?<=\w)-(?=\w)", "", stripped)
     symbolic = (
         (" " not in stripped and len(stripped) <= 3)
-        or any(ch in stripped for ch in "_{}^=+-×÷∑∏∈→←λμσ")
+        or any(ch in probe for ch in "_{}^=+-×÷∑∏∈→←λμσ")
     )
     # "\n" stacks label lines as a block centred in the placed rect,
     # in both horizontal and rotated orientations.

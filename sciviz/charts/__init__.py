@@ -286,11 +286,17 @@ class BarChart(Element):
         Usually ``"end"`` so numeric values line up.
     show_axis : bool
         Draw a thin baseline under the bars.
+    label_size, value_size : str
+        Theme size tokens for the two text columns. A chart that lives
+        inside a card has to speak at the card's type size, so both are
+        author-set rather than fixed to the body defaults.
     """
 
     def __init__(self, items: Sequence[tuple], *,
                  bar_width: float = 220.0,
                  bar_height: float = 10.0,
+                 label_size: str = "label",
+                 value_size: str = "small",
                  vmax: Optional[float] = None,
                  palette: str = "blues",
                  label_align: str = "start",
@@ -320,6 +326,8 @@ class BarChart(Element):
         self.items = norm
         self.bar_width = bar_width
         self.bar_height = bar_height
+        self.label_size = label_size
+        self.value_size = value_size
         self._vmax = vmax
         self.palette = palette
         self.label_align = label_align
@@ -341,13 +349,13 @@ class BarChart(Element):
 
     def measure(self, theme: Theme) -> BBox:
         # Column widths: labels, bar area, values
-        label_w = max((theme.text_width(lbl, "label", bold=False)
+        label_w = max((theme.text_width(lbl, self.label_size, bold=False)
                        for lbl, _, _, _ in self.items), default=0.0)
-        value_w = max((theme.text_width(vt, "small")
+        value_w = max((theme.text_width(vt, self.value_size)
                        for _, _, vt, _ in self.items), default=0.0)
         gx = theme.gap_px(self.gap_x)
         gy = theme.gap_px(self.gap_y)
-        row_h = max(self.bar_height, theme.text_height("label"))
+        row_h = max(self.bar_height, theme.text_height(self.label_size))
         H = len(self.items) * row_h + gy * (len(self.items) - 1)
         if self.baseline:
             H += 2
@@ -356,29 +364,29 @@ class BarChart(Element):
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         vmax = self._vmax_resolved()
-        label_w = max((theme.text_width(lbl, "label", bold=False)
+        label_w = max((theme.text_width(lbl, self.label_size, bold=False)
                        for lbl, _, _, _ in self.items), default=0.0)
-        value_w = max((theme.text_width(vt, "small")
+        value_w = max((theme.text_width(vt, self.value_size)
                        for _, _, vt, _ in self.items), default=0.0)
         gx = theme.gap_px(self.gap_x)
         gy = theme.gap_px(self.gap_y)
-        row_h = max(self.bar_height, theme.text_height("label"))
+        row_h = max(self.bar_height, theme.text_height(self.label_size))
 
         bar_col_x = x + label_w + gx
         value_col_x = bar_col_x + self.bar_width + gx
 
         for i, (lbl, v, vt, col) in enumerate(self.items):
             cy = y + i * (row_h + gy)
-            text_y = cy + row_h / 2 + theme.size_px("label") * 0.33
+            text_y = cy + row_h / 2 + theme.size_px(self.label_size) * 0.33
             # label
             if self.label_align == "end":
                 canvas.text(x + label_w, text_y, lbl,
-                           size=theme.size_px("label"),
+                           size=theme.size_px(self.label_size),
                            fill=theme.color_of("text"),
                            anchor="end")
             else:
                 canvas.text(x, text_y, lbl,
-                           size=theme.size_px("label"),
+                           size=theme.size_px(self.label_size),
                            fill=theme.color_of("text"))
             # bar
             bar_len = self.bar_width * (v / vmax) if vmax > 0 else 0
@@ -404,12 +412,12 @@ class BarChart(Element):
             # value
             if self.value_align == "end":
                 canvas.text(value_col_x + value_w, text_y, vt,
-                           size=theme.size_px("small"),
+                           size=theme.size_px(self.value_size),
                            fill=theme.color_of("text_muted"),
                            anchor="end")
             else:
                 canvas.text(value_col_x, text_y, vt,
-                           size=theme.size_px("small"),
+                           size=theme.size_px(self.value_size),
                            fill=theme.color_of("text_muted"))
 
         if self.baseline:
