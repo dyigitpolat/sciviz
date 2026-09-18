@@ -773,13 +773,18 @@ class CardColumn(Element):
 
 
 def card_header(title: str, icon: Optional[str] = None,
-                *, color: str = "white", size: str = "small",
+                *, color: str = "auto", size: str = "small",
                 weight: str = "700") -> Element:
     """Standard role-coloured card header: optional icon + title text.
 
     Returned element is intended to be passed as the first argument of
     :class:`Card`. Encapsulating this here means callers do not
     re-implement the same Row(Icon, Text) pattern in every figure.
+
+    ``color="auto"`` (the default) lets the title and icon follow the
+    header band the Card paints them on: the light text on a dark role
+    colour, the dark text on a pale one, decided by contrast at render
+    time rather than assumed by the author.
     """
     text = Text(title, color=color, size=size, weight=weight)
     if icon is None:

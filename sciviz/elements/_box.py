@@ -415,12 +415,29 @@ class Box(Element):
         return BBox(w, h)
 
     def _resolved_text_color(self, theme: Theme) -> str:
-        if self.text_color != "auto":
-            return theme.color_of(self.text_color)
+        """The label colour, judged against this box's own fill.
+
+        ``"auto"`` picks the theme's dark or light text by contrast with
+        the fill; a box without a fill of its own inherits the enclosing
+        container's background. An explicit colour is resolved with the
+        box's fill pushed as the background context, so the theme's
+        white-on-light rescue looks at this box and not at the card it
+        sits in: a dark tag inside a pale card body keeps its light label.
+        """
         fill_hex = theme.paint_of(self.fill)
-        if fill_hex == "none" or fill_hex.startswith("rgb"):
-            return theme.color_of("text")
-        return theme.text_on(fill_hex)
+        own = isinstance(fill_hex, str) and fill_hex.startswith("#")
+        if self.text_color == "auto":
+            if own:
+                return theme.text_on(fill_hex)
+            bg = theme.current_bg()
+            return theme.text_on(bg) if bg else theme.color_of("text")
+        if not own:
+            return theme.color_of(self.text_color)
+        theme.push_bg(fill_hex)
+        try:
+            return theme.color_of(self.text_color)
+        finally:
+            theme.pop_bg()
 
     def _render_title(self, canvas: Canvas, x: float, top: float,
                       width: float, theme: Theme) -> None:

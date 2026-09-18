@@ -297,6 +297,11 @@ class Theme:
             raise TypeError(f"color_of expects str|ColorRef|None, got {type(name).__name__}")
         if name.startswith("#") or name == "none" or name.startswith("rgb"):
             return self._auto_contrast(name)
+        if name == "auto":
+            # Ink that contrasts with whatever container is being painted:
+            # the light text on a dark band, the dark text on a pale one
+            # (or on the bare canvas when no container is active).
+            return self.text_on(self.current_bg() or "none")
         attr = self._COLOR_MAP.get(name)
         if attr is not None:
             return self._auto_contrast(getattr(self, attr))
@@ -327,6 +332,10 @@ class Theme:
             )
         if name.startswith("#") or name == "none" or name.startswith("rgb"):
             return name
+        if name == "auto":
+            # Icons and glyph strokes that share a label's ink follow the
+            # same rule as ``color_of("auto")``.
+            return self.text_on(self.current_bg() or "none")
         attr = self._COLOR_MAP.get(name)
         if attr is not None:
             return getattr(self, attr)
@@ -391,12 +400,50 @@ class Theme:
         """True if the colour is too light to print white text on."""
         return self._luminance(hex_str) >= threshold
 
+    @staticmethod
+    def _relative_luminance(hex_str: str) -> float:
+        """WCAG relative luminance of an ``#rrggbb`` colour (sRGB linearised).
+
+        Unlike :meth:`_luminance`, which weights gamma-encoded channels,
+        this is the quantity the WCAG contrast ratio is defined on, so two
+        candidate text colours can be compared on one scale.
+        """
+        c = hex_str.lstrip("#")
+        if len(c) == 3:
+            c = "".join(ch * 2 for ch in c)
+        if len(c) != 6:
+            return 0.5
+
+        def lin(v: int) -> float:
+            s = v / 255.0
+            return s / 12.92 if s <= 0.04045 else ((s + 0.055) / 1.055) ** 2.4
+
+        r, g, b = (int(c[i:i + 2], 16) for i in (0, 2, 4))
+        return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+
+    @classmethod
+    def contrast_ratio(cls, a: str, b: str) -> float:
+        """WCAG contrast ratio (1..21) between two ``#rrggbb`` colours."""
+        la, lb = cls._relative_luminance(a), cls._relative_luminance(b)
+        hi, lo = max(la, lb), min(la, lb)
+        return (hi + 0.05) / (lo + 0.05)
+
+    def prefers_light_text(self, hex_str: str) -> bool:
+        """True when the light ``text_inverse`` reads better on ``hex_str``
+        than the dark ``text`` (higher WCAG contrast ratio). Anything that
+        is not an ``#rrggbb`` paint (``none``, ``rgb(...)``) counts as a
+        light surface, so it gets the dark text."""
+        if not isinstance(hex_str, str) or not hex_str.startswith("#"):
+            return False
+        return (self.contrast_ratio(hex_str, self.text_inverse)
+                > self.contrast_ratio(hex_str, self.text))
+
     def contrast_text(self, color) -> str:
         """Return ``text_inverse`` or ``text`` such that text is readable
         on the given background colour."""
         hex_str = self.paint_of(color) if isinstance(color, str) \
             else self._resolve_for_bg(color)
-        return self.text_inverse if not self.is_light(hex_str) else self.text
+        return self.text_on(hex_str)
 
     def _auto_contrast(self, hex_str: str) -> str:
         """Swap ``text_inverse`` to dark when the current bg is light.
@@ -410,7 +457,7 @@ class Theme:
             return hex_str
         if hex_str.lower() != self.text_inverse.lower():
             return hex_str
-        if self.is_light(self.current_bg() or ""):
+        if not self.prefers_light_text(self.current_bg() or ""):
             return self.text
         return hex_str
 
@@ -506,8 +553,10 @@ class Theme:
         return L > 0.58
 
     def text_on(self, fill: str) -> str:
-        """Return the appropriate text color for placement on top of ``fill``."""
-        return self.text if self.is_light(fill) else self.text_inverse
+        """Return the appropriate text color for placement on top of ``fill``:
+        the dark ``text`` or the light ``text_inverse``, whichever has the
+        higher WCAG contrast ratio against the fill."""
+        return self.text_inverse if self.prefers_light_text(fill) else self.text
 
     _GAP_MAP = {
         "none": 0.0, "xs": 0.5, "sm": 1.0, "md": 1.75,
