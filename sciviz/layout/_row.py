@@ -416,14 +416,35 @@ class Row(Element):
         if not self._wants_height_equalisation():
             return
         self._stretched = True
-        target_h = max(
-            self._min_height,
-            max((c.measure(theme).h for c in self.children), default=0.0),
+        # Equalise the painted faces, not the outer boxes: a child that
+        # declares immovable decoration (an Anchor's flow-lane margins)
+        # measures taller than its face, so the target is the tallest
+        # face and each child receives that face plus its own decoration.
+        # Equalising outer boxes instead left a margin-less card taller
+        # than its margined siblings by exactly their margins.
+        decos = [self._stretch_decoration_h(c, theme) for c in self.children]
+        faces = [c.measure(theme).h - d for c, d in zip(self.children, decos)]
+        face = max(
+            self._min_height - max(decos, default=0.0),
+            max(faces, default=0.0),
         )
-        if target_h <= 0.0:
+        if face <= 0.0:
             return
-        for c in self.children:
-            c.inflate_to(0.0, target_h)
+        for c, d in zip(self.children, decos):
+            c.inflate_to(0.0, face + d)
+
+    @staticmethod
+    def _stretch_decoration_h(child, theme: Theme) -> float:
+        """Height of the immovable outer decoration a child declares
+        through the ``stretch_decoration`` protocol (an Anchor's flow-lane
+        margins); zero for everything else."""
+        fn = getattr(child, "stretch_decoration", None)
+        if fn is None:
+            return 0.0
+        try:
+            return float(fn(theme)[1])
+        except (TypeError, IndexError, ValueError):
+            return 0.0
 
     def measure(self, theme: Theme) -> BBox:
         if not self.children:

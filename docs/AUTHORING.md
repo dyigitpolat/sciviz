@@ -158,6 +158,39 @@ fitter reflow the container -- redistribute the same children over a
 different column count -- to land the figure in the requested printed
 shape.
 
+### Table -- a typeset table, not a grid of boxes
+
+A comparison that reads as a table in the paper should look like one in
+the figure: a bold header row ruled beneath, hairline rules between rows,
+text set directly in its column (no box per cell), and one banded row
+when a single entry is the point. `Table` carries that furniture as
+options over its aligned grid, so the same primitive serves a plain
+aligned layout and a finished table:
+
+```python
+from sciviz import Diagram, Palette, Table
+
+rows = [["Method", "Feedback", "Topology"],
+        ["H-SR", "gate verdict + timing", "serial chain, keep best"],
+        ["H-BoN", "none", "parallel, global best"],
+        ["CASCADE", "staged gates + incumbent delta", "seed 4, then serial"]]
+d = Diagram.for_paper(Table(
+    rows,
+    header=True,                 # bold header, ruled beneath
+    rules="all",                 # hairlines between body rows too
+    col_widths=[48, 70, 70],     # wrap budgets: long cells wrap in place
+    row_align="start",           # wrapped cells align at the top
+    pad_y=1.5,                   # room between a band and its text
+    row_fills={3: Palette.orange.soft()},   # the highlighted row
+), target_width_pt=252)
+```
+
+String cells become `Text`, or a wrapped `TextBlock` in a column with a
+budget; `column_styles` sets their size and colour per column. Element
+cells (a `Column` of name over source, a `TextBlock` with `Chip` tags
+beneath) pass through unchanged. `zebra=` tints every second body row
+instead of, or as well as, `row_fills`.
+
 ### AlignedStack -- cross-parent column alignment
 
 When you stack rows or grids that should share column widths across
@@ -738,7 +771,7 @@ LineChart([Series(points, ...), ...], x_label=..., y_label=..., annotations=[Ann
 Slopegraph([(label, before, after), ...], left_title=..., right_title=...)
 BarChart(rows, orientation="horizontal", label_size=..., value_size=...)
 GroupedBarChart([(title, [values], annotation), ...], series=[BarSeries(...), ...])
-Table(rows, col_align=..., gap_x="md")
+Table(rows, col_align=..., gap_x="md", header=True, rules="all", col_widths=[...], zebra=..., row_fills={i: ...}, pad_y=...)
 AlignedColumns(*groups, ...)
 Tree(TreeNode(...))
 ```
