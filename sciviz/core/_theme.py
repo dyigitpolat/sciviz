@@ -446,19 +446,21 @@ class Theme:
         return self.text_on(hex_str)
 
     def _auto_contrast(self, hex_str: str) -> str:
-        """Swap ``text_inverse`` to dark when the current bg is light.
+        """Keep the theme's two inks readable on the current container.
 
-        Only triggers when the resolved hex matches ``text_inverse``
-        exactly; explicit ``"#fafafa"`` or arbitrary lighter pastels are
-        left alone so authors who deliberately set a near-white colour
-        still get what they asked for.
+        ``text_inverse`` becomes the dark ``text`` on a light container,
+        and the default dark ``text`` becomes ``text_inverse`` on a dark
+        one (a plain ``Text`` used as a Card header, say). Only the two
+        theme inks are touched; an explicit ``"#fafafa"`` or any other
+        deliberate colour is left alone.
         """
         if not self._bg_stack:
             return hex_str
-        if hex_str.lower() != self.text_inverse.lower():
-            return hex_str
-        if not self.prefers_light_text(self.current_bg() or ""):
-            return self.text
+        bg = self.current_bg() or ""
+        if hex_str.lower() == self.text_inverse.lower():
+            return hex_str if self.prefers_light_text(bg) else self.text
+        if hex_str.lower() == self.text.lower():
+            return self.text_inverse if self.prefers_light_text(bg) else hex_str
         return hex_str
 
     # role -> coordinated paper-safe shade. Authors say ``color="red"``

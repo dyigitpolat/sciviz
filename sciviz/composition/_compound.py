@@ -406,7 +406,17 @@ class StepCell(Element):
 
     def __init__(self, name: str, visual: Element, *, role, index: Optional[int] = None,
                  optional: bool = False, condition: Optional[ConditionSpec] = None,
-                 label_align: str = "center"):
+                 label_align: str = "center", layout: str = "inline",
+                 label_width: Optional[float] = None):
+        """``layout="inline"`` sets the visual beside the label (the wide,
+        pipeline-strip form); ``"stacked"`` sets the index badge and the
+        visual in a top band with the label centred beneath, the narrow
+        form that lets five steps share one single-column row.
+        ``label_width`` is the label's wrap budget in px (default: 8.5
+        theme units)."""
+        if layout not in ("inline", "stacked"):
+            raise ValueError(
+                f"layout must be 'inline' or 'stacked'; got {layout!r}")
         self.name = name
         self.visual = visual
         self.role = role
@@ -414,6 +424,8 @@ class StepCell(Element):
         self.optional = optional or condition is not None
         self.condition = condition
         self.label_align = label_align
+        self.layout = layout
+        self.label_width = label_width
         self._min_w = 0.0
         self._min_h = 0.0
         self._forced_slot_w: Optional[list[float]] = None
@@ -427,7 +439,9 @@ class StepCell(Element):
         longest = max((theme.text_width(w, "tiny", bold=bold)
                        for w in self.name.split()), default=0.0)
         total = theme.text_width(self.name, "tiny", bold=bold)
-        return max(longest, min(total, theme.unit * 8.5))
+        budget = (float(self.label_width) if self.label_width is not None
+                  else theme.unit * 8.5)
+        return max(longest, min(total, budget))
 
     def _label(self, theme: Theme) -> TextBlock:
         return TextBlock(self.name, size="tiny", color="text", weight="700",
@@ -479,14 +493,67 @@ class StepCell(Element):
     def _apply_shared_columns(self, widths: list[float]) -> None:
         self._forced_slot_w = list(widths)
 
+    def _stacked_geometry(self, theme: Theme):
+        """(pad, badge bbox, glyph bbox, visual bbox, label bbox, band
+        height) of the stacked form: index badge and condition glyph in
+        the corners of a top band that holds the visual, label beneath."""
+        pad = theme.unit * 0.55
+        badge = (self._index_badge_size(theme) if self.index is not None
+                 else BBox(0.0, 0.0))
+        glyph = (ConditionGlyph(self.condition.kind, color=self.role).measure(theme)
+                 if self.condition is not None else BBox(0.0, 0.0))
+        visual = self.visual.measure(theme)
+        label = self._label(theme).measure(theme)
+        band_h = max(badge.h, glyph.h, visual.h)
+        return pad, badge, glyph, visual, label, band_h
+
     def measure(self, theme: Theme) -> BBox:
         pad = theme.unit * 0.55
+        if self.layout == "stacked":
+            pad, badge, glyph, visual, label, band_h = self._stacked_geometry(theme)
+            corners = max(badge.w, glyph.w)
+            # The visual is centred in the band; the corner pieces must
+            # clear it on both sides.
+            band_w = visual.w + 2 * (corners + (pad if corners else 0.0))
+            w = max(band_w, label.w) + 2 * pad
+            h = pad + band_h + pad * 0.7 + label.h + pad
+            return BBox(max(w, self._min_w), max(h, self._min_h))
         visual = self.visual.measure(theme)
         label = self._label(theme).measure(theme)
         left_guard, visual_slot, label_slot, right_guard = self._slot_widths(theme)
         w = left_guard + visual_slot + pad + label_slot + right_guard
         h = max(visual.h, label.h, theme.unit * 4.6) + 2 * pad
         return BBox(max(w, self._min_w), max(h, self._min_h))
+
+    def _render_stacked(self, canvas: Canvas, x: float, y: float,
+                        theme: Theme, size: BBox, stroke: str) -> None:
+        pad, badge, glyph, visual, label_box, band_h = self._stacked_geometry(theme)
+        band_y = y + pad
+        if self.index is not None:
+            bx, by = x + pad, band_y
+            canvas.rect(bx, by, badge.w, badge.h, fill=stroke, stroke=stroke,
+                        stroke_width=theme.hairline, rx=badge.h / 2)
+            canvas.text(bx + badge.w / 2, by + badge.h / 2, str(self.index),
+                        size=theme.font_micro, fill=theme.text_on(stroke),
+                        weight="700", anchor="middle", baseline="middle")
+        if self.condition is not None:
+            g = ConditionGlyph(self.condition.kind, color=self.role)
+            g.render(canvas, x + size.w - pad - glyph.w, band_y, theme)
+        self.visual.render(
+            canvas,
+            _align_x_in_slot(self.visual, x, size.w, theme, "center"),
+            _center_y_on_content(self.visual, band_y + band_h / 2, theme),
+            theme,
+        )
+        label = self._label(theme)
+        label_y = band_y + band_h + pad * 0.7
+        label.render(
+            canvas,
+            _align_x_in_slot(label, x + pad, size.w - 2 * pad, theme,
+                             self.label_align),
+            _center_y_on_content(label, label_y + label_box.h / 2, theme),
+            theme,
+        )
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         size = self.measure(theme)
@@ -497,6 +564,9 @@ class StepCell(Element):
                     stroke_width=theme.hairline, rx=theme.panel_radius * 2,
                     dasharray="3,2" if self.optional else None)
         _register_implicit_obstacle(x, y, size.w, size.h)
+        if self.layout == "stacked":
+            self._render_stacked(canvas, x, y, theme, size, stroke)
+            return
         if self.index is not None:
             text = str(self.index)
             badge = self._index_badge_size(theme)
@@ -507,7 +577,7 @@ class StepCell(Element):
                         stroke_width=theme.hairline, rx=badge.h / 2)
             canvas.text(bx + badge.w / 2,
                         by + badge.h / 2,
-                        text, size=theme.font_micro, fill="white",
+                        text, size=theme.font_micro, fill=theme.text_on(stroke),
                         weight="700", anchor="middle", baseline="middle")
         if self.condition is not None:
             glyph = ConditionGlyph(self.condition.kind, color=self.role)
