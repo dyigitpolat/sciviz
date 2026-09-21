@@ -850,16 +850,27 @@ paper-scale matrix small multiples, while larger tokens leave room for richer
 cell labels. Dense and categorical matrices retain contiguous square cells at
 every token size.
 
-`MatrixGroup` labels wrap to their own span (and shrink, with a floor, when a
-single word cannot fit), so long group names claim extra header rows instead
-of colliding with the neighbouring group.
+`MatrixGroup` labels wrap to their own span, so long group names claim extra
+header rows instead of colliding with the neighbouring group. A column group
+whose longest word is wider than its span widens the columns it spans (the
+deficit shared equally) rather than shrinking the font, so a one-column group
+can still carry a worded header at the theme's small size; a row group, whose
+span is set by the row height, shrinks with a floor instead.
+
+A column is as wide as the widest thing it must carry: its cells, a horizontal
+column label, and its share of a group label's longest word. A horizontal
+label wider than its cell therefore widens that column, the way a typeset
+table sizes a column to its header, while a rotated label (`col_label_angle`)
+costs height instead; columns that nothing widens keep the square cell.
 
 Row labels may contain newlines: the first line is the label proper and
 continuation lines render smaller and muted — sublabels for units,
 provenance, or grounding detail (`"Fan-out per core\nLoihi: 4096 edges"`),
 the same convention as multiline `Scatter` point labels. This keeps long
-annotations from widening the label column at full label size. Column labels
-stay single-line (they rotate instead).
+annotations from widening the label column at full label size.
+`row_sublabel_size` (default `"tiny"`) names the size token of those
+continuation lines, for a document whose legibility floor sits above the
+theme's tiny size. Column labels stay single-line (they rotate instead).
 
 ### Coverage matrices with `HarveyBall`
 

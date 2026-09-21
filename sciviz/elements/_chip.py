@@ -78,7 +78,7 @@ class Chip(Element):
             x, y, size.w, size.h,
             fill=theme.paint_of(self.fill),
             stroke=theme.paint_of(self.color),
-            stroke_width=theme.hairline,
+            stroke_width=theme.chip_stroke or theme.hairline,
             rx=size.h / 2,
             dasharray="3,2" if self.dashed else None,
         )

@@ -452,7 +452,38 @@ def test_single_line_group_labels_keep_compact_band():
     )
 
 
-def test_unbreakable_group_word_shrinks_shared_font_with_floor():
+def test_unbreakable_column_group_word_widens_its_span_at_full_size():
+    theme = Theme()
+    grid = [[MatrixCell(role="primary_soft") for _ in range(2)]
+            for _ in range(2)]
+    plain = Matrix(grid, row_labels=None, col_labels=None, cell_size="sm")
+    grouped = Matrix(
+        grid,
+        row_labels=None,
+        col_labels=None,
+        cell_size="sm",
+        col_groups=[MatrixGroup("Hyperparameterization", 0, 2)],
+    )
+    # The font never shrinks: the columns under the group grow instead, so
+    # the label prints at the theme's small size and the word fits its span.
+    _lines, font, _line_h = grouped._group_label_layout(theme, "col")
+    assert font == pytest.approx(theme.size_px("small"))
+    widths = grouped._col_widths(theme)
+    need = theme.text_width("Hyperparameterization", "small", bold=True)
+    assert sum(widths) - theme.unit * 0.8 >= need - 1e-6
+    # The deficit is shared equally by the group's columns, the rows keep
+    # the cell height, and the matrix is wider by exactly the growth.
+    assert widths[0] == pytest.approx(widths[1])
+    assert grouped.measure(theme).w == pytest.approx(sum(widths))
+    assert grouped.measure(theme).h == pytest.approx(
+        plain.measure(theme).h + grouped._group_space(theme, "col"))
+    svg, _theme, _size, _canvas = _render(grouped)
+    assert ">Hyperparameterization<" in svg
+
+
+def test_unbreakable_row_group_word_shrinks_shared_font_with_floor():
+    # A row group's span is set by the row height, which nothing widens, so
+    # the shrink-with-floor fallback still applies on that axis.
     theme = Theme()
     matrix = Matrix(
         [[MatrixCell(role="primary_soft") for _ in range(2)]
@@ -460,11 +491,53 @@ def test_unbreakable_group_word_shrinks_shared_font_with_floor():
         row_labels=None,
         col_labels=None,
         cell_size="sm",
-        col_groups=[MatrixGroup("Hyperparameterization", 0, 2)],
+        row_groups=[MatrixGroup("Hyperparameterization", 0, 2)],
     )
-    _lines, font, _line_h = matrix._group_label_layout(theme, "col")
+    _lines, font, _line_h = matrix._group_label_layout(theme, "row")
     assert font < theme.size_px("small")
     assert font >= theme.size_px("micro")
+
+
+def test_horizontal_column_labels_widen_their_columns():
+    theme = Theme()
+    grid = [[MatrixCell(mark="check") for _ in range(3)] for _ in range(2)]
+    labels = ["a", "a much longer horizontal label", "b"]
+    matrix = Matrix(grid, row_labels=None, col_labels=labels, cell_size="sm")
+    c = matrix._cell_px(theme)
+    widths = matrix._col_widths(theme)
+    assert widths[0] == pytest.approx(c) and widths[2] == pytest.approx(c)
+    assert widths[1] >= (theme.text_width(labels[1], "small")
+                         + theme.unit * 0.8 - 1e-6)
+    assert matrix.measure(theme).w == pytest.approx(sum(widths))
+    # A rotated label costs height, not width: every column stays square.
+    rotated = Matrix(grid, row_labels=None, col_labels=labels,
+                     cell_size="sm", col_label_angle=-40)
+    assert rotated._col_widths(theme) == pytest.approx([c, c, c])
+    assert rotated.measure(theme).w == pytest.approx(3 * c)
+    # The widened column's cells are drawn at the widened width.
+    svg, _theme, _size, _canvas = _render(matrix)
+    drawn = [float(w) for w in re.findall(r'width="([\d.]+)"', svg)]
+    # The canvas rounds coordinates when it writes them out.
+    assert any(abs(w - (widths[1] - theme.hairline)) < 0.06 for w in drawn)
+
+
+def test_row_sublabel_size_token_sets_the_sublabel_font():
+    theme = Theme()
+    grid = [[MatrixCell() for _ in range(2)] for _ in range(2)]
+    labels = ["Fan-out per core\nLoihi: 4096 edges", "Weight precision"]
+    default = Matrix(grid, row_labels=labels, col_labels=None, cell_size="sm")
+    sized = Matrix(grid, row_labels=labels, col_labels=None, cell_size="sm",
+                   row_sublabel_size="small")
+
+    def sublabel_size(svg):
+        match = re.search(r'<text[^>]*font-size="([\d.]+)"[^>]*>Loihi: 4096 edges<', svg)
+        assert match, "sublabel not rendered"
+        return float(match.group(1))
+
+    assert sublabel_size(_render(default)[0]) == pytest.approx(theme.size_px("tiny"))
+    assert sublabel_size(_render(sized)[0]) == pytest.approx(theme.size_px("small"))
+    # The label column is measured at the size it is drawn.
+    assert sized._label_space(theme, "row") >= default._label_space(theme, "row")
 
 
 def test_multiline_row_labels_render_muted_tiny_sublabels():

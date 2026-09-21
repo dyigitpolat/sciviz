@@ -113,6 +113,11 @@ class Theme:
     wrap_budget: float = 16.0
     # -- stroke weights (all diagrams default to hairlines) ---------------
     hairline: float = 0.6
+    # Outline weight of a ``Chip``. 0.0 (the default) keeps the hairline; a
+    # document whose legibility rules want every outline that carries meaning
+    # (a chip's colour is read off its outline) at a heavier weight sets this
+    # once in its theme instead of per chip.
+    chip_stroke: float = 0.0
     line: float = 0.9
     thick: float = 1.3
     # Connectors should read as relationships, not as a second set of box

@@ -218,8 +218,15 @@ class Matrix(Element):
     Row labels may contain newlines: the first line is the label proper and
     continuation lines render smaller and muted — sublabels for units,
     provenance, or grounding detail (the same convention as multiline
-    Scatter point labels).  Column labels stay single-line because they can
-    rotate.
+    Scatter point labels); ``row_sublabel_size`` names their size token.
+    Column labels stay single-line because they can rotate.
+
+    A column is as wide as the widest thing it must carry: its cells, a
+    horizontal column label, and its share of a column-group label's longest
+    unbreakable word.  Columns that nothing widens keep the square cell, so
+    a heat map stays a heat map, while a categorical matrix with worded
+    headers sizes its columns the way a typeset table does instead of
+    letting a label collide with its neighbour or shrink below the floor.
     """
 
     _CELL_SIZES = {
@@ -245,6 +252,7 @@ class Matrix(Element):
         col_labels: Union[str, Sequence[str], None] = "auto",
         col_label_position: str = "top",
         col_label_angle: float = 0.0,
+        row_sublabel_size: Union[str, float] = "tiny",
         row_groups: Optional[Sequence[MatrixGroup]] = None,
         col_groups: Optional[Sequence[MatrixGroup]] = None,
         row_partitions: Optional[Sequence[int]] = None,
@@ -273,6 +281,7 @@ class Matrix(Element):
         self.col_label_angle = float(col_label_angle)
         if not -90.0 <= self.col_label_angle <= 90.0:
             raise ValueError("Matrix.col_label_angle must be between -90 and 90")
+        self.row_sublabel_size = row_sublabel_size
         self.row_groups = tuple(row_groups or ())
         self.col_groups = tuple(col_groups or ())
         if any(not isinstance(group, MatrixGroup) for group in self.row_groups):
@@ -377,6 +386,42 @@ class Matrix(Element):
                         size = max(size, mark_size.w + 4.0, mark_size.h + 4.0)
         return size
 
+    def _col_widths(self, theme: Theme) -> List[float]:
+        """Per-column widths: the cell size, widened by what the column carries.
+
+        Three things can claim more than the cell: a horizontal column label
+        (a rotated one costs height, not width), and the longest unbreakable
+        word of a column-group label, whose deficit is shared equally by the
+        columns of that group.  Row height stays the cell size, so a column
+        that nothing widens is still square.
+        """
+        c = self._cell_px(theme)
+        widths = [c] * self.cols
+        pad = theme.unit * 0.8
+        labels = self._resolve_labels("col")
+        if labels and abs(self.col_label_angle) < 0.5:
+            for j, lbl in enumerate(labels):
+                widths[j] = max(widths[j], theme.text_width(lbl, "small") + pad)
+        for group in self.col_groups:
+            span = sum(widths[group.start:group.stop]) - pad
+            need = max(
+                (theme.text_width(word, "small", bold=True)
+                 for word in group.label.split()),
+                default=0.0,
+            )
+            if need > span:
+                extra = (need - span) / (group.stop - group.start)
+                for j in range(group.start, group.stop):
+                    widths[j] += extra
+        return widths
+
+    def _col_offsets(self, theme: Theme) -> List[float]:
+        """Left edge of every column relative to the grid, plus the right edge."""
+        xs = [0.0]
+        for width in self._col_widths(theme):
+            xs.append(xs[-1] + width)
+        return xs
+
     def _resolve_labels(self, which: str) -> Optional[List[str]]:
         labels = self.row_labels if which == "row" else self.col_labels
         n = self.rows if which == "row" else self.cols
@@ -412,7 +457,8 @@ class Matrix(Element):
                 lines = self._row_label_lines(lbl)
                 width = max(width, theme.text_width(lines[0], "small"))
                 for sub in lines[1:]:
-                    width = max(width, theme.text_width(sub, "tiny"))
+                    width = max(
+                        width, theme.text_width(sub, self.row_sublabel_size))
             return width + theme.unit
         if abs(self.col_label_angle) < 0.5:
             return theme.text_height("small") + theme.unit * 0.5
@@ -442,7 +488,11 @@ class Matrix(Element):
             return [], preferred, theme.text_height("small")
         c = self._cell_px(theme)
         pad = theme.unit * 0.8
-        spans = [max((g.stop - g.start) * c - pad, c) for g in groups]
+        if which == "col":
+            xs = self._col_offsets(theme)
+            spans = [max(xs[g.stop] - xs[g.start] - pad, c) for g in groups]
+        else:
+            spans = [max((g.stop - g.start) * c - pad, c) for g in groups]
         lines_per_group = [
             self._wrap_label(group.label, theme, span)
             for group, span in zip(groups, spans)
@@ -508,7 +558,7 @@ class Matrix(Element):
         col_lbl = self._group_space(theme, "col") + self._label_space(theme, "col")
         side_left = self._selection_side_space(theme, "left")
         side_right = self._selection_side_space(theme, "right")
-        w = side_left + row_lbl + self.cols * c + side_right
+        w = side_left + row_lbl + self._col_offsets(theme)[-1] + side_right
         h = col_lbl + self.rows * c
         if self.caption:
             h += theme.text_height("small") + theme.unit
@@ -545,7 +595,8 @@ class Matrix(Element):
         if not selection.label:
             return "top"
         _r0, _r1, c0, c1 = self._selection_bounds(selection)
-        available = (c1 - c0) * self._cell_px(theme) - 2 * theme.unit
+        xs = self._col_offsets(theme)
+        available = xs[c1] - xs[c0] - 2 * theme.unit
         widest = max(
             (theme.text_width(line, "micro")
              for line in selection.label.splitlines()),
@@ -604,15 +655,16 @@ class Matrix(Element):
         my = self._group_space(theme, "col") + (
             col_label_space if self.col_label_position == "top" else 0.0
         )
+        xs = self._col_offsets(theme)
         result = {}
         for selection in self.selections:
             if selection.name is None:
                 continue
             r0, r1, c0, c1 = self._selection_bounds(selection)
             result[selection.name] = (
-                mx + c0 * c,
+                mx + xs[c0],
                 my + r0 * c,
-                (c1 - c0) * c,
+                xs[c1] - xs[c0],
                 (r1 - r0) * c,
             )
         return result
@@ -696,7 +748,8 @@ class Matrix(Element):
         cell: MatrixCell,
         cx: float,
         cy: float,
-        c: float,
+        cw: float,
+        ch: float,
         theme: Theme,
         color: str,
         has_text: bool,
@@ -706,23 +759,23 @@ class Matrix(Element):
         if isinstance(cell.mark, Element):
             size = cell.mark.measure(theme)
             if has_text:
-                px = cx + max(1.0, c - size.w - 2.0)
+                px = cx + max(1.0, cw - size.w - 2.0)
                 py = cy + 1.5
             else:
-                px = cx + (c - size.w) / 2
-                py = cy + (c - size.h) / 2
+                px = cx + (cw - size.w) / 2
+                py = cy + (ch - size.h) / 2
             cell.mark.render(canvas, px, py, theme)
             return
         mark = self._mark_text(cell.mark)
         preferred = theme.size_px("micro" if len(mark) > 2 else "tiny")
-        font = self._fit_text_size(mark, preferred, c - 5.0)
+        font = self._fit_text_size(mark, preferred, cw - 5.0)
         if has_text:
-            px = cx + c - 2.5
+            px = cx + cw - 2.5
             py = cy + font + 1.0
             anchor = "end"
         else:
-            px = cx + c / 2
-            py = cy + c / 2 + font * 0.33
+            px = cx + cw / 2
+            py = cy + ch / 2 + font * 0.33
             anchor = "middle"
         canvas.text(px, py, mark, size=font, fill=color, weight="700", anchor=anchor)
 
@@ -732,7 +785,8 @@ class Matrix(Element):
         cell,
         cx: float,
         cy: float,
-        c: float,
+        cw: float,
+        ch: float,
         theme: Theme,
         vmin: float,
         vmax: float,
@@ -747,10 +801,10 @@ class Matrix(Element):
             border_width = theme.hairline
             inset = border_width / 2.0
             cell_x, cell_y = cx + inset, cy + inset
-            cell_w = cell_h = c - border_width
+            cell_w, cell_h = cw - border_width, ch - border_width
             radius = 0.0
         else:
-            cell_x, cell_y, cell_w, cell_h = cx + 1, cy + 1, c - 2, c - 2
+            cell_x, cell_y, cell_w, cell_h = cx + 1, cy + 1, cw - 2, ch - 2
             radius = 1.5
             border = "none"
             border_width = 0.0
@@ -801,14 +855,14 @@ class Matrix(Element):
         text_color = theme.text_on(fill)
         if has_label and has_detail:
             primary_size = self._fit_text_size(
-                str(label), theme.size_px("tiny"), c - 4.0
+                str(label), theme.size_px("tiny"), cw - 4.0
             )
             detail_size = self._fit_text_size(
-                str(detail), theme.size_px("micro"), c - 4.0
+                str(detail), theme.size_px("micro"), cw - 4.0
             )
             canvas.text(
-                cx + c / 2,
-                cy + c / 2 - 1.0,
+                cx + cw / 2,
+                cy + ch / 2 - 1.0,
                 str(label),
                 size=primary_size,
                 fill=text_color,
@@ -816,8 +870,8 @@ class Matrix(Element):
                 anchor="middle",
             )
             canvas.text(
-                cx + c / 2,
-                cy + c / 2 + detail_size * 1.05,
+                cx + cw / 2,
+                cy + ch / 2 + detail_size * 1.05,
                 str(detail),
                 size=detail_size,
                 fill=text_color,
@@ -826,10 +880,10 @@ class Matrix(Element):
         elif has_label or has_detail:
             text = str(label if has_label else detail)
             size_name = "tiny" if has_label else "micro"
-            font = self._fit_text_size(text, theme.size_px(size_name), c - 4.0)
+            font = self._fit_text_size(text, theme.size_px(size_name), cw - 4.0)
             canvas.text(
-                cx + c / 2,
-                cy + c / 2 + font * 0.33,
+                cx + cw / 2,
+                cy + ch / 2 + font * 0.33,
                 text,
                 size=font,
                 fill=text_color,
@@ -844,7 +898,8 @@ class Matrix(Element):
                 structured,
                 cx,
                 cy,
-                c,
+                cw,
+                ch,
                 theme,
                 text_color,
                 has_label or has_detail,
@@ -853,10 +908,11 @@ class Matrix(Element):
     def _render_selections(
         self, canvas: Canvas, mx: float, my: float, c: float, theme: Theme
     ) -> None:
+        xs = self._col_offsets(theme)
         for selection in self.selections:
             r0, r1, c0, c1 = self._selection_bounds(selection)
-            sx, sy = mx + c0 * c, my + r0 * c
-            sw, sh = (c1 - c0) * c, (r1 - r0) * c
+            sx, sy = mx + xs[c0], my + r0 * c
+            sw, sh = xs[c1] - xs[c0], (r1 - r0) * c
             color = theme.color_of(selection.role)
             inset = max(0.5, theme.thick / 2)
             if selection.style != "none":
@@ -908,7 +964,7 @@ class Matrix(Element):
     def _render_selection_side_labels(
         self, canvas: Canvas, mx: float, my: float, c: float, theme: Theme
     ) -> None:
-        matrix_right = mx + self.cols * c
+        matrix_right = mx + self._col_offsets(theme)[-1]
         guide = theme.unit * 1.4
         label_gap = theme.unit * 0.7
         font = theme.size_px("small")
@@ -995,9 +1051,10 @@ class Matrix(Element):
             )
             n_max = max(len(lines) for lines in lines_per_group)
             line_y = y + col_band - theme.unit * 0.35
+            xs = self._col_offsets(theme)
             for group, lines in zip(self.col_groups, lines_per_group):
-                start = mx + group.start * c
-                stop = mx + group.stop * c
+                start = mx + xs[group.start]
+                stop = mx + xs[group.stop]
                 color = theme.color_of(group.role)
                 canvas.line(start, line_y, stop, line_y,
                             stroke=color, stroke_width=theme.line)
@@ -1052,8 +1109,9 @@ class Matrix(Element):
     def _render_partitions(self, canvas: Canvas, mx: float, my: float,
                            c: float, theme: Theme) -> None:
         color = theme.paint_of("border_strong")
+        xs = self._col_offsets(theme)
         for partition in self.col_partitions:
-            px = mx + partition * c
+            px = mx + xs[partition]
             canvas.line(
                 px, my, px, my + self.rows * c,
                 stroke=color, stroke_width=theme.thick,
@@ -1061,7 +1119,7 @@ class Matrix(Element):
         for partition in self.row_partitions:
             py = my + partition * c
             canvas.line(
-                mx, py, mx + self.cols * c, py,
+                mx, py, mx + xs[-1], py,
                 stroke=color, stroke_width=theme.thick,
             )
 
@@ -1077,6 +1135,10 @@ class Matrix(Element):
         else:
             _register_implicit_obstacle(x, y, size.w, size.h)
         c = self._cell_px(theme)
+        widths = self._col_widths(theme)
+        xs = [0.0]
+        for width in widths:
+            xs.append(xs[-1] + width)
         row_group_w = self._group_space(theme, "row")
         col_group_h = self._group_space(theme, "col")
         row_lbl_w = self._label_space(theme, "row")
@@ -1095,7 +1157,7 @@ class Matrix(Element):
         if col_labels:
             sz = theme.size_px("small")
             for j, lbl in enumerate(col_labels):
-                cx = mx + j * c + c / 2
+                cx = mx + xs[j] + widths[j] / 2
                 if self.col_label_position == "top":
                     baseline = y + col_group_h + col_lbl_h - theme.unit * 0.3
                 else:
@@ -1117,7 +1179,7 @@ class Matrix(Element):
         row_labels = self._resolve_labels("row")
         if row_labels:
             sz = theme.size_px("small")
-            sub_sz = theme.size_px("tiny")
+            sub_sz = theme.size_px(self.row_sublabel_size)
             sub_advance = sub_sz * 1.3
             for i, lbl in enumerate(row_labels):
                 lines = self._row_label_lines(lbl)
@@ -1146,13 +1208,14 @@ class Matrix(Element):
                 val = self.data[i][j]
                 masked = self.mask is not None and self.mask[i][j]
                 is_pruned = i in self.highlight_rows or j in self.highlight_cols
-                cx, cy = mx + j * c, my + i * c
+                cx, cy = mx + xs[j], my + i * c
                 if self._structured:
                     self._render_structured_cell(
                         canvas,
                         val,
                         cx,
                         cy,
+                        widths[j],
                         c,
                         theme,
                         vmin,
@@ -1170,7 +1233,7 @@ class Matrix(Element):
                     canvas.rect(
                         cx + 1,
                         cy + 1,
-                        c - 2,
+                        widths[j] - 2,
                         c - 2,
                         fill=theme.color_of("#f8fafc"),
                         stroke=theme.color_of("border_strong"),
@@ -1183,7 +1246,7 @@ class Matrix(Element):
                     canvas.rect(
                         cx + 1,
                         cy + 1,
-                        c - 2,
+                        widths[j] - 2,
                         c - 2,
                         fill=color,
                         stroke="#1e3a8a" if self.palette == "blues" else "none",
@@ -1196,7 +1259,7 @@ class Matrix(Element):
                         "white" if use_val > (vmin + vmax) / 2 else theme.text
                     )
                     canvas.text(
-                        cx + c / 2,
+                        cx + widths[j] / 2,
                         cy + c / 2 + theme.size_px("tiny") * 0.33,
                         f"{val:.2f}",
                         size=theme.size_px("tiny"),
@@ -1214,7 +1277,7 @@ class Matrix(Element):
             canvas.rect(
                 mx - 1,
                 my + i * c + 1,
-                self.cols * c + 2,
+                xs[-1] + 2,
                 c - 2,
                 fill="none",
                 stroke=theme.highlight,
@@ -1224,9 +1287,9 @@ class Matrix(Element):
             )
         for j in self.highlight_cols:
             canvas.rect(
-                mx + j * c + 1,
+                mx + xs[j] + 1,
                 my - 1,
-                c - 2,
+                widths[j] - 2,
                 self.rows * c + 2,
                 fill="none",
                 stroke=theme.highlight,
