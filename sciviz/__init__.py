@@ -91,6 +91,7 @@ from .layout import (
     Panel,
     AlignedStack,
     WrapRow,
+    Rhythm,
 )
 
 # ----- generic elements ----------------------------------------------------
@@ -126,16 +127,18 @@ from .math import Math
 
 # ----- charts --------------------------------------------------------------
 from .charts import (
-    Table, AlignedColumns, BarChart, DonutChart, GroupSummary, Part,
+    Table, TableSpan, AlignedColumns, BarChart, DonutChart, GroupSummary, Part,
 )
 
 # ----- specialized ---------------------------------------------------------
 from .specialized import (
     Annotate, Bar, BarGroup, BarSeries, FillBetween, GroupedBarChart, LineChart, Pyramid,
-    MiniGraph, MiniMatrix, MiniPoint, MiniRaster, MiniScatter,
+    MiniArea, MiniCell, MiniGraph, MiniMatrix, MiniPoint, MiniRaster, MiniScatter,
     MiniTimeline, Scatter, Series,
     SeriesDelta, SlopeRecord, SlopeReference, Slopegraph, SparkLine, Sparkline,
-    Timeline,
+    ShareBar, StepGroup, StepLane, StepLanes, StepLink, StepMark, Timeline,
+    StepRaster, RasterRow, RasterLink, CoreChip, Core, CoreLink, LayerNet, NetLayer, ThinArrow,
+    PointArrow, PointArrows,
 )
 
 # ----- structures (high-level layout primitives) --------------------------
@@ -201,6 +204,7 @@ from .graphs import (
 
 # ----- top-level Diagram ---------------------------------------------------
 from .diagram import Diagram
+from ._fit_report import FitReport
 
 __all__ = [
     # core
@@ -210,6 +214,7 @@ __all__ = [
     "Aspect", "Spacer", "FixedSize", "Row", "Column", "Grid", "Panel",
     "AlignedStack",
     "WrapRow",
+    "Rhythm",
     # elements
     "Text", "TextBlock", "Span", "Box", "Chip",
     "Matrix", "MatrixCell", "MatrixGroup", "MatrixSelection", "ColorScale", "ColorBar",
@@ -218,14 +223,16 @@ __all__ = [
     # math
     "Math",
     # charts
-    "Table", "AlignedColumns", "BarChart", "Part", "GroupSummary", "DonutChart",
+    "Table", "TableSpan", "AlignedColumns", "BarChart", "Part", "GroupSummary", "DonutChart",
     # specialized
     "Pyramid", "Timeline", "Scatter", "LineChart", "Series", "FillBetween",
     "SeriesDelta", "Annotate",
     "GroupedBarChart", "Bar", "BarGroup", "BarSeries", "SparkLine", "Sparkline",
     "Slopegraph", "SlopeRecord", "SlopeReference",
-    "MiniMatrix", "MiniGraph", "MiniTimeline", "MiniRaster",
-    "MiniScatter", "MiniPoint",
+    "MiniMatrix", "MiniGraph", "MiniTimeline", "MiniRaster", "MiniCell",
+    "MiniScatter", "MiniPoint", "MiniArea",
+    "StepLanes", "StepLane", "StepGroup", "StepLink", "StepMark", "ShareBar",
+    "StepRaster", "RasterRow", "RasterLink", "CoreChip", "Core", "CoreLink", "LayerNet", "NetLayer", "ThinArrow", "PointArrow", "PointArrows",
     # structures
     "Section", "BlockGroup",
     # primitives
@@ -249,6 +256,7 @@ __all__ = [
     "FlowPort", "FlowRef", "FlowNode", "FlowEdge", "FlowGroup", "FlowGraph",
     # root
     "Diagram",
+    "FitReport",
 ]
 
 __version__ = "0.3.0"

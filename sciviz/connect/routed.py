@@ -34,7 +34,16 @@ class _RoutedConnect(Element):
                  style: str,
                  curvature: float,
                  detour: float,
-                 clearance: Optional[float] = None):
+                 clearance: Optional[float] = None,
+                 ports: str = "centred",
+                 label_style: str = "beside",
+                 src_at: Optional[str] = None,
+                 dst_at: Optional[str] = None,
+                 label_side: str = "auto",
+                 label_frame: Optional[str] = None,
+                 src_room: Optional[float] = None,
+                 dst_room: Optional[float] = None,
+                 min_shaft: Optional[float] = None):
         self._flow = Flow(
             src_name, dst_name,
             src_side=src_side,
@@ -48,6 +57,15 @@ class _RoutedConnect(Element):
             arrow=head,
             style=style,
             clearance=clearance,
+            ports=ports,
+            label_style=label_style,
+            src_at=src_at,
+            dst_at=dst_at,
+            label_side=label_side,
+            label_frame=label_frame,
+            src_room=src_room,
+            dst_room=dst_room,
+            min_shaft=min_shaft,
         )
         # Preserve the head spec for richer arrowhead control if we need it.
         self._head_spec = head

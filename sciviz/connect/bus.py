@@ -24,7 +24,12 @@ class _BusConnect(Element):
                  dashed: bool,
                  head,
                  orientation: str,
-                 auto_route: bool = True):
+                 auto_route: bool = True,
+                 min_shaft: Optional[float] = None,
+                 src_room: Optional[float] = None,
+                 dst_room: Optional[float] = None,
+                 corner_radius: Optional[float] = None,
+                 flush_head: bool = False):
         self._bus = Bus(
             sources=sources,
             sinks=sinks,
@@ -34,6 +39,11 @@ class _BusConnect(Element):
             arrow=bool(head) if head is not False else False,
             orientation=orientation,
             auto_route=auto_route,
+            min_shaft=min_shaft,
+            src_room=src_room,
+            dst_room=dst_room,
+            corner_radius=corner_radius,
+            flush_head=flush_head,
         )
 
     def measure(self, theme: Theme) -> BBox:

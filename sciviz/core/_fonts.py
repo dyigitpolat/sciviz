@@ -473,6 +473,25 @@ def measure_text_width(text: str, size_px: float,
                        italic: bool = False) -> Optional[float]:
     """Measured advance width of one text line in px, or ``None``.
 
+    Layout asks for the same few hundred strings millions of times (every
+    measure of every container re-measures its text), so the measurement
+    at the reference size is memoised per ``(text, family, face)`` and
+    scaled; see :func:`_measure_text_width_at_ref`.
+    """
+    if not text:
+        return 0.0
+    ref = _measure_text_width_at_ref(text, font_family, bool(bold),
+                                     bool(italic))
+    if ref is None:
+        return None
+    return ref * (float(size_px) / _REF_SIZE)
+
+
+@functools.lru_cache(maxsize=65536)
+def _measure_text_width_at_ref(text: str, font_family: Optional[str],
+                               bold: bool, italic: bool) -> Optional[float]:
+    """Measured advance width of one text line in px, or ``None``.
+
     Uses the same font files the exporters embed/outline, selecting the face
     per requested weight and style, and -- like them -- honouring the family
     stack per glyph. Measuring a mixed string against the preferred face alone
@@ -482,8 +501,6 @@ def measure_text_width(text: str, size_px: float,
     while the same string outlined correctly. Returns ``None`` when no usable
     font (or matplotlib) is available so callers can fall back to a heuristic.
     """
-    if not text:
-        return 0.0
     registry = _registry_for(font_family)
     if registry is None:
         return None
@@ -503,7 +520,7 @@ def measure_text_width(text: str, size_px: float,
                 return None
             total += w
         widths.append(total)
-    return max(widths) * (float(size_px) / _REF_SIZE)
+    return max(widths)
 
 
 def _strip_namespace(tag: str) -> str:
@@ -982,7 +999,9 @@ def outline_svg_text(svg_source: str, registry: Optional[FontRegistry] = None,
             if _strip_namespace(child.tag) != "text":
                 continue
             text = "".join(child.itertext())
-            if not text:
+            if not text.strip():
+                # a run of blanks draws no ink (an empty title kept for
+                # alignment); matplotlib raises on its empty vertex array
                 continue
 
             size = _float_attr(child, "font-size", 11.0)

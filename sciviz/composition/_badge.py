@@ -30,6 +30,12 @@ class Badge(Element):
         Font weight for the label.
     bordered : bool
         If True, draw a thin stroke around the badge.
+    label_pad : float, optional
+        Room added to an Element label's width and height when the disc
+        is sized around it (both sides together). ``None`` (default)
+        keeps 1.1 theme units. A smaller value lets a glyph such as a
+        check ``Icon`` fill more of a small disc: a mark of side ``s`` in
+        a disc of ``s + label_pad``.
     """
 
     # Sentinel: "auto" means "pick a fill based on bordered-ness".
@@ -46,7 +52,10 @@ class Badge(Element):
                  text_size: str = "small",
                  text_weight: str = "700",
                  bordered: bool = False,
-                 stroke_color = None):
+                 stroke_color = None,
+                 label_pad: Optional[float] = None):
+        if label_pad is not None and float(label_pad) < 0.0:
+            raise ValueError("Badge.label_pad must not be negative")
         if not isinstance(label, (str, Element)):
             raise TypeError(
                 f"Badge.label must be str or Element; got {type(label)}"
@@ -61,6 +70,7 @@ class Badge(Element):
         self.text_weight = text_weight
         self.bordered = bordered
         self.stroke_color = stroke_color
+        self.label_pad = None if label_pad is None else float(label_pad)
 
     def _diameter(self, theme: Theme) -> float:
         if isinstance(self.size, str):
@@ -69,10 +79,12 @@ class Badge(Element):
             floor = float(self.size)
         if isinstance(self.label, Element):
             label = self.label.measure(theme)
+            pad = (theme.unit * 1.1 if self.label_pad is None
+                   else self.label_pad)
             floor = max(
                 floor,
-                label.w + theme.unit * 1.1,
-                label.h + theme.unit * 1.1,
+                label.w + pad,
+                label.h + pad,
             )
         return floor
 

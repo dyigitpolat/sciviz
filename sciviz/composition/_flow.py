@@ -13,7 +13,44 @@ from typing import List, Optional, Sequence, Union
 from ..core import BBox, Canvas, Element, Theme
 from ..elements import Text, TextBlock
 from ..layout import Row, Column, Spacer
-from ._anchor import Anchor, _side_point, _side_point_frac
+from ._anchor import Anchor, _side_point, _side_point_frac, port_face
+
+
+def _draw_capsules(canvas: Canvas, placed, text: str, size_px: float,
+                   fill: str, theme: Theme, size) -> None:
+    """Set a capsule caption: every line its own pill (light fill, thin
+    darker edge, fully rounded ends), stacked and centred in the placed
+    rectangle, the text centred in its pill."""
+    from ..auto.labels import capsule_geometry
+    pad_x, pill_h, gap = capsule_geometry(theme, size)
+    lines = text.split("\n")
+    x0, y0, x1, y1 = placed.rect
+    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    total = len(lines) * pill_h + (len(lines) - 1) * gap
+    rotation = getattr(placed, "rotation", 0.0)
+    if fill is None:
+        fill = theme.color_of(getattr(theme, "label_capsule_text", "text"))
+    pill_fill = theme.color_of(getattr(theme, "label_capsule_fill", "#f6d5e0"))
+    pill_edge = theme.color_of(getattr(theme, "label_capsule_stroke", "#d98ca8"))
+    edge_w = float(getattr(theme, "hairline", 0.5))
+    for i, line in enumerate(lines):
+        w = max(theme.text_width(line, size) + 2.0 * pad_x, pill_h)
+        # this pill's centre along the stacking axis
+        off = -total / 2.0 + i * (pill_h + gap) + pill_h / 2.0
+        if rotation:
+            px, py = cx + off, cy
+            canvas.rect(px - pill_h / 2.0, py - w / 2.0, pill_h, w,
+                        fill=pill_fill, stroke=pill_edge,
+                        stroke_width=edge_w, rx=pill_h / 2.0)
+            canvas.text(px, py, line, size=size_px, fill=fill,
+                        anchor="middle", baseline="middle", rotate=rotation)
+        else:
+            px, py = cx, cy + off
+            canvas.rect(px - w / 2.0, py - pill_h / 2.0, w, pill_h,
+                        fill=pill_fill, stroke=pill_edge,
+                        stroke_width=edge_w, rx=pill_h / 2.0)
+            canvas.text(px, py + size_px * 0.32, line, size=size_px,
+                        fill=fill, anchor="middle")
 
 
 def _draw_placed_label(canvas: Canvas, placed, text: str, size_px: float,
@@ -56,7 +93,12 @@ def _draw_placed_label(canvas: Canvas, placed, text: str, size_px: float,
     # space around it, or one that opens a token, still reads as an
     # operator and still italicises.
     probe = _re.sub(r"(?<=\w)-(?=\w)", "", stripped)
-    symbolic = (
+    # A caption of two or more real words is a phrase even when it quotes
+    # an operator ("dose per kilogram, x0.25 to x4", "mean -> median"):
+    # the operator is part of the prose, and one italic phrase among
+    # upright captions reads as a different kind of label.
+    phrase = len(_re.findall(r"[^\W\d_]{3,}", probe)) >= 2
+    symbolic = not phrase and (
         (" " not in stripped and len(stripped) <= 3)
         or any(ch in probe for ch in "_{}^=+-×÷∑∏∈→←λμσ")
     )
@@ -95,6 +137,13 @@ class Flow:
 
     _STYLE_UNSET = object()
 
+    def _frame(self, theme: Theme) -> str:
+        """The caption frame: this flow's own, else the theme's."""
+        f = getattr(self, "label_frame", None)
+        if f is None:
+            f = getattr(theme, "connector_label_frame", "none")
+        return f
+
     def __init__(self, src: str, dst: str, *,
                  src_side: str = "auto",
                  dst_side: str = "auto",
@@ -108,8 +157,71 @@ class Flow:
                  auto_route: bool = True,
                  route_around_labels: bool = False,
                  clearance: Optional[float] = None,
-                 style = _STYLE_UNSET):
+                 style = _STYLE_UNSET,
+                 ports: str = "centred",
+                 label_style: str = "beside",
+                 src_at: Optional[str] = None,
+                 dst_at: Optional[str] = None,
+                 label_side: str = "auto",
+                 label_frame: Optional[str] = None,
+                 src_room: Optional[float] = None,
+                 dst_room: Optional[float] = None,
+                 min_shaft: Optional[float] = None):
         """
+        ``min_shaft`` -- the least straight shaft (px) that stays visible
+            between the wire's last bend and the base of its arrowhead.
+            ``None`` (default) keeps the planner's own stub floor. A
+            number raises the floor of every end that carries a head to
+            the head plus that shaft: the planner keeps the last bend of
+            a bridged route that far from the head while the corridor
+            allows, and on a pinned side whose room the author did not
+            set the layout reserves that much beside the anchor. An arm
+            the layout fixes shorter (the elbow of an L route) is
+            reported by the shaft check (``Diagram.short_shafts``).
+
+        ``src_room`` / ``dst_room`` -- the room (px) the layout reserves
+            beside the source / destination anchor on a pinned side for
+            this wire's shaft. ``None`` (default) keeps the automatic
+            reservation (the flow space, or a caption-sized corridor for
+            a labelled wire). A number sets it, for an end whose shaft
+            already has visible room in a boundary's padding or beyond
+            it (an arrow entering a card inside a region from outside
+            the region): ``0`` reserves nothing there.
+
+        ``label_frame`` -- ``"none"`` (plain caption) or ``"capsule"``:
+            every line of the caption is set as its own rounded pill
+            (``Theme.label_capsule_fill`` / ``label_capsule_stroke``),
+            stacked when there are several, never re-wrapped or turned.
+            ``None`` (default) takes ``Theme.connector_label_frame``.
+
+        ``src_at`` / ``dst_at`` -- the name of an anchor *inside* that
+            endpoint. The wire still lands on the endpoint's own frame
+            (it never crosses into a card to reach an inner title or
+            badge), at the point of the chosen side level with the inner
+            anchor's centre. Overrides the ``ports`` share for that end.
+
+        ``label_style`` -- ``"beside"`` (default) sets the caption next to
+            its wire; ``"on-wire"`` centres it on the wire over a
+            page-coloured halo, so the caption occupies the wire's own
+            lane (stacked lanes of labelled wires then need one caption
+            height apart, not two). Falls back to ``"beside"`` when no leg
+            can carry the caption.
+
+        ``label_side`` -- ``"auto"`` (default) lets the placer pick the
+            caption's leg and side; ``"left"``/``"right"`` set it beside a
+            vertical leg on that side, ``"above"``/``"below"`` beside a
+            horizontal leg (the vocabulary of :class:`Arrow`). Give sibling
+            wires crossing one gutter the same side and their captions
+            read as one set.
+
+        ``ports`` -- where on its side each end attaches when the two
+            faces do not overlap: ``"centred"`` (default) at the middle of
+            the side; ``"facing"`` in the half of the side that faces the
+            other end, so a wire that leaves the top of a card and turns
+            toward a neighbour leaves from that neighbour's side of the
+            card (shorter, and clear of whatever sits over the far half,
+            such as a title).
+
         ``src_side`` / ``dst_side`` -- which side of each bbox the flow
             attaches to.  Default ``"auto"`` picks the boundary side facing
             the other anchor: above/below/left/right.  Named sides:
@@ -132,6 +244,25 @@ class Flow:
         """
         if style is Flow._STYLE_UNSET:
             style = "orthogonal" if auto_route else "straight"
+        if ports not in ("centred", "facing"):
+            raise ValueError(
+                f"ports must be 'centred' or 'facing'; got {ports!r}")
+        if label_style not in ("beside", "on-wire"):
+            raise ValueError(
+                f"label_style must be 'beside' or 'on-wire'; got {label_style!r}")
+        if label_side not in ("auto", "left", "right", "above", "below"):
+            raise ValueError(
+                "label_side must be 'auto', 'left', 'right', 'above' or "
+                f"'below'; got {label_side!r}")
+        self.label_side = label_side
+        if label_frame not in (None, "none", "capsule"):
+            raise ValueError(
+                f"label_frame must be 'none' or 'capsule'; got {label_frame!r}")
+        self.label_frame = label_frame
+        self.ports = ports
+        self.label_style = label_style
+        self.src_at = src_at
+        self.dst_at = dst_at
         self.src = src
         self.dst = dst
         self.src_side = src_side
@@ -146,6 +277,14 @@ class Flow:
         self.style = style
         self.route_around_labels = route_around_labels
         self.clearance = clearance
+        for _name, _room in (("src_room", src_room), ("dst_room", dst_room)):
+            if _room is not None and float(_room) < 0.0:
+                raise ValueError(f"{_name} must be >= 0; got {_room!r}")
+        self.src_room = None if src_room is None else float(src_room)
+        self.dst_room = None if dst_room is None else float(dst_room)
+        if min_shaft is not None and float(min_shaft) < 0.0:
+            raise ValueError(f"min_shaft must be >= 0; got {min_shaft!r}")
+        self.min_shaft = None if min_shaft is None else float(min_shaft)
 
     def _head_flags(self) -> tuple[bool, bool]:
         if self.arrow is True or self.arrow == "end":
@@ -186,7 +325,9 @@ class Flow:
         """Resolve the obstacle-clearance margin for this flow."""
         if self.clearance is not None:
             return max(0.0, float(self.clearance))
-        return theme.unit * (4.0 / 3.0)
+        # Hard floor: a wire closer than min_space to a card edge reads
+        # as part of the border.
+        return max(theme.unit * (4.0 / 3.0), theme.min_space)
 
     @staticmethod
     def _auto_side(self_bbox, other_bbox):
@@ -255,15 +396,34 @@ class Flow:
                          self._auto_side(db, sb))
             if self.dst_side == "auto" else self.dst_side
         )
-        src_frac = getattr(self, "_share_src_frac", 0.5)
-        dst_frac = getattr(self, "_share_dst_frac", 0.5)
-        sx, sy = _side_point_frac(sb, src_side, src_frac)
-        dx, dy = _side_point_frac(db, dst_side, dst_frac)
+        sp = _body_port(registry, self.src, src_side)
+        dp = _body_port(registry, self.dst, dst_side)
+        # Shares (``_assign_edge_shares``) already pin ``src_at`` /
+        # ``dst_at`` ends and separate their neighbours; without a share
+        # pass the inner anchor still decides the tap.
+        src_frac = getattr(self, "_share_src_frac", None)
+        if src_frac is None:
+            src_frac = _at_fraction(sp or sb, src_side,
+                                    registry.get(self.src_at or ""), 0.5)
+        dst_frac = getattr(self, "_share_dst_frac", None)
+        if dst_frac is None:
+            dst_frac = _at_fraction(dp or db, dst_side,
+                                    registry.get(self.dst_at or ""), 0.5)
+        sp = _clear_port(registry, self.src, sb, sp, src_side, src_frac)
+        dp = _clear_port(registry, self.dst, db, dp, dst_side, dst_frac)
+        sx, sy = _side_point_frac(sp or sb, src_side, src_frac)
+        dx, dy = _side_point_frac(dp or db, dst_side, dst_frac)
 
         col = theme.color_of(self.color)
         label_col = theme.color_of(
             self.label_color if self.label_color is not None else self.color
         )
+        # a capsule's text is the theme's capsule ink unless the author
+        # coloured the caption (it sits on the pill, not beside the wire)
+        capsule_ink = (theme.color_of(self.label_color)
+                       if self.label_color is not None
+                       and getattr(self, "capsule_ink_authored", True)
+                       else None)
         sw = theme.connector
         dash = "5,3" if self.dashed else None
         marker_start, marker_end = self._head_flags()
@@ -322,8 +482,6 @@ class Flow:
                 all_anchors.append(_rt.Box(x=ix0, y=iy0,
                                            w=ix1 - ix0, h=iy1 - iy0,
                                            name="__ink__", kind="anchor"))
-            src_frac = getattr(self, "_share_src_frac", 0.5)
-            dst_frac = getattr(self, "_share_dst_frac", 0.5)
             drawn_so_far = registry.get("__drawn_segments__", ())
             from dataclasses import replace as _dc_replace
             # The planner must know how much of each stub the
@@ -332,6 +490,21 @@ class Flow:
             policy = _dc_replace(_rt.DEFAULT_POLICY,
                                  min_clearance=self._clearance_px(theme),
                                  head_len=theme.arrow_head_px)
+            # An author-set shaft (``min_shaft``) raises the stub floor of
+            # each end that carries a head to the head plus that shaft, so
+            # the last bend of a bridged route keeps that far from it.
+            src_tap_len = dst_tap_len = tap
+            _min_shaft = getattr(self, "min_shaft", None)
+            if _min_shaft is not None and (marker_start or marker_end):
+                policy = _dc_replace(
+                    policy,
+                    src_shaft=_min_shaft if marker_start else None,
+                    dst_shaft=_min_shaft if marker_end else None)
+                _need = theme.arrow_head_px + _min_shaft
+                if marker_end:
+                    dst_tap_len = max(tap, _need)
+                if marker_start:
+                    src_tap_len = max(tap, _need)
             # A labeled wire is only valid when some arm can carry its
             # caption; hand the measured caption box to the planner so
             # short-armed candidates are rejected while alternatives
@@ -346,7 +519,8 @@ class Flow:
                     self.label, theme,
                     getattr(theme, "connector_label_size", "small"),
                     src_side=self.src_side, dst_side=self.dst_side,
-                    neighbour_extent=neighbour_extent)
+                    neighbour_extent=neighbour_extent,
+                    frame=self._frame(theme))
                 _probe = _probe_fit.label
                 caption = _probe.text
                 label_extent = (_probe.width, _probe.height)
@@ -356,11 +530,20 @@ class Flow:
                 # the two disagree and the route runs away looking for an
                 # arm the caption does not need.
                 label_rotatable = not _probe_fit.upright
+            bounds = _scope_bounds(
+                all_anchors + all_regions + [src_box, dst_box],
+                drawn_so_far,
+                lane=(max(tap, policy.min_tap + policy.head_len)
+                      + policy.min_clearance
+                      + (max(label_extent) + theme.unit
+                         if label_extent else 0.0)))
             plan = _rt.plan_path(
-                _rt.Endpoint(src_box, src_side, tap=tap,
-                             tap_fraction=src_frac),
-                _rt.Endpoint(dst_box, dst_side, tap=tap,
-                             tap_fraction=dst_frac),
+                _rt.Endpoint(src_box, src_side, tap=src_tap_len,
+                             tap_fraction=src_frac,
+                             port=_rt_box(sp, self.src)),
+                _rt.Endpoint(dst_box, dst_side, tap=dst_tap_len,
+                             tap_fraction=dst_frac,
+                             port=_rt_box(dp, self.dst)),
                 anchors=all_anchors,
                 regions=all_regions,
                 existing_segments=list(drawn_so_far),
@@ -368,6 +551,8 @@ class Flow:
                 label_extent=label_extent,
                 label_gap=theme.unit,
                 label_rotatable=label_rotatable,
+                label_inline=self.label_style == "on-wire",
+                bounds=bounds,
             )
 
             # Retain `anchor_obstacles` for label-placement collision
@@ -397,7 +582,7 @@ class Flow:
                 # and makes dense paper figures look like editor debug output.
                 src_dot=False,
                 existing_segments=drawn_before,
-                hop_radius=max(2.5, sw * 2.5),
+                hop_radius=_rt.hop_radius(sw),
             )
             # Record the segments we just drew so subsequent flows can
             # detect crossings against them.
@@ -424,7 +609,8 @@ class Flow:
                 lbl = fitted_caption(
                     self.label, theme, sz_tok,
                     src_side=self.src_side, dst_side=self.dst_side,
-                    neighbour_extent=neighbour_extent)
+                    neighbour_extent=neighbour_extent,
+                    frame=self._frame(theme))
                 all_anchor_obstacles = [
                     (ox, oy, ox + ow, oy + oh)
                     for ox, oy, ow, oh in anchor_obstacles
@@ -439,9 +625,11 @@ class Flow:
                 # label's own legs are handled by the placer itself.)
                 own = set(own_segments)
                 wire_pad = max(0.5, sw)
+                foreign = []
                 for seg in registry.get("__drawn_segments__", ()):  # noqa: B023
                     if seg in own:
                         continue
+                    foreign.append(seg)
                     ex1, ey1, ex2, ey2 = seg
                     all_anchor_obstacles.extend(
                         segment_rects([(ex1, ey1), (ex2, ey2)], wire_pad))
@@ -450,17 +638,33 @@ class Flow:
                 # dodging cards, other labels, other wires, and the
                 # wire's own perpendicular legs; in walled corridors it
                 # falls back to an on-wire placement with a halo.
-                placed = place_polyline_label(
-                    path, lbl,
-                    obstacles=all_anchor_obstacles,
-                    prefer="above",
-                    gap=theme.unit * 1.0,
-                    wire_width=sw,
-                    bounds=self._containment_bounds(registry, sb, db),
-                )
-                _draw_placed_label(canvas, placed, lbl.text,
-                                   lbl.size_px, label_col,
-                                   halo_fill=theme.color_of("bg"))
+                bounds = self._containment_bounds(registry, sb, db)
+                placed = None
+                if self.label_style == "on-wire":
+                    from ..auto.labels import place_on_wire_label
+                    placed = place_on_wire_label(
+                        path, lbl, all_anchor_obstacles,
+                        gap=theme.unit * 1.0, wire_width=sw, bounds=bounds)
+                if placed is None:
+                    placed = place_polyline_label(
+                        path, lbl,
+                        obstacles=all_anchor_obstacles,
+                        prefer="above",
+                        gap=theme.unit * 1.0,
+                        wire_width=sw,
+                        bounds=bounds,
+                        foreign_segments=foreign,
+                        side=(None if self.label_side == "auto"
+                              else self.label_side),
+                    )
+                if lbl.frame == "capsule":
+                    _draw_capsules(canvas, placed,
+                                   getattr(placed, "text", None) or lbl.text,
+                                   lbl.size_px, capsule_ink, theme, sz_tok)
+                else:
+                    _draw_placed_label(canvas, placed, lbl.text,
+                                       lbl.size_px, label_col,
+                                       halo_fill=theme.color_of("bg"))
                 register_label_obstacle(registry, placed.rect, self.src)
 
             if defer_label:
@@ -500,14 +704,20 @@ class Flow:
                 obstacles += _free_ink(canvas, registry)
                 lbl = measure_label(
                     self.label, theme,
-                    getattr(theme, "connector_label_size", "small"))
+                    getattr(theme, "connector_label_size", "small"),
+                    frame=self._frame(theme))
                 placed = place_segment_label(
                     ((sx, sy), (dx, dy)), lbl, obstacles,
                     prefer="above", gap=theme.unit * 1.0,
                     bounds=self._containment_bounds(registry, sb, db),
                 )
-                _draw_placed_label(canvas, placed, self.label,
-                                   lbl.size_px, label_col)
+                if lbl.frame == "capsule":
+                    _draw_capsules(
+                        canvas, placed, self.label, lbl.size_px, capsule_ink,
+                        theme, getattr(theme, "connector_label_size", "small"))
+                else:
+                    _draw_placed_label(canvas, placed, self.label,
+                                       lbl.size_px, label_col)
                 register_label_obstacle(registry, placed.rect, self.src)
 
             if defer_label:
@@ -616,20 +826,164 @@ class Flow:
             obstacles += _free_ink(canvas, registry)
             lbl = measure_label(
                 self.label, theme,
-                getattr(theme, "connector_label_size", "small"))
+                getattr(theme, "connector_label_size", "small"),
+                frame=self._frame(theme))
             placed = place_curve_label(
                 [(sx, sy), c1, c2, (dx, dy)], lbl, obstacles,
                 prefer="above", gap=theme.unit * 1.0,
                 bounds=self._containment_bounds(registry, sb, db),
             )
-            _draw_placed_label(canvas, placed, self.label,
-                               lbl.size_px, label_col)
+            if lbl.frame == "capsule":
+                _draw_capsules(
+                    canvas, placed, self.label, lbl.size_px, capsule_ink,
+                    theme, getattr(theme, "connector_label_size", "small"))
+            else:
+                _draw_placed_label(canvas, placed, self.label,
+                                   lbl.size_px, label_col)
             register_label_obstacle(registry, placed.rect, self.src)
 
         if defer_label:
             return _curve_label_pass
         _curve_label_pass()
         return None
+
+
+def _scope_bounds(boxes, segments, lane: float):
+    """The region a wire in this scope may route through: the hull of
+    everything the scope has laid out or drawn so far (anchors, regions,
+    free ink, earlier wires), grown by one lane on every side.
+
+    Earlier wires count, so a second return lane stacked outside a first
+    one is still inside; the lane is what one more such detour needs
+    (stub, arrowhead, clearance and, for a captioned wire, its caption).
+    """
+    from .. import routing as _rt
+    xs, ys = [], []
+    for b in boxes:
+        xs += [b.left, b.right]
+        ys += [b.top, b.bottom]
+    for (x1, y1, x2, y2) in segments:
+        xs += [x1, x2]
+        ys += [y1, y2]
+    if not xs:
+        return None
+    x0, y0 = min(xs) - lane, min(ys) - lane
+    return _rt.Box(x=x0, y=y0, w=max(xs) + lane - x0, h=max(ys) + lane - y0,
+                   name="__scope__", kind="region")
+
+
+def _rt_box(box, name):
+    if box is None:
+        return None
+    from .. import routing as _rt
+    x, y, w, h = box
+    return _rt.Box(x=x, y=y, w=w, h=h, name=name, kind="anchor")
+
+
+def _body_port(registry: dict, name: str, side: str):
+    """The body box a wire to ``name`` lands on at ``side``, or None
+    (see :meth:`Element.port_bbox` and :func:`port_face`)."""
+    from ._anchor import PORT_PREFIX
+    ports = registry.get(PORT_PREFIX + name)
+    return ports.get(side) if ports else None
+
+
+def _clear_port(registry: dict, name: str, layout, port, side: str,
+                frac: float):
+    """The face a wire tapping ``port`` at ``frac`` lands on.
+
+    Where the run from the body out to the layout edge would cross the
+    element's own text at that point (an outside label, a frame tab, a
+    caption; see :func:`~sciviz.composition._anchor._blocked_spans`), the
+    face is pushed out to the ``layout`` edge on ``side`` -- the wire
+    stops there, at the same coordinate, instead of cutting the text.
+    """
+    if port is None:
+        return None
+    from ._anchor import PORT_PREFIX, blocked_key
+    blocked = (registry.get(PORT_PREFIX + name) or {}).get(
+        blocked_key(side), ())
+    x, y = _side_point_frac(port, side, frac)
+    along = x if side in ("top", "bottom") else y
+    if any(lo - 0.5 <= along <= hi + 0.5 for lo, hi in blocked):
+        px, py, pw, ph = port
+        lx, ly, lw, lh = layout
+        return {"top": (px, ly, pw, py + ph - ly),
+                "bottom": (px, py, pw, ly + lh - py),
+                "left": (lx, py, px + pw - lx, ph),
+                "right": (px, py, lx + lw - px, ph)}.get(side)
+    return port
+
+
+def _at_fraction(box, side: str, inner, default: float) -> float:
+    """Share fraction on ``box``'s ``side`` level with ``inner``'s centre."""
+    if inner is None or box is None:
+        return default
+    x, y, w, h = box
+    ix, iy, iw, ih = inner
+    inset = min(4.0, w * 0.2, h * 0.2)
+    if side in ("top", "bottom"):
+        lo, hi, c = x + inset, x + w - inset, ix + iw / 2
+    elif side in ("left", "right"):
+        lo, hi, c = y + inset, y + h - inset, iy + ih / 2
+    else:
+        return default
+    if hi <= lo:
+        return default
+    return max(0.0, min(1.0, (c - lo) / (hi - lo)))
+
+
+def _blocked(registry: dict, name: str, side: str) -> list:
+    """Stretches of ``name``'s ``side`` a wire should not tap (its own
+    label or tab lies between body and layout edge there)."""
+    from ._anchor import PORT_PREFIX, blocked_key
+    return list((registry.get(PORT_PREFIX + name) or {}).get(
+        blocked_key(side), ()))
+
+
+def _shared_coordinate(src_span, dst_span, src_inner, dst_inner,
+                       side: str, blocked=()):
+    """One coordinate both ends of a parallel wire can take, or None.
+
+    An end pinned to an inner anchor may attach anywhere along that
+    anchor's extent (clipped to its face ``*_span``); a free end anywhere
+    along its face. When those ranges overlap the wire needs no jog: it
+    runs straight at the pinned centre (the mean of both when both are
+    pinned), clamped into the overlap. ``None`` means the ranges are
+    disjoint and the router must add one jog.
+    """
+    if src_span is None or dst_span is None:
+        return None
+    along = 0 if side in ("top", "bottom") else 1
+
+    def extent(span, inner):
+        if inner is None:
+            return span[0], span[1], None
+        lo = max(span[0], inner[along])
+        hi = min(span[1], inner[along] + inner[2 + along])
+        return lo, hi, inner[along] + inner[2 + along] / 2.0
+
+    s_lo, s_hi, s_c = extent(src_span, src_inner)
+    d_lo, d_hi, d_c = extent(dst_span, dst_inner)
+    lo, hi = max(s_lo, d_lo), min(s_hi, d_hi)
+    if lo > hi:
+        return None
+    centres = [c for c in (s_c, d_c) if c is not None]
+    if not centres:
+        return None
+    target = sum(centres) / len(centres)
+    # Skip stretches guarded by either end's own label or tab, so the
+    # wire meets the frame beside them rather than their outer edge.
+    clear, cursor = [], lo
+    for b0, b1 in sorted(blocked):
+        if b0 > cursor:
+            clear.append((cursor, min(b0, hi)))
+        cursor = max(cursor, b1)
+    if cursor < hi:
+        clear.append((cursor, hi))
+    clear = [(a, b) for a, b in clear if b - a > 1.0] or [(lo, hi)]
+    return min((max(a, min(b, target)) for a, b in clear),
+               key=lambda c: abs(c - target))
 
 
 def label_corridor_reservation(spec, theme: Theme, side: str,
@@ -669,10 +1023,13 @@ def label_corridor_reservation(spec, theme: Theme, side: str,
     if not label:
         return base
     from ..auto.labels import caption_fit
+    frame = getattr(spec, "label_frame", None)
+    if frame is None:
+        frame = getattr(theme, "connector_label_frame", "none")
     fit = caption_fit(
         label, theme, getattr(theme, "connector_label_size", "small"),
         src_side=spec.src_side, dst_side=spec.dst_side,
-        neighbour_extent=neighbour_extent)
+        neighbour_extent=neighbour_extent, frame=frame)
     lbl = fit.label
     gap = theme.unit
     horizontal_pair = {side, other_side} == {"left", "right"}
@@ -695,11 +1052,40 @@ def label_corridor_reservation(spec, theme: Theme, side: str,
         # cramped inter-zone corridors: the placer was forced to hang
         # them past the arm's elbow as a last resort.
         cross = min(lbl.width, lbl.height)
+        if getattr(spec, "label_style", "beside") == "on-wire":
+            # The caption rides on the wire itself: the lane holds the
+            # wire's clearance and half the caption on either side of it.
+            return max(base, base / 2.0 + cross / 2.0 + gap)
         return max(base, base / 2.0 + cross + 2.0 * gap)
     return max(base, along / 2.0 + gap)
 
 
-def _assign_edge_shares(specs, registry: dict) -> None:
+#: Where a ``ports="facing"`` end attaches along its side: this far from
+#: the side's middle toward the other end (0.5 would be the corner).
+_FACING_OFFSET = 0.3
+
+
+def _facing_fraction(own, side: str, other) -> float:
+    """Port fraction on ``own``'s ``side`` in the half facing ``other``.
+
+    Only a partner lying wholly beyond the side's own extent pulls the
+    port; one whose extent overlaps it leaves the port centred (the
+    projected-coordinate rule then applies to parallel faces).
+    """
+    along = 0 if side in ("top", "bottom") else 1
+    lo = own[along]
+    hi = own[along] + own[2 + along]
+    o_lo = other[along]
+    o_hi = other[along] + other[2 + along]
+    if o_lo >= hi:
+        return 0.5 + _FACING_OFFSET
+    if o_hi <= lo:
+        return 0.5 - _FACING_OFFSET
+    return 0.5
+
+
+def _assign_edge_shares(specs, registry: dict,
+                        theme: Optional[Theme] = None) -> None:
     """Choose clean attachment ports for a set of routed flows.
 
     Parallel node faces first try to share one projected coordinate.  When
@@ -707,6 +1093,12 @@ def _assign_edge_shares(specs, registry: dict) -> None:
     one straight segment even if the larger node's midpoint differs.
     Multiple flows retain those projected coordinates and are separated only
     when their ports would collide.
+
+    Ports on one side are ordered so wires never cross: a wire that can
+    run straight keeps its projected coordinate, and wires turning away
+    from it take the ports on the side they turn toward. Neighbouring
+    ports sit at least one wire clearance apart (with ``theme``), so the
+    router never has to jog a wire off a port to keep that clearance.
 
     Both :class:`Flowed` and the implicit ``Connect`` resolver call this
     function; it is deliberately the sole port-assignment implementation.
@@ -730,6 +1122,9 @@ def _assign_edge_shares(specs, registry: dict) -> None:
                          flow._auto_side(db, sb))
             if flow.dst_side == "auto" else flow.dst_side
         )
+        # Shares are judged on the faces wires land on (body ports).
+        sb = port_face(registry, flow.src, src_side) or sb
+        db = port_face(registry, flow.dst, dst_side) or db
         flow_endpoints.append((flow, sb, db, src_side, dst_side))
 
     def edge_span(bbox, side):
@@ -750,6 +1145,7 @@ def _assign_edge_shares(specs, registry: dict) -> None:
         return max(0.0, min(1.0, (coordinate - lo) / (hi - lo)))
 
     preferred: dict[tuple[int, str], float] = {}
+    straight_ends: set[int] = set()
     for flow, sb, db, src_side, dst_side in flow_endpoints:
         src_span = edge_span(sb, src_side)
         dst_span = edge_span(db, dst_side)
@@ -761,6 +1157,9 @@ def _assign_edge_shares(specs, registry: dict) -> None:
             and dst_side in ("left", "right")
         )
         src_fraction = dst_fraction = 0.5
+        if getattr(flow, "ports", "centred") == "facing":
+            src_fraction = _facing_fraction(sb, src_side, db)
+            dst_fraction = _facing_fraction(db, dst_side, sb)
         if parallel and src_span is not None and dst_span is not None:
             overlap_lo = max(src_span[0], dst_span[0])
             overlap_hi = min(src_span[1], dst_span[1])
@@ -772,6 +1171,30 @@ def _assign_edge_shares(specs, registry: dict) -> None:
                 coordinate = max(overlap_lo, min(overlap_hi, coordinate))
                 src_fraction = fraction_for(src_span, coordinate)
                 dst_fraction = fraction_for(dst_span, coordinate)
+        straight = (parallel and src_span is not None
+                    and dst_span is not None
+                    and max(src_span[0], dst_span[0])
+                    <= min(src_span[1], dst_span[1]))
+        # An end pinned to an inner anchor (``src_at`` / ``dst_at``) sits
+        # level with it; the bucket pass below nests its neighbours
+        # around it like any other preferred port.
+        src_in = registry.get(flow.src_at or "")
+        dst_in = registry.get(flow.dst_at or "")
+        shared = (_shared_coordinate(
+                      src_span, dst_span, src_in, dst_in, src_side,
+                      _blocked(registry, flow.src, src_side)
+                      + _blocked(registry, flow.dst, dst_side))
+                  if parallel and (src_in or dst_in) else None)
+        if shared is not None:
+            # Both pinned extents overlap: one straight wire, no jog.
+            src_fraction = fraction_for(src_span, shared)
+            dst_fraction = fraction_for(dst_span, shared)
+        else:
+            straight = straight and not (src_in or dst_in)
+            src_fraction = _at_fraction(sb, src_side, src_in, src_fraction)
+            dst_fraction = _at_fraction(db, dst_side, dst_in, dst_fraction)
+        if straight:
+            straight_ends.add(id(flow))
         preferred[(id(flow), "src")] = src_fraction
         preferred[(id(flow), "dst")] = dst_fraction
 
@@ -782,17 +1205,44 @@ def _assign_edge_shares(specs, registry: dict) -> None:
         buckets.setdefault((flow.dst, dst_side), []).append(("dst", entry))
 
     for (anchor_name, side), members in buckets.items():
-        span = edge_span(registry[anchor_name], side)
+        own = port_face(registry, anchor_name, side)
+        span = edge_span(own, side)
 
         def member_fraction(member):
             role, entry = member
             return preferred[(id(entry[0]), role)]
 
-        members.sort(key=member_fraction)
+        along = 0 if side in ("top", "bottom") else 1
+        centre = own[along] + own[2 + along] / 2.0
+
+        def nesting(member):
+            """Order wires with no geometric port preference so they nest.
+
+            Wires leaving one side turn toward their far ends. Those turning
+            the same way nest without crossing when the one travelling
+            farther takes the port farther from where they turn (it then
+            runs outside the nearer one); those turning toward the smaller
+            coordinate sit before those turning toward the larger.
+            """
+            role, entry = member
+            other = entry[2] if role == "src" else entry[1]
+            far = other[along] + other[2 + along] / 2.0
+            # A straight wire does not turn: wires turning toward the
+            # smaller coordinate sit before it, those turning toward the
+            # larger after it, so none crosses it.
+            if id(entry[0]) in straight_ends:
+                return (1, 0.0)
+            return (2 if far >= centre else 0, -far)
+
+        members.sort(key=lambda m: (round(member_fraction(m), 6), nesting(m)))
         fractions = [member_fraction(member) for member in members]
         if len(fractions) > 1 and span is not None:
             usable = max(1.0, span[1] - span[0])
-            separation = min(6.0 / usable, 1.0 / (len(fractions) + 1))
+            apart = 6.0
+            if theme is not None:
+                apart = max([apart] + [m[1][0]._clearance_px(theme)
+                                       for m in members])
+            separation = min(apart / usable, 1.0 / (len(fractions) + 1))
             for index in range(1, len(fractions)):
                 fractions[index] = max(
                     fractions[index], fractions[index - 1] + separation
@@ -883,4 +1333,14 @@ class Labeled(Element):
         return (0.0, 0.0, src_b.w, src_b.h)
 
     def content_bbox(self, theme: Theme):
+        return self.primary_anchor_bbox(theme)
+
+    def port_bbox(self, theme: Theme, side: str):
+        """Wires land on the *source* box; the label side (right) keeps
+        the whole composite, since its own arrow and label sit there."""
+        if side == "right":
+            return None
+        port = self.source.port_bbox(theme, side)
+        if port is not None:
+            return port
         return self.primary_anchor_bbox(theme)

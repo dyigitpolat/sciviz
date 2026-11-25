@@ -206,8 +206,12 @@ class Canvas:
     # ------------ defs & markers ------------
 
     def define_marker(self, *, color: str, size: float = 7.0,
-                      name_hint: str = "arr") -> str:
+                      name_hint: str = "arr", ref_x: float = 9.0) -> str:
         """Register an arrowhead marker of the given absolute size.
+
+        ``ref_x`` is the point of the head (0: its base, 10: its tip) that
+        stands on the end of the line; the default, 9, is the form every
+        connector has used.
 
         Prefer :meth:`define_arrow_marker` for arrows -- that sizes the
         head to the stroke width so the triangle matches the shaft.
@@ -216,25 +220,49 @@ class Canvas:
         the previously emitted marker.
         """
         key = (color, round(size, 2), name_hint)
+        if abs(float(ref_x) - 9.0) > 1e-9:
+            key = key + (round(float(ref_x), 3),)
         if key in self._marker_ids:
             return self._marker_ids[key]
         mid = f"{name_hint}-{len(self._marker_ids)}"
         self._marker_ids[key] = mid
+        ref = "9" if len(key) == 3 else _fmt(float(ref_x))
         # refX=9 places the triangle tip on the line endpoint, so the
         # whole head sits just OUTSIDE the target along the flow
         # direction -- the head touches the target boundary without
         # crossing into it. This matches the convention of paper
         # figures (arrowheads stop at the box edge, not inside it).
         self._defs.append(
-            f'<marker id="{mid}" viewBox="0 0 10 10" refX="9" refY="5" '
+            f'<marker id="{mid}" viewBox="0 0 10 10" refX="{ref}" refY="5" '
             f'markerWidth="{_fmt(size)}" markerHeight="{_fmt(size)}" '
             f'orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="{color}"/></marker>'
         )
         return mid
 
+    @staticmethod
+    def flush_ref_x(arrow_size: float) -> float:
+        """Where a flush arrowhead stands on its line's end (0: the head's
+        base, 10: its tip): the point at which the head is exactly as wide
+        as the line, so no part of the line shows beside the head. A head
+        of ``arrow_size`` stroke widths is that wide one stroke width
+        behind its tip; never further forward than the default (9)."""
+        size = float(arrow_size)
+        if size <= 1.0:
+            return 0.0
+        return min(9.0, 10.0 - 10.0 / size)
+
+    @staticmethod
+    def flush_inset(stroke_width: float, arrow_size: float) -> float:
+        """How much shorter a line with a flush head ends, so the head's
+        tip stands where the default head's tip stands (a tenth of the
+        head past the line's end)."""
+        head = float(arrow_size) * float(stroke_width)
+        return max(0.0, (0.9 - Canvas.flush_ref_x(arrow_size) / 10.0) * head)
+
     def define_arrow_marker(self, *, color: str, stroke_width: float,
                             arrow_size: Optional[float] = None,
-                            name_hint: str = "arrow") -> str:
+                            name_hint: str = "arrow",
+                            flush: bool = False) -> str:
         """Register an arrowhead marker for a line with ``stroke_width`` ink.
 
         If ``arrow_size`` is given (the preferred path, normally fed from
@@ -248,6 +276,12 @@ class Canvas:
             size = float(arrow_size)
         else:
             size = max(3.0, stroke_width * self.ARROW_HEAD_SCALE)
+        if flush:
+            # the line ends inside the head where the head is as wide as
+            # the line; the caller ends the line ``flush_inset`` earlier
+            return self.define_marker(color=color, size=size,
+                                      name_hint=name_hint,
+                                      ref_x=self.flush_ref_x(size))
         return self.define_marker(color=color, size=size, name_hint=name_hint)
 
     def raw_def(self, svg: str) -> None:
@@ -393,12 +427,18 @@ class Canvas:
              anchor: str = "start", opacity: float = 1.0,
              baseline: str = "alphabetic",
              font_family: Optional[str] = None,
-             rotate: float = 0.0) -> None:
+             rotate: float = 0.0,
+             ink_ascent: Optional[float] = None) -> None:
         """Render text. ``y`` is the baseline position.
 
         ``rotate`` is degrees clockwise applied around ``(x, y)``; the
         connector-label placer uses ``rotate=90`` to fit a long label
         through a narrow horizontal corridor.
+
+        ``ink_ascent`` states how far above the baseline this text inks,
+        as a fraction of its size, for a caller that reserves the glyphs'
+        own height (a title set on a border line reserves its capitals).
+        The default accounts the full ascent, as before.
         """
         parts = [f'x="{_fmt(x)}"', f'y="{_fmt(y)}"',
                  f'font-size="{_fmt(size)}"', f'fill="{fill}"']
@@ -419,6 +459,11 @@ class Canvas:
         if rotate:
             parts.append(f'transform="rotate({_fmt(rotate)} '
                          f'{_fmt(x)} {_fmt(y)})"')
+        if content != content.strip() or "  " in content:
+            # The width below counts every space (an indented code line,
+            # an aligned column); SVG collapses them unless told not to,
+            # which would draw the run narrower than it was measured.
+            parts.append('xml:space="preserve"')
         inner = _build_text_runs(content)
         self._body.append(f"<text {' '.join(parts)}>{inner}</text>")
         self._mark_text_size(size)
@@ -445,7 +490,8 @@ class Canvas:
             x0, x1 = x - width, x
         else:
             x0, x1 = x, x + width
-        y0, y1 = y - size * TEXT_INK_ASCENT, y + size * TEXT_INK_DESCENT
+        ascent = TEXT_INK_ASCENT if ink_ascent is None else float(ink_ascent)
+        y0, y1 = y - size * ascent, y + size * TEXT_INK_DESCENT
         if rotate:
             # Rotated text inks the rotated rectangle, not the
             # horizontal one -- a 90-degree connector label is tall and

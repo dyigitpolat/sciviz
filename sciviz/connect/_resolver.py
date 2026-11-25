@@ -139,6 +139,19 @@ def _facing_extent_for(spec, src, dst, theme) -> float:
     return float(min(a.w, b.w, a.h, b.h))
 
 
+def _facing(src_side: str, dst_side: str) -> bool:
+    """Whether two pinned sides face each other across one gutter."""
+    return {src_side, dst_side} in ({"top", "bottom"}, {"left", "right"})
+
+
+def _bump(anchor, side: str, amount: float, key=None, full=None) -> None:
+    """Reserve a wire end's margin and itemise it for Rhythm gutters
+    (:func:`sciviz.layout._rhythm.note_lane`)."""
+    from ..layout._rhythm import note_lane
+    anchor._bump_margin(side, amount)
+    note_lane(anchor, side, amount, key=key, full=full)
+
+
 class _FlowResolver(Element):
     """Wrap a child; resolve any ``Connect`` routed/bus specs after render.
 
@@ -153,11 +166,23 @@ class _FlowResolver(Element):
         self.min_flow_space = min_flow_space
         self._margins_applied = False
 
-    def _flow_space(self, theme: Theme) -> float:
-        """Theme-proportional default wire margin (10 px at unit=6)."""
+    def _flow_space(self, theme: Theme, head: bool = True) -> float:
+        """Theme-proportional default wire margin (10 px at unit=6).
+
+        With print floors on (:attr:`Theme.print_floors`), the margin
+        never compresses below what the wire end must show, however far
+        the fitter compressed ``unit``: an end that carries an
+        arrowhead keeps its head plus ``min_space`` on both sides
+        (:meth:`Theme.arrow_gutter_px`); a plain tail keeps ``min_space``,
+        enough for a visible stub. Reserving the head's room at a tail
+        pays for an arrow that is never drawn (the rule :class:`Bus`
+        margins already follow)."""
         if self.min_flow_space is not None:
             return float(self.min_flow_space)
-        return theme.unit * (5.0 / 3.0)
+        if not theme.print_floors:
+            return theme.unit * (5.0 / 3.0)
+        floor = theme.arrow_gutter_px() if head else theme.min_space
+        return max(theme.unit * (5.0 / 3.0), floor)
 
     def _specs_from_tree(self) -> List[Pending]:
         pending: list = []
@@ -181,34 +206,66 @@ class _FlowResolver(Element):
             if isinstance(spec, Flow):
                 src = anchors.get(spec.src)
                 dst = anchors.get(spec.dst)
+                head_src, head_dst = spec._head_flags()
+                m_src = self._flow_space(theme, head=head_src)
+                m_dst = self._flow_space(theme, head=head_dst)
                 # A connector label needs a readable corridor in addition
                 # to the arrow shaft itself. The reservation is sized from
                 # the *measured* caption (see label_corridor_reservation):
                 # labels are part of the route contract, so the corridor
                 # between two facing pinned sides must fit the caption.
                 flow_auto = auto_m * (1.6 if spec.label else 1.0)
+                from ..layout._rhythm import note_lane
+                r_src = r_dst = None
+                # An author-set shaft (``min_shaft``): a pinned end that
+                # carries a head reserves the head plus that shaft, unless
+                # the author set the end's room.
+                _ms = getattr(spec, "min_shaft", None)
+                _need = (theme.arrow_head_px + _ms) if _ms is not None else 0.0
                 if src is not None:
                     if spec.src_side != "auto":
-                        src._bump_margin(
-                            spec.src_side,
-                            label_corridor_reservation(
-                                spec, theme, spec.src_side,
-                                spec.dst_side, m,
-                                _facing_extent_for(spec, src, dst, theme)))
+                        # An end whose room the author set (``src_room``
+                        # / ``dst_room``) reserves exactly that.
+                        r_src = (spec.src_room
+                                 if getattr(spec, "src_room", None) is not None
+                                 else label_corridor_reservation(
+                            spec, theme, spec.src_side, spec.dst_side,
+                            m_src, _facing_extent_for(spec, src, dst, theme)))
+                        if (head_src and _ms is not None
+                                and getattr(spec, "src_room", None) is None):
+                            r_src = max(r_src, _need)
+                        src._bump_margin(spec.src_side, r_src)
                     else:
                         for side in ("top", "bottom", "left", "right"):
-                            src._bump_margin(side, flow_auto)
+                            _bump(src, side, flow_auto)
                 if dst is not None:
                     if spec.dst_side != "auto":
-                        dst._bump_margin(
-                            spec.dst_side,
-                            label_corridor_reservation(
-                                spec, theme, spec.dst_side,
-                                spec.src_side, m,
-                                _facing_extent_for(spec, src, dst, theme)))
+                        r_dst = (spec.dst_room
+                                 if getattr(spec, "dst_room", None) is not None
+                                 else label_corridor_reservation(
+                            spec, theme, spec.dst_side, spec.src_side,
+                            m_dst, _facing_extent_for(spec, src, dst, theme)))
+                        if (head_dst and _ms is not None
+                                and getattr(spec, "dst_room", None) is None):
+                            r_dst = max(r_dst, _need)
+                        dst._bump_margin(spec.dst_side, r_dst)
                     else:
                         for side in ("top", "bottom", "left", "right"):
-                            dst._bump_margin(side, flow_auto)
+                            _bump(dst, side, flow_auto)
+                # A wire whose two pinned ends face each other crosses ONE
+                # gutter: a Rhythm container counts it once, needing the
+                # larger end (both caption halves when it carries a
+                # caption). Every other end is a lane of its own.
+                key = full = None
+                if (r_src is not None and r_dst is not None
+                        and _facing(spec.src_side, spec.dst_side)):
+                    key = ("wire", id(spec))
+                    full = (r_src + r_dst if spec.label
+                            else max(r_src, r_dst))
+                if r_src is not None:
+                    note_lane(src, spec.src_side, r_src, key=key, full=full)
+                if r_dst is not None:
+                    note_lane(dst, spec.dst_side, r_dst, key=key, full=full)
             elif isinstance(spec, Bus):
                 label_mul = 1.6 if spec.label else 1.0
                 bump = m * label_mul
@@ -221,13 +278,21 @@ class _FlowResolver(Element):
                 # stub on every member would pay for arrows that are
                 # never drawn.
                 stub = theme.arrow_stub_px if spec.arrow else 0.0
+                # An author-set shaft (``min_shaft``) replaces the theme's
+                # stub in the reservation; a room the author set
+                # (``src_room`` / ``dst_room``) replaces the reservation
+                # itself on every face it would bump.
+                if spec.arrow and getattr(spec, "min_shaft", None) is not None:
+                    stub = spec._sink_stub(theme)
+                _src_room = getattr(spec, "src_room", None)
+                _dst_room = getattr(spec, "dst_room", None)
                 # A bus member only needs enough room for its own tap to
                 # leave its edge. The spine itself sits in the gap
                 # BETWEEN the two clusters, which is a layout gap -- so
                 # charging every member the full spine budget on both
                 # faces inflates a stack of tags by its own height again
                 # for clearance nothing uses.
-                member = m * 0.3
+                member = m * 0.3 if _src_room is None else _src_room
                 if spec.orientation == "auto":
                     light = m * (0.6 if spec.label else 0.3)
                     sides = ("top", "bottom", "left", "right")
@@ -235,40 +300,44 @@ class _FlowResolver(Element):
                         a = anchors.get(name)
                         if a is not None:
                             for side in sides:
-                                a._bump_margin(side, light)
+                                _bump(a, side, light if _src_room is None
+                                      else _src_room)
                     for name in spec.sinks:
                         a = anchors.get(name)
                         if a is not None:
                             for side in sides:
-                                a._bump_margin(side, max(light, stub))
+                                _bump(a, side, max(light, stub)
+                                      if _dst_room is None else _dst_room)
                 elif spec.orientation == "horizontal":
-                    sink_bump = max(bump, stub)
+                    sink_bump = (max(bump, stub) if _dst_room is None
+                                 else _dst_room)
                     for name in spec.sources:
                         a = anchors.get(name)
                         if a is None:
                             continue
-                        a._bump_margin("left", member)
-                        a._bump_margin("right", member)
+                        _bump(a, "left", member)
+                        _bump(a, "right", member)
                     for name in spec.sinks:
                         a = anchors.get(name)
                         if a is None:
                             continue
-                        a._bump_margin("left", sink_bump)
-                        a._bump_margin("right", sink_bump)
+                        _bump(a, "left", sink_bump)
+                        _bump(a, "right", sink_bump)
                 else:  # vertical
-                    sink_bump = max(bump, stub)
+                    sink_bump = (max(bump, stub) if _dst_room is None
+                                 else _dst_room)
                     for name in spec.sources:
                         a = anchors.get(name)
                         if a is None:
                             continue
-                        a._bump_margin("top", member)
-                        a._bump_margin("bottom", member)
+                        _bump(a, "top", member)
+                        _bump(a, "bottom", member)
                     for name in spec.sinks:
                         a = anchors.get(name)
                         if a is None:
                             continue
-                        a._bump_margin("top", sink_bump)
-                        a._bump_margin("bottom", sink_bump)
+                        _bump(a, "top", sink_bump)
+                        _bump(a, "bottom", sink_bump)
 
     def measure(self, theme: Theme) -> BBox:
         self._apply_flow_margins(theme)
@@ -295,7 +364,7 @@ class _FlowResolver(Element):
 
         # Share-edge assignment for adjacent routed flows on the same edge
         # (mirrors Flowed._assign_edge_shares).
-        self._assign_edge_shares(pending_list, my_registry)
+        self._assign_edge_shares(pending_list, my_registry, theme)
 
         # Two-phase resolution: draw every wire first, then place every
         # label. Each label therefore sees the complete set of wires --
@@ -310,8 +379,9 @@ class _FlowResolver(Element):
         for finish in label_passes:
             finish()
 
-    def _assign_edge_shares(self, pending: list, registry: dict) -> None:
-        _assign_edge_shares(pending, registry)
+    def _assign_edge_shares(self, pending: list, registry: dict,
+                            theme=None) -> None:
+        _assign_edge_shares(pending, registry, theme)
 
 
 # Re-export the Anchor stack's context var so the resolver plays nicely

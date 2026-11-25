@@ -278,6 +278,9 @@ pooling below whatever content happened to stop first:
   centre, or bottom of the granted frame with natural gaps.
 - `grow=True` marks the child column that absorbs the parent's surplus
   *before* any gap distribution.
+- `Row(..., grow=True)` marks a child *row* the same way: a band of
+  cards under a heading takes the column's surplus height, and with
+  `align="stretch"` its cards grow to it (default `False`).
 
 The canonical zone grammar combines them:
 
@@ -305,6 +308,51 @@ Headers stay on one shared top band; each zone's content column owns
 the zone's remaining height and distributes its whitespace (spread for
 a multi-block zone, optically centred for a lone card). This replaces
 `Spacer` shims and hand-tuned gaps for balancing multi-column figures.
+
+### Justified rows, non-grid columns, and wire lanes
+
+`Row(justify=...)` places the surplus of a row that was granted more
+width than it needs (a stretched column, an inflated card): `"start"`
+(default), `"center"`, `"end"`, or `"between"` -- a name flush left and
+its note flush right, with no spacer. A justified row is a layout of its
+own, so it neither offers nor accepts shared grid columns.
+
+Stacked rows of the same shape line up as one grid by default. A column
+whose children are *not* a grid -- a station title over its picture, a
+caption over a chart -- says so with `Column(share_columns=False)`, and a
+two-part title row is then never stretched onto an unrelated two-part
+row below it.
+
+A wire that attaches to a title reserves a corridor (a flow lane) above
+it. Columns and rows report those lanes (`flow_lanes`) and exclude them
+from their `content_bbox`, so a `Row(align="start")` of stations keeps
+every title level and runs the corridor above all of them -- also when
+the wired element is a small badge centred beside a taller title.
+
+```python
+from sciviz import (Anchor, Badge, Box, Column, Connect, Diagram, Row,
+                    Text)
+
+def station(n, title, wired=None):
+    badge = Badge(n)
+    if wired:
+        badge = Anchor(wired, badge)
+    head = Row(badge, Text(title, weight="700"), gap="xs", align="center")
+    return Column(head, Box("picture", width=60, height=30), gap="sm",
+                  align="start", share_columns=False)
+
+note = Row(Text("Sample batches", weight="700"),
+           Text("every 2nd day", color="muted"),
+           justify="between", gap="xs")
+body = Column(
+    Row(Column(note, Box("a wider slip sets the width", width=170),
+               align="stretch", share_columns=False),
+        station("4", "Mixing", "mixing"), station("5", "Assay", "assay"),
+        gap="md", align="start"),
+    Connect("mixing", "assay", src_side="top", dst_side="top",
+            label="measured", label_style="on-wire"))
+d = Diagram.for_paper(body)
+```
 
 ### WrapRow and Chip -- flowing runs of tags
 
@@ -363,6 +411,13 @@ body = EqualGrid(phase, columns=1, equal="both")
 conditional structure with a `ConditionGlyph` rather than code-like text
 such as `if act_q`.
 
+A `Stripe` becomes a *slip* with `surface="white"`: an excerpt set off
+from a tinted container by its own page-coloured ground, the rail naming
+whose it is; `outline=False` drops the frame and `align="start"` sets its
+lines flush left. `Document(padding="md")` gives a sheet that carries a
+page of content (a quote, headed sections) a page margin; the default
+`"sm"` suits a short centred name.
+
 ### Titled blocks
 
 A block that carries both a name and a description should not fold them
@@ -419,6 +474,18 @@ Inline("The energy ", "$E = mc^2$", " is conserved.")
 
 `Inline` splices text and inline math on a shared baseline; strings
 beginning and ending with `$` auto-coerce to `Math`.
+
+### Short labels in boxes: centring by ink
+
+A text engine centres a string by its advance box and its line box, not by its ink. A running label never shows
+the difference. A short label in a small box does (a step number in a cell, a core's name in a tile, a tag in a
+badge): a digit sits low or high by a visible share of the box's padding, and "L1" sits left of the centre.
+`Text("2", weight="700", ink_center=True)` draws a plain one-line label with the centre of its glyph outlines on
+the centre of its measured box, in both directions, and reports that ink as its content box. The default,
+`ink_center=False`, draws every text exactly as before. A figure drawn with matplotlib beside the diagrams has
+the same rule: `from sciviz.inkcenter import center_on_ink`, then `center_on_ink(ax.text(x, y, "2", ...))` puts
+the label's ink on `(x, y)`. `horizontal=False` or `vertical=False` keeps one direction's own alignment, and
+`ref="H"` centres a word by its capitals, so a row of labels shares one baseline.
 
 ### Structured runs with `Span`
 
@@ -608,6 +675,14 @@ that rather than the string they passed in. Routed-flow captions read at `Theme.
 step down, e.g.
 `Theme().with_overrides(connector_label_size="tiny")`. If a label still
 collides, improve the semantic structure rather than nudging pixels.
+`Connect(..., label_frame="capsule")` (or, for every wire of a figure,
+`Theme.connector_label_frame="capsule"`) sets a caption as data tokens:
+each authored line becomes its own pill in `Theme.label_capsule_fill` /
+`label_capsule_stroke`, drawn exactly like a `Chip` of the same size, so
+`"count\nsize"` stacks two pills; capsules are never re-wrapped or turned.
+`Theme.chip_pad_x` / `chip_pad_y` (fractions of the font size) set the
+padding of chips and capsules alike. Arrow weight and head size are the
+theme's `connector` (stroke) and `arrow_size` (head, times the stroke).
 
 Placement scoring is lexicographic and hugs the wire: a caption must
 clear all ink (the hard invariant), stay within its own arm's span
@@ -649,6 +724,151 @@ the wider one and uses one shared coordinate; aligned links therefore stay
 straight. Fan-in/fan-out ports preserve those projections and separate only
 when two wires would otherwise occupy the same attachment point.
 
+### Facing ports and captions on the wire
+
+`Connect(..., ports="facing")` attaches each end in the half of its side
+that faces the other end, so a wire leaving the top of a card toward a
+neighbour leaves from the neighbour's side (shorter, and clear of a title
+over the far half). `label_style="on-wire"` sets the caption centred on
+its own wire over a page-coloured halo, the schematic convention: the
+caption costs its own lane rather than a lane beside it. Stacked on-wire
+lanes are kept a caption's height apart, and a same-side U route (top to
+top, bottom to bottom) runs its bridge in the corridor its stubs reserved
+for the caption instead of a step further out. When no leg can carry the
+caption it falls back to the beside placement.
+
+```python
+from sciviz import Anchor, Box, Column, Connect, Diagram, Row
+
+body = Column(
+    Row(Anchor("model", Box("control model", width=90, height=30)),
+        Box("filter", width=60, height=30),
+        Anchor("gauge", Box("gauge", width=50, height=30)),
+        Anchor("pump", Box("pump", width=50, height=30)), gap="lg"),
+    Connect("gauge", "model", src_side="top", dst_side="top",
+            ports="facing", label="measured level, flow",
+            label_style="on-wire"),
+    Connect("model", "pump", src_side="top", dst_side="top",
+            ports="facing", label="setpoint per zone",
+            label_style="on-wire"))
+d = Diagram.for_paper(body)
+```
+
+### Body ports, inner landings and gutters
+
+A wire lands on an element's *drawing*, not on the edge of a box its own
+captions widened: `Element.port_bbox(theme, side)` returns that body (a
+`Funnel` returns its taper; `Labeled` its source box), `Anchor` forwards it,
+and the connector moves only the tap -- the layout box stays the obstacle.
+When the run from the body out to the layout edge would cross the
+element's own text or drawing (a funnel's bypass caption), that side keeps
+the layout box. A custom element with decorations overrides `port_bbox`;
+a wrapper forwards it.
+
+To meet a card at one of its inner parts (a numbered badge, a row), name
+the card as the endpoint and the part with `dst_at=` / `src_at=`: the
+arrow lands on the card's frame level with the part and never crosses
+into the card.
+
+A bridge between two ends runs in the middle of its gutter (the free
+interval between real walls, bounded on both sides), a second wire sharing
+the gutter takes an even track, and no two wires ride on one line. A beside
+caption never sits nearer another wire than its own; an on-wire caption
+covers at most half its leg.
+
+```python
+from sciviz import Anchor, Box, Column, Connect, Diagram, Region, Row, Text
+
+card = Anchor("station", Region(Column(Text("Station 5", weight="700"),
+                                       Anchor("station_body", Box("body")),
+                                       gap="sm"), fill="white"))
+body = Column(
+    Row(Anchor("request", Box("request")), Box("other"), gap="lg"),
+    Row(Box("left"), card, gap="lg"),
+    Connect("request", "station", src_side="bottom", dst_side="top",
+            dst_at="station_body"),
+    gap="lg")
+d = Diagram.for_paper(body)
+```
+
+### Caption side, funnel outlets, bounded routes and bus hops
+
+Sibling wires that cross one gutter read as a set when their captions
+share a side. `label_side` takes the vocabulary of `Arrow`:
+`"left"`/`"right"` set the caption upright beside a vertical leg,
+`"above"`/`"below"` beside a horizontal one, and `"auto"` (the default)
+lets the placer choose per wire.
+
+```python
+from sciviz import Anchor, Box, Column, Connect, Diagram, Row
+tiers = Column(
+    Row(Anchor("m", Box("planner")), Anchor("n", Box("log")), gap="xl"),
+    Row(Anchor("a", Box("controller")), Anchor("b", Box("sensor")), gap="xl"),
+    Connect("m", "a", src_side="bottom", dst_side="top",
+            label="commands", label_side="right"),
+    Connect("b", "n", src_side="top", dst_side="bottom",
+            label="readings", label_side="right"),
+    gap="lg")
+d = Diagram.for_paper(tiers)
+```
+
+The layout reserves room beside each pinned end of a wire for its shaft
+(a caption-sized corridor when the wire is labelled).
+`Connect(..., src_room=, dst_room=)` sets that room for one end, in
+pixels; `None`, the default, keeps the automatic reservation. Use it
+for an end whose shaft already has visible room elsewhere: an arrow
+that enters a card inside a `Region` from outside the region runs
+through the region's padding, so `dst_room=0` lets the card reach the
+region's foot instead of leaving an empty band under it.
+
+An arrowhead that sits on the last bend of its wire reads as a triangle
+glued to its target. `Connect(..., min_shaft=)` sets, in pixels, the
+least straight shaft that stays visible between the last bend and the
+base of the head; `None`, the default, changes nothing. A routed wire
+keeps the last bend of a bridged route that far from the head and
+reserves the room on a pinned side; a bus (`Connect([a, b], sink, ...)`)
+keeps its spine that far from each sink, and takes `src_room=` and
+`dst_room=` like a routed wire. An arm the layout fixes shorter (the
+elbow of a single-corner route) cannot be lengthened by routing, so
+check the result: `diagram.short_shafts(8.0)` lists every drawn
+arrowhead whose entering shaft is under 8 px (`diagram.arrow_ends()`
+lists them all with tip, bend, run, head and shaft), whatever primitive
+drew it.
+
+A bus draws every stroke as its own butt-ended segment, so the outer
+corner where an outermost tap turns into the end of the spine stays
+open by half a stroke. `Connect([a, b], sink, corner_radius=2.6)` draws
+each corner of exactly two strokes as one stroke, rounded by that radius
+in pixels (`0`: sharp and closed); a tap on the spine's run stays a T,
+and a corner never reaches the next junction or the shaft a head needs.
+`flush_head=True` ends each arrowed stroke inside its head, where the
+head is as wide as the stroke, so no square stroke end shows beside the
+tip of a small head; the tip and the shaft stay where they were. Both
+are bus-mode options, off by default (`corner_radius=None`,
+`flush_head=False`).
+
+A `Funnel`'s wires land on its flow openings: a wire leaving the narrow
+end starts at the outlet's centre (or runs straight where the facing
+element overlaps the outlet), a wire arriving at the wide end lands on
+the mouth. Put the neighbour level with the neck (a centred `Row`
+aligns on the taper) and the wire is one straight line. The bypass arc
+lands on the neck's edge, clear of that wire.
+
+Routed wires stay inside the drawing: the planner first looks for a
+route within the hull of everything the scope has laid out or drawn,
+grown by one lane (earlier wires count, so stacked return lanes keep
+their places), and leaves it only when no route inside exists (the
+debug log then notes it). A route through a tight gutter that hops one
+wire beats an excursion round the whole figure. Two faces across a
+gutter shorter than both stubs meet on one line in it (the arrowhead
+side keeps its visible stub while the gutter allows), so a collapsed
+gutter never grows a spur that overshoots and doubles back. The router's
+parallel-wire floor and widest-channel width are `CrossPolicy` fields
+(`parallel_floor`, `max_channel`).
+
+A `Bus` hops the wires drawn before it with the routed wires' arc, so a
+crossing never reads as one of its junctions.
+
 ## Anchors
 
 Wrap an element in `Anchor("name", element)` to give the connector
@@ -666,6 +886,48 @@ body = Row(
 )
 d = Diagram(title="anchors", body=body)
 ```
+
+### Rhythm -- one gutter, shared lanes
+
+A token gap is the space between two boxes, and an anchored card's box
+includes the flow lanes its wires reserve. So a row of sister cards
+spaced `gap="md"` shows a wider gutter wherever a wire or a caption
+crosses, and two stacked cards joined by a wire get tail lane + gap +
+head lane between them. Pass a `Rhythm` as `gap=` instead, and share
+the object between every `Row` (or every `Column`) that should keep one
+beat:
+
+```python
+from sciviz import Anchor, Box, Column, Connect, Diagram, Rhythm, Row
+
+cards = Rhythm("md")
+tiers = Rhythm("sm")
+stages = Row(*[Anchor(n, Box(f"stage {n}")) for n in "abcd"], gap=cards)
+body = Column(
+    Anchor("head", Box("input")),
+    stages,
+    Connect("head", "b", src_side="bottom", dst_side="top"),
+    Connect("a", "b", src_side="right", dst_side="left"),
+    Connect("c", "d", src_side="right", dst_side="left", label="ok"),
+    gap=tiers,
+)
+d = Diagram.for_paper(body)
+d.render(embed_fonts=False)
+assert cards.gutter(d._layout_theme()) >= d._layout_theme().gap_px("md")
+```
+
+Every pair of neighbours in every member container is then set one
+content-to-content distance, the gutter `max(gap token, largest lane
+need)`, whatever crosses it. A wire whose two ends face each other
+across a gutter is counted once (its larger end, or both halves of its
+caption corridor), so stacked neighbours share one lane instead of
+stacking two; lanes of different wires on the two sides still add up.
+A Rhythm spaces one axis (one object for rows, another for columns) and
+only `Row` and `Column` take one; lanes a `Flowed` scope or a bus
+reserves are kept whole. A Rhythm row sets content-to-content gutters,
+so it never takes shared slot columns from a stacked neighbour with the
+same number of children (as a justified row does not). A Rhythm holds
+its containers weakly: a container that is dropped leaves the beat.
 
 ## Grouping: Region, Brace, Captioned, Badge, Docked
 
@@ -695,6 +957,67 @@ d = Diagram(title="region", body=panel)
 of text outside the border. A corner badge is any `Element`, drawn in
 the top-right corner.
 
+### Walls, tabs and trays
+
+`Region(border="double")` draws a second wall inside the first: the
+conventional mark of a *boundary* (a membrane, a trust boundary) rather than a
+grouping. `label_style="tab"` sets the label on the top or bottom wall
+(a fieldset legend) instead of above the box; the label may be a string
+or any element, `tabs={"top": ..., "bottom": ...}` names both walls, a
+`(start, end)` pair sets one tab at each end of a wall (a name and a key),
+`tab_align` places each, and `tab_outline=False` leaves a plain knockout
+instead of a plate framed in the wall colour. `open_side="top"` leaves one
+wall out: a tray whose content runs flush to the open edge, so a group of
+titled stages inside it keeps its titles level with stages outside it
+(a wire lane over one of its titles stays the tray's outer lane, and the
+walls stop below it).
+
+`tab_style="legend"` sets a tab title on the border line itself with no
+plate: the wall alone is interrupted under the text, the region's fill runs
+on under it, and the title reserves only its capitals' height. `tab_inset=`
+states its position along the wall (px from the border's outer edge),
+`tab_pad=` the pad on each side of the text, and `Region.wall_offsets(theme)`
+reports where the walls stand inside the measured box.
+
+A region titled on its border line reads as a titled card, so a row aligns
+and equalises it on its WALLS (`Region.frame_bbox(theme)`, which an `Anchor`
+forwards): the walls line up with the frames beside it and take the row's
+shared height (`equal_heights=True`, `align="stretch"`), and the half title
+above the top wall rides in the room a taller neighbour leaves free. It adds
+to the row's height only where nothing leaves it room. A column lets the half
+title ride in the gap to the neighbour above (`Region.wall_overhang(theme)`),
+so the gap runs to the wall. `balance_label_padding=True` mirrors the title's
+inner half inside the opposite wall, so the content stands centred between
+the walls. The title inks the capitals it reserves (`Canvas.text(...,
+ink_ascent=)`), so the page does not grow for an ascent it never uses. Every
+other region (an outside label, a plate tab) and every row or column without
+such a region is laid out as before.
+
+A connector that joins several sources into one trunk and forks it onto
+several targets is `sciviz.connect.trunk.trunk_route(sources, targets,
+join=, fork=)`: pure geometry, whose `commands(radius)` (rounded `M` / `L` /
+`Q` strokes) or `svg_path(radius)` a diagram or a plot script draws. An end
+that stands on the trunk gets a straight leg, so single and forked
+connectors of one figure share a form.
+
+```python
+from sciviz import Column, Diagram, Region, Row, Span, Text
+
+membrane = Text([Span("Cell Membrane", weight="700"),
+                 Span(": ions and gradients", color="muted")], size="tiny")
+cell = Region(Text("cell interior"), border="double", dashed=False,
+              fill="#edf2f8", color="#5a86b0", label=membrane,
+              label_style="tab", label_position="bottom",
+              label_align="center")
+stages = Region(Row(Text("3 Filter", weight="700"),
+                    Text("4 Detect", weight="700"), gap="md"),
+                dashed=False, open_side="top",
+                label="downstream stages", label_style="tab",
+                label_position="bottom", label_align="center",
+                tab_outline=False)
+d = Diagram.for_paper(Row(cell, stages, gap="md", align="start"))
+```
+
 ### Brace -- span a group
 
 Two forms:
@@ -715,6 +1038,14 @@ d = Diagram(title="brace", body=Column(row, b2, gap="sm", align="center"))
 can freely compose the braced group inside an `AlignedStack` or a
 `Row(equal_widths=True)` without hand-computing pixels.
 
+`Row(equal_widths="painted")` equalises the *painted* widths (`True`
+equalises outer boxes): a child whose anchor carries a routed wire's lane
+receives the shared face plus its lane, so it is never painted narrower
+than its sisters. When a parent
+stretches the row, `justify="between"` gives the surplus to the gutters
+(equal, wider) instead of the slots; so does a plain `Row(justify=
+"between")` of cards that should each hug their content.
+
 ### Captioned / Badge / LabeledChain
 
 ```python
@@ -728,6 +1059,18 @@ chain = LabeledChain(
 badge = Badge("+")
 d = Diagram(title="wrappers", body=cap)
 ```
+
+A `Badge` whose label is an element (an `Icon`) sizes its disc around the
+label plus 1.1 theme units. `label_pad=` sets that room instead, so a small
+status mark keeps a large glyph: `Badge(Icon("check", size=8.0), size=11.0,
+label_pad=3.0)` is an 11 px disc with an 8 px check.
+
+A value a figure withholds keeps its figure's geometry with
+`Blank(element)` (`from sciviz.elements._blank import Blank`): the blank
+measures as the element and reports its content box, first baseline,
+anchor and ports, so rows, columns and tables lay out exactly as with it,
+and nothing of it is drawn. `Blank(element, stand_in=other)` draws `other`
+centred in that place (a tag that stands in for the withheld value).
 
 ### Docked overlays and tapered modules
 
@@ -942,6 +1285,33 @@ credit = Balance(BalancePan("guided", 1.6, Palette.teal),
 d = Diagram.for_paper(Row(screen, Column(credit, share, gap="xs"), gap="lg"))
 ```
 
+A funnel can also show the selection as its *members*: give each
+`FunnelStage` its `marks` (one colour per member) and the members are
+packed as dots into the band that stage occupies, the survivors in the
+neck (`mark_size` draws them a size up). `lanes=True` gives every colour
+its own lane, so the picture says the selection happened *within* each
+group; `orientation="horizontal"` runs the taper left to right;
+`bypass="..."` draws a dashed arc over the body with a caption (break it
+with `"\n"`) for a selection that is sometimes skipped; the arc leaves a
+bracket spanning the whole mouth (every lane steps aside, not one group),
+and a wire into the mouth lands on that bracket. Siblings align on
+the taper body (`content_bbox`), so a centred neighbour sits level with
+the neck.
+
+```python
+from sciviz import Diagram, Funnel, FunnelStage, Icon, Palette, Row
+
+pool = ["#1f3f63"] * 5 + ["#b9b9b9"] * 24 + ["#8a8a8a"] * 32
+kept = ["#1f3f63"] * 3 + ["#b9b9b9"] * 3 + ["#8a8a8a"] * 4
+sieve = Funnel([FunnelStage("sampled", 61, marks=pool),
+                FunnelStage("selected", 10, marks=kept, mark_size=1.5)],
+               orientation="horizontal", width=48, height=54, lanes=True,
+               show_values=False, label_position="none", neck_ratio=0.3,
+               role=Palette.literal("#78818c"),
+               bypass="bypassed while\nthe sensor is\nwarming up")
+d = Diagram.for_paper(Row(sieve, Icon("cpu", size=14), align="center"))
+```
+
 ### `MiniScatter` -- a point cloud that fits inside a card
 
 The scatter counterpart of `Sparkline`: no ticks, no axis titles, an
@@ -965,6 +1335,171 @@ ranked = MiniScatter([(0.2, 0.7), MiniPoint(0.5, 0.4, size=2.4),
                       MiniPoint(0.8, 0.6, hollow=True)],
                      width=52, height=34, role=Palette.gray)
 d = Diagram.for_paper(Row(nudged, ranked, gap="lg"))
+```
+
+`MiniArea(points, color, opacity)` fills a polygon of the scatter's data
+plane under every path and point -- a feasible region, a confidence
+band -- and the thumbnail clips areas, paths and points to
+its window (`clip=True`, the default), so a cropped view never inks
+outside its box. Points whose colour would vanish on the page get a
+hairline edge in a darker shade of their own colour
+(`MiniPoint(edge=...)` names it, `edge="none"` suppresses it).
+`MiniRaster` cells may each be a colour (a row of seats coloured by
+who holds them) and `spans=[(first, stop, label)]` brackets a run of
+columns with a caption. `SparkLine(fill=..., fill_to=...)` paints the
+area under a line, so densities stacked at different baselines make a
+ridgeline.
+
+```python
+from sciviz import (Column, Diagram, MiniArea, MiniPoint, MiniRaster,
+                    MiniScatter, SparkLine, Sparkline)
+
+old = [(0.1, 0.8), (0.4, 0.5), (0.8, 0.3)]
+cloud = MiniScatter([MiniPoint(0.3, 0.45, "#1f3f63"), *old],
+                    areas=[MiniArea([(0.3, 0.45), (0.4, 0.45), (0.4, 0.5),
+                                     (0.3, 0.5)], color="#8fa0b3",
+                                    opacity=1.0)],
+                    path=old, width=50, height=40, corner=True)
+seats = MiniRaster([["#b9b9b9"] * 3 + ["#1f3f63"] * 7], cell=4.6,
+                   spans=[(0, 3, "reserved")])
+xs = [i / 20 for i in range(21)]
+ridge = Sparkline([SparkLine([(x, 1 + 1.5 * x * (1 - x)) for x in xs],
+                             color="#1f3f63", fill="#8fa0b3", fill_to=1.0),
+                   SparkLine([(x, 1.2 * x * (1 - x)) for x in xs],
+                             color="#8a8a8a", fill="#d0d0d0", fill_to=0.0)],
+                  width=50, height=24, domain=(0, 1), range=(0, 2.5))
+d = Diagram.for_paper(Column(cloud, seats, ridge, gap="sm"))
+```
+
+### `StepLanes` -- a schedule on a grid of discrete time steps
+
+`Timeline` is a continuous axis with task bars. When the claim is about
+*which step* something happens at ("a spike emitted at step t is received
+at step t + 1", "the replay arrives one step late"), use `StepLanes`: every
+step is one column with a faint gridline through its centre under one axis
+of step numbers; a lane's `window` (inclusive first and last step) is a thin
+light-gray bar over exactly those columns, square, one height for every
+lane (`window_color` outlines it, e.g. in a status colour); `marks` are
+filled dots at the step centres (`mark="tick"` draws vertical ticks); and a
+`StepLink` is a thin arrow with a small solid head from the edge of one mark
+to the edge of another (horizontal within one lane, e.g. a shift). `ghosts`
+are hollow dots where an event would have been. A lane with `kind="store"`
+is a buffer: a dashed strip over every step.
+
+Lanes are gathered into `StepGroup`s (one scenario each) with a label on the
+left (`"\n"` breaks it). A group's `note` (a string or any element, e.g. a
+styled outcome `Text`) is the label's last line by default (`notes="label"`),
+so the steps get the full remaining width; `notes="right"` sets notes in a
+column right of the grid. A group grows if its label and note need more
+lines than it has lanes. A `kind="bar"` lane draws a solid bar of `share`
+of the grid width from the grid's left edge with its `value` after it, so a
+measurement lines up with the schedule above it and its label sits in the
+lane-label column.
+
+```python
+from sciviz import StepGroup, StepLane, StepLanes, StepLink, Text
+
+lanes = StepLanes([
+    StepGroup("one pass", [
+        StepLane("layer 1 cores", window=(0, 2), marks=[0, 2], key="l1"),
+        StepLane("layer 2 cores", window=(1, 3), marks=[1, 3], key="l2"),
+    ], note="reference"),
+    StepGroup("two passes", [
+        StepLane("stored spikes", kind="store", marks=[0, 2], key="st"),
+        StepLane("layer 2 cores", window=(1, 3), marks=[1, 3], key="p2"),
+    ], note=Text([("= ", {"color": "success"}), "same output"], size="small")),
+    StepGroup("programs whose\noutputs differ", [
+        StepLane("no replay", kind="bar", share=0.38, color="alert", value="956 of 2,494"),
+        StepLane("replay", kind="bar", share=0.0, value="0 of 2,494"),
+    ]),
+], steps=range(5), width=244, axis_title="time step",
+   links=[StepLink(("l1", 0), ("l2", 1)), StepLink(("l1", 2), ("l2", 3)),
+          StepLink(("st", 0), ("p2", 1)), StepLink(("st", 2), ("p2", 3))])
+```
+
+Two streams that meet (a residual block: a main path L1 -> L2 -> L3 and a
+skip L1 -> L3) stay apart visually: give the skip `StepLink(..., bend=0.07,
+dashed=True)`, a quadratic arc that bows `bend` times its length to the left
+of its direction of travel (below-left for a link running down and right),
+so it passes beside the marks it skips instead of through them; mark the
+meeting step with `StepMark(step, "diamond")` (a `StepMark` also gives one
+mark its own colour). `StepLane(tag="pass 1")` sets a short muted tag right
+of the grid, and `StepGroup(cuts=(0,))` draws a dashed hairline after lane 0
+(a pass boundary) across the lane labels and the grid.
+
+For a measured share beside a label and a number outside a grid, use
+`ShareBar(share, width=..., color=...)`: a light track for the whole, a solid
+fill for the share and a short origin tick, so a share of zero stays visible.
+
+`width` lets the step columns share what the labels leave (`step_w` fixes
+them instead). `corner` puts an element (a short panel title) in the label
+columns of the axis row. Lane keys must be unique when links name them; two
+lanes may share a label if they have distinct `key`s. Links are straight: a
+link between non-adjacent lanes crosses the lanes in between, so place a
+lane next to the lane it feeds.
+
+### `StepRaster`, `CoreChip`, `LayerNet` -- a schedule drawn as hardware
+
+When a step schedule should read as a schematic rather than a chart, draw the
+hardware itself. `StepRaster` is rows over discrete steps where every step is
+one small block: a row's `window` lights its blocks in the row's hue, `marks`
+are spike dots, `kind="store"` is a dashed buffer (stored spikes), and
+`RasterLink`s are thin arrows between dots (`bend` and `dashed` keep a skip
+apart from the main path). `cuts` split the columns into phases side by side
+(a dashed vertical rule, or `(index, False)` for a plain gap), `titles` head
+each phase, and a row's `span` and `line` let one line hold a different row in
+each phase. A row's `tag` (a string or any element, e.g. a styled outcome) is
+set right of the grid on its line.
+
+`CoreChip` is a chip as a row (or grid) of core blocks: a `Core` has a label,
+a hue and a `window`, drawn as a strip of `steps` cells under the block; a core
+without a hue is idle (a dashed outline). `CoreLink`s are arrows between cores,
+straight between neighbours and an arc over the cores for a skip (`bend` > 0).
+`LayerNet` is a small layered network: one node column per `NetLayer`, fan
+edges between consecutive layers, skip arcs over the top, labels underneath.
+`ThinArrow` is the same thin arrow as an inline element between blocks of a
+`Row`, so the figure keeps one arrow style. A `Core`'s `marks` dot steps of
+its strip (the steps it sends a spike).
+
+An arrow from a dot of one element to a cell of another (a stored spike
+entering a core's window at its step) needs no coordinates: give the
+elements a `name` (a `StepRaster` registers `"name:row,col"`, a `CoreChip`
+`"name:core"` and `"name:core,step"`) and wrap the composition in
+`PointArrows(child, [PointArrow(src, dst)])`. `enter="below"` (or `"above"`,
+`"left"`, `"right"`) curves the arrow so it leaves the source level and enters
+the destination from that side, across a strip instead of along it; `bend`
+and `dashed` work as on the other links. `StepRaster(axis_side="top")` puts
+the step labels above the grid.
+
+```python
+from sciviz import (Core, CoreChip, PointArrow, PointArrows, RasterRow, Row,
+                    StepRaster)
+
+stored = StepRaster([RasterRow("", kind="store", marks=[0, 2])], range(5), cell=9,
+                    axis_side="top", name="stored")
+pass2 = CoreChip([Core("L2", "#0f766e", (1, 3), [1, 3])], steps=5, core=20,
+                 strip_h=5, name="p2")
+replayed = PointArrows(Row(stored, pass2, gap=20),
+                       [PointArrow("stored:0,2", "p2:0,3", enter="below")])
+```
+
+```python
+from sciviz import (Column, Core, CoreChip, CoreLink, LayerNet, NetLayer,
+                    RasterLink, RasterRow, Row, StepRaster, ThinArrow)
+
+net = LayerNet([NetLayer("L1", 3, "#3b5fa0"), NetLayer("L2", 3, "#0f766e"),
+                NetLayer("L3", 2, "#0f766e")], skips=[(0, 2)])
+chip = CoreChip([Core("L1", "#3b5fa0", (0, 2)), Core("L2", "#0f766e", (1, 3)),
+                 Core("L3", "#0f766e", (2, 4))], steps=5, core=17,
+                links=[CoreLink(0, 1), CoreLink(1, 2), CoreLink(0, 2, bend=0.2, dashed=True)])
+rows = [RasterRow("L1", "#3b5fa0", (0, 2), [0, 2], span=(0, 4)),
+        RasterRow("L2", "#0f766e", (1, 3), [1, 3], span=(0, 4)),
+        RasterRow("", kind="store", marks=[5, 7], span=(5, 9), line=0, tag="stored spikes"),
+        RasterRow("", "#0f766e", (6, 8), [6, 8], span=(5, 9), line=1)]
+raster = StepRaster(rows, list(range(5)) * 2, cell=10, cuts=[5],
+                    titles=[(0, "one segment"), (5, "pass 2")],
+                    links=[RasterLink((0, 0), (1, 1)), RasterLink((2, 5), (3, 6))])
+figure = Column(Row(net, ThinArrow(12), chip), raster)
 ```
 
 ### Legends that reuse the chart's own marker
@@ -1312,6 +1847,16 @@ returns a coordinated shade family; this is what the theme uses
 internally to pick tint colours for `Region.fill`,
 `Box(fill=...)`, etc.
 
+### Pale marks keep an edge
+
+The quietest classes of a categorical palette (`#ededed`, `#d6d6d6`)
+vanish as small dots or cells on a white page. `Theme.edge_for_fill(fill)`
+returns a darker shade of the fill itself when its contrast with the
+ground is under `Theme.mark_edge_contrast` (1.5 by default), and `None`
+when the fill carries the shape on its own; solid `Marker`s, `MiniPoint`s
+and `MiniRaster` cells use it, so every unit stays countable without a
+second colour.
+
 ## When you actually need manual placement
 
 Avoid it. Ninety-five percent of the time the answer is:
@@ -1400,6 +1945,71 @@ width as one degenerate tall corridor; with it the balanced
 arrangement wins whenever one exists at the authored font sizes. If
 the content cannot reach the requested shape, the fitter returns the
 closest feasible layout -- it never trades fonts for geometry.
+
+Width does not always fall steadily as spacing compresses: a caption
+that no longer fits on its wire is set beside it, a label re-wraps, a
+lane moves outward. When the density fixed-point stalls above the
+target, the fitter first takes a few secant steps (steady content that
+merely converges slowly), then tries the spacing floor: when the floor
+lands, the bracket between it and the looser trials is bisected towards
+the least compression that still lands. When it does not land and the
+trials were monotone (tighter spacing measured narrower), nothing looser
+can land either and the fit stops there; width is not always monotone
+(a caption set beside its wire at tighter spacing can make the floor
+wider than an interior density), so the narrowest trial, not the floor,
+is what the fit returns and reports (the wrap continuation likewise stops
+after two steps that do not narrow the figure). Text authored exactly at `min_effective_font_pt`
+gets no overshoot tolerance at all (a scale-down would print it below
+the floor). `Diagram.page_size()` reports the exported page -- connector
+lanes and captions outside the laid-out box included -- which is the
+size to check against a page budget; `measure()` is the layout box.
+
+### Elastic spacing and the fit report
+
+By default compression is proportional: every spacing token scales with
+`unit`, which keeps a fitted figure exactly the size it has always had.
+Strokes, arrowheads and fonts never shrink, though, so a gutter scaled
+far towards zero can leave bordered cards touching and wires running
+along card edges. Print floors are opt-in: set `Theme.min_space` (say
+`2.0` points) and every floor switches on at once. Each spacing token
+(`gap`, `Card`/`Stripe` padding, `panel_padding`, the diagram margin)
+then compresses only down to `min(authored, min_space)`; an authored
+value already below the floor is kept as written, and numeric gaps are
+never compressed at all (prefer tokens). A wire end keeps its arrowhead
+plus `min_space` on both sides (`Theme.arrow_gutter_px()`), a plain tail
+keeps `min_space`, and a wire keeps `min_space` from the cards it passes.
+`Theme.print_floors` says whether floors are on; code that adds a floor
+applies it only then. At the authored unit no floor ever binds.
+
+When a figure still does not land, the fix is content, not spacing.
+`Diagram.fit_report()` says what the fit chose and what holds the width
+up:
+
+```python
+import warnings
+from sciviz import Box, Column, Diagram, Row
+
+body = Row(Box("a rather long label that does not wrap"),
+           Column(Box("short"), Box("the widest label in the column")),
+           gap="lg")
+d = Diagram.for_paper(body, target_width_pt=180.0)
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    report = d.fit_report()
+print(report)  # page, density, trials, ink outside the layout, drivers
+assert report.drivers[0][0] == 0  # the top-level split of the width first
+```
+
+The drivers walk the width-critical path breadth first: every part of
+a `Row` plus any authored numeric gap between them, then the widest
+part of anything else, with natural (unstretched) widths. `overflow`
+lists ink painted outside the laid-out box (wire detours, captions),
+which `page_size()` includes and `measure()` does not.
+
+Measurement inside one fitter trial and one render is memoised
+(`sciviz.core._measure_memo`), which makes a deep figure's fit several
+times faster; `SCIVIZ_MEASURE_MEMO=0` switches it off when bisecting a
+suspected stale size.
 
 ### Declaring a shape: the aspect vocabulary
 
@@ -1531,3 +2141,136 @@ Two connector rules the router enforces so wires read as wires:
   will take a longer outgoing arm to pass under a short one rather than
   cut through it -- but a detour stays a detour, bounded relative to the
   preferred route.
+
+## Baselines, shared bands and direct ridge labels
+
+Three placement contracts keep side-by-side cards on one visual rhythm
+without per-figure numbers.
+
+- **`Row(align="baseline")`** puts the first text baseline of every child
+  on one line (CSS `align-items: baseline`). Use it for tiles whose
+  titles carry different decorations (a marker, an icon, a badge, none)
+  or whose bodies differ in height: `align="center"` centres whole boxes,
+  so a shorter tile's title drops. Children without text are centred on
+  the aligned band. Elements report `first_baseline(theme)`, measured
+  from the top of their `content_bbox()`, so a `Region` label or an
+  `Anchor` wire lane is never counted twice. `Column` rejects
+  `"baseline"`: a vertical stack has no shared baseline.
+- **`SizeGroup(axis="height", fit="slot", align=...)`** makes bands.
+  One group per band (title, picture, caption) across sibling cards: each
+  member takes the band's shared height while its child keeps its
+  natural size and sits in the slot at `align` (`"start"`, `"center"`,
+  `"end"`, or `"baseline"`). Pictures are not stretched, a one-line
+  caption starts on the same line as its two-line neighbours, and the
+  cards come out equally tall with no surplus for their columns to
+  spread into empty gaps. The default `fit="grow"` keeps the old
+  grow-every-member behaviour.
+- **`SparkLine(label=...)`** labels a line directly, at its `fill_to`
+  level (else its last point), in a column on `Sparkline(label_side=...)`.
+  A label column is rigid (its pitch is the font's), so the chart grows
+  its vertical scale until neighbouring labels clear each other; the
+  author's `height` is then a minimum. Use it instead of a separate
+  `Column` of labels beside a ridgeline, which can never line up with
+  the ridges once the figure is fitted.
+
+One group per band across the cards:
+
+```python
+from sciviz import Box, Column, Region, Row, SizeGroup, Text
+
+stations = [("Intake", Box(width=40, height=30), Text("one reservoir")),
+            ("Filter", Box(width=40, height=50),
+             Column(Text("drawn and kept"), Text("by particle size"))),
+            ("Storage", Box(width=40, height=40), Text("sealed tank"))]
+heads = SizeGroup("height", fit="slot", align="baseline")
+pics = SizeGroup("height", fit="slot", align="center")
+notes = SizeGroup("height", fit="slot", align="start")
+cards = [Region(Column(heads(Text(title, weight="700")), pics(picture),
+                       notes(caption), gap="sm", align="start"))
+         for title, picture, caption in stations]
+body = Row(*cards, gap="md", equal_widths=True)
+```
+
+### Structured content: spanning cells, overflow rows, mappings, unit bars, decluttered scatters, point events
+
+Key-value content inside a card is a `Table`, not a stack of free text.
+Five opt-in additions make it carry typeset structure; with default
+arguments every element renders exactly as before.
+
+- **`TableSpan(content, columns=None, align=None, style=None, rule_above=True)`**
+  is a cell covering adjacent columns (`None` covers the rest of the
+  row). It is sized after the ordinary cells: a narrow span leaves the
+  columns alone, a wide one shares its excess over the columns it covers
+  in proportion to their widths. Its string content takes the first
+  column's style with `style` laid over it.
+- **`Table(max_rows=, more="+ {n} more")`** shows at most `max_rows` body
+  rows (the header is not counted) and closes the table with one
+  spanning, muted row. `more` is a `str.format` template given `n`, or a
+  `TableSpan` whose content is that template. For grouped rows, slice
+  each group yourself and close it with a `TableSpan`.
+- **`Table(row_styles=, rules_after=)`**: `row_styles` is the row-wise twin
+  of `column_styles` (a dict `{row: style}` or one dict per row);
+  `rules_after` draws a hairline after the named rows to separate groups.
+- **`BarChart(mark="units", wrap=, cell=, rules_after=)`** draws a count as
+  a run of countable `MiniRaster` cells beside its label and number, all
+  runs starting at one x. `MiniRaster.from_counts([(n, colour), ...],
+  columns=)` packs the same composition into a waffle; pair it with a
+  `Legend` whose labels carry the counts. `wrap`, `cell` and
+  `rules_after` shape unit runs only; with `mark="bar"` they raise.
+- **`MiniScatter(declutter="dodge")`** keeps a pile of points readable: the
+  last-drawn point keeps its place, true duplicates and redundant hollow
+  points are dropped, other colliding points move at most `r_i + r_j`,
+  and a point with no free spot is drawn as a ring around the one that
+  hides it. No colour disappears.
+- **`Timeline` point events**: a task whose duration is `None` is a marker
+  at its time (the fourth field a `Marker` or a colour); repeats at one
+  time show `×k`. `label_size`, `axis_size` and `tick_labels="ends"`
+  shrink the lane gutter and the axis so a timeline fits in a card.
+
+A mapping (what a translation layer takes in and gives out) is a `Table`
+recipe, not a separate element: sources in one row, a row of bare `Arrow`
+glyphs, targets in the next row, each side typed by `row_styles`, so all
+glyphs share one line. Wrap an individual source or target cell (an
+Element, e.g. a styled `Text`) in `Anchor` when a wire must land on a
+crossing.
+
+```python
+from sciviz import (Anchor, BarChart, Column, Diagram, Marker, MiniPoint, MiniScatter,
+                    Table, TableSpan, Text, Timeline)
+from sciviz.elements import Arrow
+
+params = [["9 channels", "range", "unit"],
+          ["humidity", "20-70", "%"], ["period", "0.3-1.0", "s"],
+          ["albedo", "0.4-0.9", ""], ["pH", "4-9", ""]]
+channels = Table(params + [[TableSpan("Sampling: 100 readings", style={"weight": "700"})]],
+                 header=True, rules="rows", col_align=["start", "end", "start"],
+                 column_styles=[{}, {}, {"color": "text_muted"}])
+short = Table(params, header=True, rules="rows", max_rows=2)   # "+ 2 more"
+
+mapping = Table(
+    [["display names", "temp 21", "pressure 1013", "gain x2.0"],
+     ["", Arrow(direction="down", label=None), Arrow(direction="up", label=None),
+      Arrow(direction="down", label=None)],
+     ["logger keys", Anchor("cfg", Text("temp_c=21", font="mono", size="small")),
+      "pressure_hpa=1013", "gain 2.0"]],
+    col_align=["end", "center", "center", "center"],
+    row_styles={0: {"size": "small"}, 2: {"font": "mono", "size": "small"}},
+    column_styles=[{"color": "text_muted", "italic": True}, {}, {}, {}])
+
+fruit = BarChart([("Apples", 5, "5", "#1f4e79"),
+                  ("Oranges", 24, "24", "#9ca3af"),
+                  ("Pears", 32, "32", "#6b7280")],
+                 mark="units", wrap=12, label_size="tiny", value_size="tiny",
+                 rules_after=(0,))
+
+pile = MiniScatter([MiniPoint(0.05, 0.95, color="#9ca3af"),
+                    MiniPoint(0.05, 0.95, color="#1f4e79")],
+                   width=64, height=40, declutter="dodge")
+
+events = Timeline([("Calibration", [(0.5, None, "start", Marker("square"))]),
+                   ("Samples", [(g + 0.5, None, "sample") for g in (1, 3, 5, 7, 9)])],
+                  t_min=0, t_max=10, width=90, lane_h=9, tick_every=1,
+                  lane_label_width="auto", label_size="tiny", axis_size="tiny",
+                  tick_labels="ends", show_axis=True)
+figure = Diagram.for_paper(Column(channels, short, mapping, fruit, pile, events, gap="md"))
+```

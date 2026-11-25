@@ -74,6 +74,15 @@ def _xml_escape(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _baseline_px(sz: float) -> float:
+    """Baseline of a single text line below the top of its line box.
+
+    The one formula :class:`Text` draws with and reports through
+    ``first_baseline``, so a baseline-aligned row lines up drawn ink.
+    """
+    return sz * 0.88
+
+
 def _text_ink_y(theme: Theme, size) -> tuple[float, float]:
     """Return the visual text band inside sciviz's single-line text box.
 
@@ -82,7 +91,7 @@ def _text_ink_y(theme: Theme, size) -> tuple[float, float]:
     headers/cards appear optically off-centre.
     """
     sz = theme.size_px(size)
-    baseline = sz * 0.88
+    baseline = _baseline_px(sz)
     ascent = sz * 0.82
     descent = sz * 0.22
     return baseline - ascent, ascent + descent
@@ -107,6 +116,11 @@ class Text(Element):
     align : str
         ``"start"``, ``"middle"`` / ``"center"`` or ``"end"``.
     font, rotate : pass-through to the single-line renderer.
+    ink_center : bool
+        Opt-in, default ``False`` (the text is drawn exactly as before). ``True`` draws a plain, unrotated line
+        with the centre of its INK (its glyph outlines, :mod:`sciviz.inkcenter`) on the centre of its measured
+        box, in both directions, and reports that ink as its content box: a short label in a box, tile or badge
+        (a digit, an identifier) is then centred as the eye sees it, not by its advance box and line band.
     """
 
     def __init__(self, content: Union[str, Sequence[RunInput]], *,
@@ -114,7 +128,9 @@ class Text(Element):
                  color: str = "dark", weight: str = "normal",
                  italic: bool = False, align: str = "start",
                  font: Optional[str] = None,
-                 rotate: float = 0.0):
+                 rotate: float = 0.0,
+                 ink_center: bool = False):
+        self.ink_center = bool(ink_center)
         if isinstance(content, str):
             self._runs: List[Run] = [(content, {})]
             self.content = content
@@ -170,12 +186,48 @@ class Text(Element):
             return BBox(h, w)
         return BBox(w, h)
 
+    def _ink_layout(self, theme: Theme):
+        """``(pen x, baseline y, ink box)`` inside the measured box of an ink-centred line, else ``None``.
+
+        Only for ``ink_center=True`` on a plain, unrotated line whose outlines can be measured: the ink box
+        ``(x, y, w, h)`` has its centre on the centre of the measured box.
+        """
+        if not getattr(self, "ink_center", False) or self.is_runs or self.rotate:
+            return None
+        from ..inkcenter import ink_box
+        family = self._resolved_font(theme) or getattr(theme, "font_family", None)
+        box = ink_box(self.content, theme.size_px(self.size), family,
+                      bold=self.weight in ("bold", "600", "700"), italic=self.italic)
+        if box is None:
+            return None
+        x0, y0, x1, y1, _advance = box
+        bbox = self.measure(theme)
+        pen = bbox.w / 2 - 0.5 * (x0 + x1)
+        base = bbox.h / 2 + 0.5 * (y0 + y1)
+        return pen, base, (pen + x0, base - y1, x1 - x0, y1 - y0)
+
     def content_bbox(self, theme: Theme) -> tuple[float, float, float, float]:
         bbox = self.measure(theme)
         if self.rotate in (90, -90, 270, -270):
             return (0.0, 0.0, bbox.w, bbox.h)
+        ink = self._ink_layout(theme)
+        if ink is not None:
+            return ink[2]
         top, h = _text_ink_y(theme, self.size)
         return (0.0, top, bbox.w, h)
+
+    def first_baseline(self, theme: Theme):
+        """Baseline below the content-box top; ``None`` when rotated.
+
+        See :mod:`sciviz.layout._baseline` for the protocol.
+        """
+        if self.rotate in (90, -90, 270, -270):
+            return None
+        ink = self._ink_layout(theme)
+        if ink is not None:
+            return ink[1] - ink[2][1]
+        top, _h = _text_ink_y(theme, self.size)
+        return _baseline_px(theme.size_px(self.size)) - top
 
     def _render_plain(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         sz = theme.size_px(self.size)
@@ -200,7 +252,7 @@ class Text(Element):
                 f'{extra}>{_xml_escape(self.content)}</text>'
             )
             return
-        baseline = y + sz * 0.88
+        baseline = y + _baseline_px(sz)
         if self.align in ("middle", "center"):
             tx = x + bbox.w / 2
             svg_anchor = "middle"
@@ -210,6 +262,9 @@ class Text(Element):
         else:
             tx = x
             svg_anchor = "start"
+        ink = self._ink_layout(theme)
+        if ink is not None:                  # opt-in: the ink's centre on the centre of the measured box
+            tx, baseline, svg_anchor = x + ink[0], y + ink[1], "start"
         canvas.text(tx, baseline, self.content, size=sz, fill=fill,
                     weight=self.weight, italic=self.italic, anchor=svg_anchor,
                     font_family=self._resolved_font(theme))
@@ -218,7 +273,7 @@ class Text(Element):
         sz = theme.size_px(self.size)
         default_fill = theme.color_of(self.color)
         bbox = self.measure(theme)
-        baseline = y + sz * 0.88
+        baseline = y + _baseline_px(sz)
         # Resolve anchor position.
         if self.align in ("middle", "center"):
             tx = x + bbox.w / 2
@@ -473,6 +528,17 @@ class TextBlock(Element):
         y0 = ink_top
         y1 = (len(lines) - 1) * line_h + ink_top + ink_h
         return (x0, y0, max(0.0, x1 - x0), max(0.0, y1 - y0))
+
+    def first_baseline(self, theme: Theme):
+        """Baseline of the first line below the content-box top.
+
+        Every line is drawn as a :class:`Text`, so the first line's
+        baseline is a ``Text`` baseline.  ``None`` for an empty block.
+        """
+        if not self._wrapped_lines(theme):
+            return None
+        top, _h = _text_ink_y(theme, self.size)
+        return _baseline_px(theme.size_px(self.size)) - top
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         lines = self._wrapped_lines(theme)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import List, Union
 
 from ..core import BBox, Canvas, Element, Theme
+from ._rhythm import Rhythm
 from ._row import Row, _validate_align
 
 
@@ -19,11 +20,35 @@ def _validate_justify(container: str, justify: str) -> str:
     return justify
 
 
+def _end_lane(child, theme: Theme, end: int) -> float:
+    """Flow-lane margin at one end (0 = top, 1 = bottom) of a stacked child.
+
+    An :class:`~sciviz.Anchor` reports its reserved corridor on that side;
+    a nested column reports its own end lane; anything else has none.
+    """
+    sides = getattr(child, "stretch_decoration_sides", None)
+    if sides is not None:
+        try:
+            return float(sides(theme)[2 + end])
+        except Exception:  # pragma: no cover - defensive
+            return 0.0
+    lanes = getattr(child, "flow_lanes", None)
+    if lanes is not None:
+        return float(lanes(theme)[end])
+    return 0.0
+
+
 class Column(Element):
     """Vertical container. See :class:`sciviz.layout.Row` for details.
 
     Parameters
     ----------
+    gap : str, float or Rhythm
+        Spacing between consecutive children: a token (``"md"``), a
+        number of pixels, or a :class:`~sciviz.Rhythm`, which sets every
+        gutter of every container sharing it to one content-to-content
+        distance and lets the facing flow lanes of stacked neighbours
+        share that gutter instead of stacking up.
     align : str
         Cross-axis (horizontal) placement of children: ``"start"``,
         ``"center"``, ``"end"``, or ``"stretch"``. ``"stretch"`` first
@@ -67,10 +92,21 @@ class Column(Element):
     # optically centred.
     absorbs_cross_axis_stretch = True
 
-    def __init__(self, *children: Element, gap: Union[str, float] = "md",
+    def __init__(self, *children: Element,
+                 gap: Union[str, float, Rhythm] = "md",
                  align: str = "center", equal_widths: bool = False,
-                 justify: str = "between", grow: bool = False):
+                 justify: str = "between", grow: bool = False,
+                 share_columns: bool = True):
         self.children: List[Element] = [c for c in children if c is not None]
+        if isinstance(gap, Rhythm):
+            gap._join(self, "y")
+        # Stacked rows of the same shape line up as one grid by default.
+        # ``share_columns=False`` declares that this column's children are
+        # not a grid -- a station title over its picture, a caption over
+        # a chart -- so a two-part title row is never stretched onto the
+        # slots of an unrelated two-part row nested below it, and the
+        # column offers no aggregate grid to its own parent.
+        self.share_columns = bool(share_columns)
         self.gap = gap
         self.align = _validate_align("Column", align)
         self.justify = _validate_justify("Column", justify)
@@ -88,6 +124,10 @@ class Column(Element):
         # inside the column absorb this height before we fall back to
         # distributing it across gaps.
         self._min_height: float = 0.0
+
+    def __setstate__(self, state):
+        # A copy joins the copy of its Rhythm (see ``Rhythm._rejoin``).
+        Rhythm._rejoin(self, state, "y")
 
     def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
         """Grow the Column's outer frame to a requested width and height.
@@ -114,9 +154,9 @@ class Column(Element):
         visible = self._visible_children()
         if not visible:
             return
-        g = theme.gap_px(self.gap)
         sizes = [child.measure(theme) for child in visible]
-        natural = sum(size.h for size in sizes) + g * (len(visible) - 1)
+        natural = (sum(size.h for size in sizes)
+                   + self._gaps_total(theme, visible))
         surplus = self._min_height - natural
         if surplus <= 0.5:
             return
@@ -133,6 +173,50 @@ class Column(Element):
     def _visible_children(self):
         return [c for c in self.children
                 if not getattr(c, "is_layout_invisible", False)]
+
+    def _gap_list(self, theme: Theme, visible) -> List[float]:
+        """Spacing after each visible child (one entry per child)."""
+        if isinstance(self.gap, Rhythm):
+            return self.gap.spacings(self, theme)
+        ridden = self._ridden_gaps(theme, visible)
+        if ridden is not None:
+            return ridden
+        return [theme.gap_px(self.gap)] * len(visible)
+
+    def _gaps_total(self, theme: Theme, visible) -> float:
+        """Sum of the spacings between the visible children."""
+        if isinstance(self.gap, Rhythm):
+            return sum(self._gap_list(theme, visible)[:-1])
+        ridden = self._ridden_gaps(theme, visible)
+        if ridden is not None:
+            return sum(ridden[:-1])
+        return theme.gap_px(self.gap) * max(0, len(visible) - 1)
+
+    def _ridden_gaps(self, theme: Theme, visible):
+        """The spacings of a column that stacks a child titled on its
+        border line (the ``wall_overhang`` protocol); ``None`` for every
+        other column, which keeps its one gap.
+
+        The gap is the distance from a neighbour to the WALL: the half
+        title above a top wall (or below a bottom one) rides in that gap
+        and takes none of its own, up to the whole gap. A title higher
+        than the gap leaves the neighbour touching it, never overlapping.
+        """
+        over = []
+        for child in visible:
+            fn = getattr(child, "wall_overhang", None)
+            if fn is None:
+                over.append((0.0, 0.0))
+                continue
+            top, bottom = fn(theme)
+            over.append((max(0.0, float(top)), max(0.0, float(bottom))))
+        if not any(top > 0.0 or bottom > 0.0 for top, bottom in over):
+            return None
+        gap = theme.gap_px(self.gap)
+        gaps = [gap] * len(visible)
+        for i in range(len(visible) - 1):
+            gaps[i] = max(0.0, gap - over[i][1] - over[i + 1][0])
+        return gaps
 
     # ---- AlignedStack-style normalisation (always-on) --------------------
     # Column inherits the two key AlignedStack behaviours so that authors
@@ -174,6 +258,8 @@ class Column(Element):
             norm = getattr(c, "_normalize_shape_peers", None)
             if norm is not None:
                 norm(theme)
+        if not self.share_columns:
+            return
         per_child = []
         for c in self.children:
             fn = getattr(c, "_shared_column_widths", None)
@@ -218,6 +304,8 @@ class Column(Element):
 
     def _shared_column_widths(self, theme: Theme) -> List[float]:
         """Expose aggregate semantic columns from nested row children."""
+        if not self.share_columns:
+            return []
         per_child = []
         for child in self.children:
             probe = getattr(child, "_shared_column_widths", None)
@@ -237,6 +325,8 @@ class Column(Element):
         return shared
 
     def _apply_shared_columns(self, widths) -> None:
+        if not self.share_columns:
+            return
         for child in self.children:
             apply = getattr(child, "_apply_shared_columns", None)
             if apply is not None:
@@ -341,16 +431,95 @@ class Column(Element):
         sizes = [c.measure(theme) for c in self.children]
         visible = self._visible_children()
         vis_sizes = [c.measure(theme) for c in visible]
-        g = theme.gap_px(self.gap)
         content = [c.content_bbox(theme) for c in self.children]
         left_extent, right_extent = self._cross_extents(sizes, content, theme)
         w = left_extent + right_extent
         if self._min_width > w:
             w = self._min_width
-        n_vis = max(len(visible), 1)
-        h = sum(s.h for s in vis_sizes) + g * (n_vis - 1)
+        h = sum(s.h for s in vis_sizes) + self._gaps_total(theme, visible)
         h = max(h, self._min_height)
         return BBox(w, h)
+
+    def flow_lanes(self, theme: Theme) -> tuple[float, float]:
+        """Flow-lane margins (top, bottom) this column carries at its ends.
+
+        A wire leaving the top of the column's first child (or entering
+        the bottom of its last) reserves a corridor on that child's
+        :class:`~sciviz.Anchor`. That corridor is the column's own outer
+        lane, not part of its content: a sibling column without a wire
+        must line its first child up with this one's first child, and the
+        corridor then runs above both.
+        """
+        visible = self._visible_children()
+        if not visible:
+            return 0.0, 0.0
+        return _end_lane(visible[0], theme, 0), _end_lane(visible[-1], theme, 1)
+
+    def content_bbox(self, theme: Theme):
+        """The measured box minus the flow lanes at its two ends.
+
+        Containers align siblings on their content boxes (a
+        ``Row(align="start")`` lines up content tops and keeps the largest
+        reserve above them), so excluding the lanes is what keeps a
+        station whose title carries a wire level with the stations beside
+        it. A column without end lanes reports its whole box, as before.
+        """
+        b = self.measure(theme)
+        top, bottom = self.flow_lanes(theme)
+        if top <= 0.0 and bottom <= 0.0:
+            return (0.0, 0.0, b.w, b.h)
+        return (0.0, top, b.w, max(0.0, b.h - top - bottom))
+
+    def _main_axis_lead(self, theme: Theme) -> tuple[float, list]:
+        """``(lead, gaps)``: where the first child starts and the realised
+        spacing after each visible child once any height surplus is
+        distributed."""
+        visible = self._visible_children()
+        gaps = self._gap_list(theme, visible)
+        natural_h = (
+            sum(c.measure(theme).h for c in visible)
+            + self._gaps_total(theme, visible)
+        )
+        residual = max(0.0, self.measure(theme).h - natural_h)
+        effective_gap = 0.0
+        lead = 0.0
+        if residual > 0.0:
+            if len(visible) == 1:
+                # A lone child keeps optical centring in every mode except
+                # the explicit pins ("between" has no gaps to grow).
+                lead = (0.0 if self.justify == "start"
+                        else residual if self.justify == "end"
+                        else residual / 2)
+            elif self.justify == "between":
+                effective_gap += residual / (len(visible) - 1)
+            elif self.justify == "center":
+                lead = residual / 2
+            elif self.justify == "end":
+                lead = residual
+        if effective_gap:
+            gaps = [g + effective_gap for g in gaps]
+        return lead, gaps
+
+    def first_baseline(self, theme: Theme):
+        """First text baseline below the column's content-box top.
+
+        The first child (top to bottom) that has a baseline supplies it,
+        as in CSS block layout, so a card body ``Column(title, picture,
+        caption)`` reports its title line to a ``Row(align="baseline")``.
+        """
+        from ._baseline import first_baseline
+        visible = self._visible_children()
+        if not visible:
+            return None
+        lead, gaps = self._main_axis_lead(theme)
+        top = self.content_bbox(theme)[1]
+        cy = lead
+        for child, gap in zip(visible, gaps):
+            b = first_baseline(child, theme)
+            if b is not None:
+                return cy + child.content_bbox(theme)[1] + b - top
+            cy += child.measure(theme).h + gap
+        return None
 
     def _cross_extents(self, sizes, content, theme) -> tuple[float, float]:
         """Outer space required on each side of the shared content axis.
@@ -400,7 +569,6 @@ class Column(Element):
             if getattr(c, "stretch_main_axis", False) and hasattr(c, "set_stretched_length"):
                 c.set_stretched_length(W)
         sizes = [c.measure(theme) for c in self.children]
-        g = theme.gap_px(self.gap)
         content = [c.content_bbox(theme) for c in self.children]
         left_extent, right_extent = self._cross_extents(sizes, content, theme)
         natural_w = left_extent + right_extent
@@ -410,26 +578,7 @@ class Column(Element):
         # right and a centred stack appears left-aligned.
         extra_cross_space = max(0.0, W - natural_w)
         visible = self._visible_children()
-        natural_h = (
-            sum(c.measure(theme).h for c in visible)
-            + g * max(0, len(visible) - 1)
-        )
-        residual = max(0.0, self.measure(theme).h - natural_h)
-        effective_gap = g
-        lead = 0.0
-        if residual > 0.0:
-            if len(visible) == 1:
-                # A lone child keeps optical centring in every mode except
-                # the explicit pins ("between" has no gaps to grow).
-                lead = (0.0 if self.justify == "start"
-                        else residual if self.justify == "end"
-                        else residual / 2)
-            elif self.justify == "between":
-                effective_gap += residual / (len(visible) - 1)
-            elif self.justify == "center":
-                lead = residual / 2
-            elif self.justify == "end":
-                lead = residual
+        lead, gaps = self._main_axis_lead(theme)
         cy = y + lead
         visible_index = 0
         stretch_lane_l = 0.0
@@ -461,4 +610,4 @@ class Column(Element):
                 visible_index += 1
                 cy += size.h
                 if visible_index < len(visible):
-                    cy += effective_gap
+                    cy += gaps[visible_index - 1]

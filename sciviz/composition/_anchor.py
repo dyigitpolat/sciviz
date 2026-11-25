@@ -14,6 +14,12 @@ from ..core import BBox, Canvas, Element, Theme
 from ..core._routing_context import routing_registry_stack as _anchor_stack
 
 
+#: Registry key prefix under which :class:`Anchor` records the body
+#: ports (``{side: (x, y, w, h)}``) of a child whose ``port_bbox``
+#: differs from its layout box.
+PORT_PREFIX = "__port_"
+
+
 class Anchor(Element):
     """Wrap a child and register its rendered bbox under a name.
 
@@ -49,6 +55,12 @@ class Anchor(Element):
         return BBox(b.w + self.margin_left + self.margin_right,
                     b.h + self.margin_top + self.margin_bottom)
 
+    @property
+    def absorbs_main_axis_stretch(self) -> bool:
+        """An anchor is transparent to the grow protocol: it absorbs a
+        parent column's surplus height when the wrapped child does."""
+        return bool(getattr(self.child, "absorbs_main_axis_stretch", False))
+
     def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
         """Forward inflate requests to the wrapped child, accounting for
         the anchor's own margins. The Anchor's outer bbox grows because
@@ -75,6 +87,31 @@ class Anchor(Element):
         is a real container-level lane instead of a per-child indent."""
         return (self.margin_left, self.margin_right,
                 self.margin_top, self.margin_bottom)
+
+    def frame_bbox(self, theme: Theme):
+        """The wrapped child's wall rectangle (the ``frame_bbox``
+        protocol: a region titled on its border line), translated past
+        the anchor's margins; ``None`` when the child declares none. An
+        anchor is transparent to it, so a named region aligns and
+        equalises on its walls like a bare one."""
+        fn = getattr(self.child, "frame_bbox", None)
+        frame = fn(theme) if fn is not None else None
+        if frame is None:
+            return None
+        fx, fy, fw, fh = frame
+        return (self.margin_left + fx, self.margin_top + fy, fw, fh)
+
+    def wall_overhang(self, theme: Theme) -> tuple[float, float]:
+        """The wrapped child's overhang (top, bottom) outside its walls
+        (the ``wall_overhang`` protocol), where it reaches the anchor's
+        own edge: a flow-lane margin on a side keeps its room, so nothing
+        rides in a neighbour's gap past it."""
+        fn = getattr(self.child, "wall_overhang", None)
+        if fn is None:
+            return 0.0, 0.0
+        top, bottom = fn(theme)
+        return (top if self.margin_top <= 0.0 else 0.0,
+                bottom if self.margin_bottom <= 0.0 else 0.0)
 
     def content_bbox(self, theme: Theme):
         """The inner child bbox, excluding margins.  Layout containers use
@@ -104,6 +141,15 @@ class Anchor(Element):
             return (self.margin_left + px, self.margin_top + py, pw, ph)
         return self.content_bbox(theme)
 
+    def port_bbox(self, theme: Theme, side: str):
+        """The child's body port on ``side`` (see
+        :meth:`Element.port_bbox`), translated past the anchor margins."""
+        port = self.child.port_bbox(theme, side)
+        if port is None:
+            return None
+        px, py, pw, ph = port
+        return (self.margin_left + px, self.margin_top + py, pw, ph)
+
     def iter_primary_anchors(self, theme: Theme):
         out = []
         for px, py, pw, ph in self.child.iter_primary_anchors(theme):
@@ -116,11 +162,37 @@ class Anchor(Element):
         child_y = y + self.margin_top
         # Register the CHILD's position, not the padded anchor bbox, so
         # flow endpoints land on the child's actual boundary.
+        layout = (child_x, child_y, b.w, b.h)
         stack = _anchor_stack.get()
+        ports = {}
         if stack is not None:
+            for side in ("top", "bottom", "left", "right"):
+                port = self.child.port_bbox(theme, side)
+                if port is None:
+                    continue
+                px, py, pw, ph = port
+                box = (child_x + px, child_y + py, pw, ph)
+                if box != layout:
+                    ports[side] = box
             for reg in stack:
-                reg[self.name] = (child_x, child_y, b.w, b.h)
+                reg[self.name] = layout
+        ink = getattr(canvas, "ink_items", None)
+        first_ink = len(ink()) if (ports and ink is not None) else 0
         self.child.render(canvas, child_x, child_y, theme)
+        if ports:
+            # Body ports ride beside the layout box: obstacles, flow
+            # margins and label obstacles keep the layout box, and only
+            # the tap point moves onto the drawing. A side whose run out
+            # to the layout edge crosses the child's OWN ink (a caption,
+            # a bypass arc) keeps the layout box.
+            own = ink()[first_ink:] if ink is not None else []
+            for side in list(ports):
+                blocked = _blocked_spans(layout, ports[side], side, own)
+                if blocked:
+                    ports[blocked_key(side)] = blocked
+            if ports:
+                for reg in stack:
+                    reg[PORT_PREFIX + self.name] = ports
 
     def _bump_margin(self, side: str, amount: float) -> None:
         if side in ("left",):
@@ -131,6 +203,63 @@ class Anchor(Element):
             self.margin_top = max(self.margin_top, amount)
         elif side in ("bottom", "bottomleft", "bottomright"):
             self.margin_bottom = max(self.margin_bottom, amount)
+
+
+def blocked_key(side: str) -> str:
+    """Key under which an anchor's port record lists the stretches of
+    ``side`` whose run out to the layout edge crosses the child's own ink."""
+    return side + "_blocked"
+
+
+def _blocked_spans(layout, port, side: str, ink):
+    """Stretches ``(lo, hi)`` along ``side`` where the run from ``port``
+    out to the ``layout`` edge crosses the child's own ``ink`` (an outside
+    label, a frame tab, a caption). A wire tapping there stops at the
+    layout edge instead of cutting through that text."""
+    if not _run_crosses_ink(layout, port, side, ink):
+        return []
+    px, py, pw, ph = port
+    lx, ly, lw, lh = layout
+    horizontal = side in ("top", "bottom")
+    lo, hi = (px, px + pw) if horizontal else (py, py + ph)
+    strip = {"left": (lx, px), "right": (px + pw, lx + lw),
+             "top": (ly, py), "bottom": (py + ph, ly + lh)}[side]
+    out = []
+    for (x0, y0, x1, y1, *_kind) in ink:
+        a0, a1, c0, c1 = (x0, x1, y0, y1) if horizontal else (y0, y1, x0, x1)
+        if min(c1, strip[1]) - max(c0, strip[0]) > 0.5 \
+                and min(a1, hi) - max(a0, lo) > 0.5:
+            out.append((max(a0, lo), min(a1, hi)))
+    return sorted(out)
+
+
+def _run_crosses_ink(layout, port, side: str, ink) -> bool:
+    """Whether the strip between ``port``'s ``side`` and ``layout``'s
+    crosses any of the ``(x0, y0, x1, y1, kind)`` ink items."""
+    px, py, pw, ph = port
+    lx, ly, lw, lh = layout
+    strip = {"left": (lx, py, px, py + ph),
+             "right": (px + pw, py, lx + lw, py + ph),
+             "top": (px, ly, px + pw, py),
+             "bottom": (px, py + ph, px + pw, ly + lh)}.get(side)
+    if strip is None:
+        return True
+    sx0, sy0, sx1, sy1 = strip
+    if sx1 - sx0 <= 0.5 or sy1 - sy0 <= 0.5:
+        return False
+    eps = 0.5
+    return any(min(x1, sx1) - max(x0, sx0) > eps
+               and min(y1, sy1) - max(y0, sy0) > eps
+               for (x0, y0, x1, y1, *_kind) in ink)
+
+
+def port_face(registry: dict, name: str, side: str):
+    """The box a wire to anchor ``name`` lands on at ``side``: the body
+    port :class:`Anchor` recorded, else the registered layout box."""
+    ports = registry.get(PORT_PREFIX + name)
+    if ports and side in ports:
+        return ports[side]
+    return registry.get(name)
 
 
 def _side_point(bbox, side: str):

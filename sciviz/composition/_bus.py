@@ -49,7 +49,56 @@ class Bus:
                  color = "muted_label",
                  arrow: bool = True,
                  auto_route: bool = True,
-                 orientation: str = "auto"):
+                 orientation: str = "auto",
+                 min_shaft: Optional[float] = None,
+                 src_room: Optional[float] = None,
+                 dst_room: Optional[float] = None,
+                 corner_radius: Optional[float] = None,
+                 flush_head: bool = False):
+        """
+        ``flush_head`` -- ``False`` (default) ends every arrowed stroke a
+            tenth of the head before the tip, as before: with a head only
+            a few strokes wide the stroke's square end shows beside the
+            tip. ``True`` ends the stroke inside the head, where the head
+            is as wide as the stroke, with the tip where it stood.
+
+        ``corner_radius`` -- how the bus turns where exactly two of its
+            strokes meet at a right angle (an outermost tap and the end
+            of the spine, a rail and its tap). ``None`` (default) draws
+            every stroke as its own butt-ended segment, as before. A
+            number draws each such corner as one stroke: rounded by that
+            radius (px), or sharp and closed for ``0``. A corner never
+            takes more than half of a stroke between two corners, never
+            reaches the next junction on its stroke and never cuts into
+            the shaft an arrowhead needs. A junction of three strokes
+            (a tap on the spine's run) stays a T.
+
+        ``min_shaft`` -- the least straight shaft (px) that stays visible
+            between the spine (the last bend) and the base of an
+            arrowhead on a sink. ``None`` (default) keeps the theme's
+            floor (:attr:`Theme.arrow_stub_px` under a horizontal spine,
+            the middle of the gap beside a vertical one). A number makes
+            the spine keep the head plus that shaft from the arrowed
+            edge wherever the gap between the clusters allows, and the
+            layout reserve that much beside each sink.
+
+        ``src_room`` / ``dst_room`` -- the room (px) the layout reserves
+            beside every source / sink anchor for this bus. ``None``
+            (default) keeps the automatic reservation; a number sets it
+            (``0``: the surrounding layout gap already holds the spine
+            and the entering shaft).
+        """
+        for _name, _v in (("min_shaft", min_shaft), ("src_room", src_room),
+                          ("dst_room", dst_room),
+                          ("corner_radius", corner_radius)):
+            if _v is not None and float(_v) < 0.0:
+                raise ValueError(f"{_name} must be >= 0; got {_v!r}")
+        self.corner_radius = (None if corner_radius is None
+                              else float(corner_radius))
+        self.flush_head = bool(flush_head)
+        self.min_shaft = None if min_shaft is None else float(min_shaft)
+        self.src_room = None if src_room is None else float(src_room)
+        self.dst_room = None if dst_room is None else float(dst_room)
         self.sources = [sources] if isinstance(sources, str) else list(sources)
         self.sinks   = [sinks]   if isinstance(sinks,   str) else list(sinks)
         self.label = label
@@ -119,6 +168,131 @@ class Bus:
         if registry is not None:
             register_label_obstacle(registry, placed.rect, "bus")
 
+    def _sink_stub(self, theme: Theme) -> float:
+        """Least run from the spine to an arrowed sink edge: the head and
+        the shaft that must stay visible behind it (``min_shaft`` when
+        the author set one, else the theme's :attr:`Theme.arrow_stub_px`)."""
+        if getattr(self, "min_shaft", None) is not None:
+            return theme.arrow_head_px + self.min_shaft
+        return theme.arrow_stub_px
+
+    @staticmethod
+    def _draw_with_corners(canvas: Canvas, segments: List[list],
+                           radius: float, *, stroke: str, width: float,
+                           dasharray: Optional[str], draw: Callable,
+                           keep: float) -> None:
+        """Draw the bus's strokes with every corner of two strokes as one.
+
+        ``segments`` are ``[x1, y1, x2, y2, end_marker]`` (axis-aligned;
+        a marker only at the second end). A *corner* is a point where
+        exactly two strokes end at a right angle and nothing else of the
+        bus touches; an end that carries a marker is never one. Both
+        strokes give up the same length there (``radius``, less where a
+        stroke is short: half of a stroke between two corners, the run to
+        the next junction on it, what an arrowed stroke has beyond
+        ``keep``), and one path turns the corner: a quadratic arc on the
+        corner point (the form of :func:`sciviz.connect.trunk.
+        round_corners`), or two sides with a mitred join where nothing can
+        be given up. Every stroke is then drawn by ``draw``.
+        """
+        eps = 0.5
+
+        def end(s, k):
+            return (s[0], s[1]) if k == 0 else (s[2], s[3])
+
+        def length(s):
+            return abs(s[2] - s[0]) + abs(s[3] - s[1])
+
+        def is_h(s):
+            return abs(s[1] - s[3]) < eps and abs(s[0] - s[2]) >= eps
+
+        def is_v(s):
+            return abs(s[0] - s[2]) < eps and abs(s[1] - s[3]) >= eps
+
+        def on(p, s):
+            return (min(s[0], s[2]) - eps <= p[0] <= max(s[0], s[2]) + eps
+                    and min(s[1], s[3]) - eps <= p[1] <= max(s[1], s[3]) + eps)
+
+        def near(p, q):
+            return abs(p[0] - q[0]) < eps and abs(p[1] - q[1]) < eps
+
+        segs = [s for s in segments if is_h(s) or is_v(s)]
+        other = [s for s in segments if not (is_h(s) or is_v(s))]
+        corners = []                     # (i, end of i, j, end of j)
+        for i, a in enumerate(segs):
+            for ka in (0, 1):
+                if ka == 1 and a[4]:
+                    continue
+                p = end(a, ka)
+                touching = [j for j, b in enumerate(segs)
+                            if j != i and on(p, b)]
+                if len(touching) != 1 or touching[0] < i:
+                    continue
+                j = touching[0]
+                b = segs[j]
+                if is_h(a) == is_h(b):
+                    continue
+                kb = next((k for k in (0, 1) if near(end(b, k), p)), None)
+                if kb is None or (kb == 1 and b[4]):
+                    continue
+                corners.append((i, ka, j, kb))
+        cornered = {(i, k) for i, ka, j, kb in corners
+                    for i, k in ((i, ka), (j, kb))}
+
+        def room(i, k):
+            """What stroke ``i`` can give up at its end ``k``."""
+            s = segs[i]
+            p = end(s, k)
+            full = length(s)
+            lim = full / 2.0 if (i, 1 - k) in cornered else full
+            if k == 0 and s[4]:
+                lim = min(lim, full - keep)
+            for j, b in enumerate(segs):
+                if j == i:
+                    continue
+                for q in (end(b, 0), end(b, 1)):
+                    if on(q, s) and not near(q, p):
+                        lim = min(lim, abs(q[0] - p[0]) + abs(q[1] - p[1]))
+            return max(0.0, lim)
+
+        cuts = []                        # (point, toward a, toward b, r)
+        for i, ka, j, kb in corners:
+            r = min(float(radius), room(i, ka), room(j, kb))
+            p = end(segs[i], ka)
+            dirs = []
+            for s, k in ((segs[i], ka), (segs[j], kb)):
+                far = end(s, 1 - k)
+                n = length(s) or 1.0
+                dirs.append(((far[0] - p[0]) / n, (far[1] - p[1]) / n))
+            cuts.append((p, dirs[0], dirs[1], r, (i, ka), (j, kb)))
+        for p, ua, ub, r, (i, ka), (j, kb) in cuts:
+            for (n, k), u in (((i, ka), ua), ((j, kb), ub)):
+                s = segs[n]
+                s[2 * k], s[2 * k + 1] = p[0] + u[0] * r, p[1] + u[1] * r
+        for p, ua, ub, r, (i, ka), (j, kb) in cuts:
+            # each side runs a little over its stroke, so no seam opens
+            # between the corner and the two strokes it joins
+            la = min(width, length(segs[i]) / 2.0)
+            lb = min(width, length(segs[j]) / 2.0)
+            a0 = (p[0] + ua[0] * (r + la), p[1] + ua[1] * (r + la))
+            a1 = (p[0] + ua[0] * r, p[1] + ua[1] * r)
+            b1 = (p[0] + ub[0] * r, p[1] + ub[1] * r)
+            b0 = (p[0] + ub[0] * (r + lb), p[1] + ub[1] * (r + lb))
+            if r > 1e-6:
+                d = (f"M {a0[0]:.3f},{a0[1]:.3f} L {a1[0]:.3f},{a1[1]:.3f} "
+                     f"Q {p[0]:.3f},{p[1]:.3f} {b1[0]:.3f},{b1[1]:.3f} "
+                     f"L {b0[0]:.3f},{b0[1]:.3f}")
+            else:
+                d = (f"M {a0[0]:.3f},{a0[1]:.3f} L {p[0]:.3f},{p[1]:.3f} "
+                     f"L {b0[0]:.3f},{b0[1]:.3f}")
+            xs, ys = (a0[0], p[0], b0[0]), (a0[1], p[1], b0[1])
+            canvas.path(d, stroke=stroke, stroke_width=width,
+                        dasharray=dasharray,
+                        ink_bbox=(min(xs), min(ys), max(xs), max(ys)))
+        for s in segs + other:
+            if length(s) > 1e-6 or s[4]:
+                draw(s[0], s[1], s[2], s[3], s[4])
+
     # ------------------------------------------------------------------
     # geometry helpers (pure, unit-testable through _render)
     # ------------------------------------------------------------------
@@ -166,11 +340,21 @@ class Bus:
         col = theme.color_of(self.color)
         dasharray = "4,3" if self.dashed else None
         sw = theme.connector
-        marker = (canvas.define_arrow_marker(
-                      color=col, stroke_width=sw,
-                      arrow_size=getattr(theme, "arrow_size", None),
-                      name_hint="bus")
-                  if self.arrow else None)
+        flush = bool(getattr(self, "flush_head", False))
+        if flush:
+            marker = (canvas.define_arrow_marker(
+                          color=col, stroke_width=sw,
+                          arrow_size=getattr(theme, "arrow_size", None),
+                          name_hint="bus", flush=True)
+                      if self.arrow else None)
+            inset = canvas.flush_inset(sw, theme.arrow_size)
+        else:
+            marker = (canvas.define_arrow_marker(
+                          color=col, stroke_width=sw,
+                          arrow_size=getattr(theme, "arrow_size", None),
+                          name_hint="bus")
+                      if self.arrow else None)
+            inset = 0.0
 
         drawn = registry.setdefault("__drawn_segments__", [])
 
@@ -178,14 +362,40 @@ class Bus:
             if abs(x1 - x2) > 0.5 or abs(y1 - y2) > 0.5:
                 drawn.append((x1, y1, x2, y2))
 
+        # Wires drawn before this bus: where a bus segment crosses one it
+        # hops it with the same arc a routed wire uses, so a crossing never
+        # reads as a junction (the bus's own T-joins are its junctions).
+        foreign = list(drawn)
+
+        def _stroke(x1, y1, x2, y2, end_marker=None):
+            from ..auto.router import (_draw_orthogonal_segment_with_hops,
+                                       hop_radius)
+            _draw_orthogonal_segment_with_hops(
+                canvas, x1, y1, x2, y2, stroke=col, width=sw,
+                dasharray=dasharray, marker_end=end_marker or None,
+                marker_start=None, existing_segments=foreign,
+                hop_radius=hop_radius(sw))
+
+        # With ``corner_radius`` set the strokes are held back until the
+        # whole bus is known, so each corner of two strokes is drawn as one
+        # (see :meth:`_draw_with_corners`). Unset, every stroke is drawn as
+        # it is planned, exactly as before.
+        radius = getattr(self, "corner_radius", None)
+        held: List[list] = []
+
         def _line(x1, y1, x2, y2, *, end_marker=None):
-            attrs = {"stroke": col, "stroke_width": sw}
-            if dasharray:
-                attrs["dasharray"] = dasharray
-            if end_marker:
-                attrs["marker_end"] = end_marker
-            canvas.line(x1, y1, x2, y2, **attrs)
             _record_segment(x1, y1, x2, y2)
+            if end_marker and inset > 0.0:
+                # a flush head: the stroke ends inside the head
+                run = abs(x2 - x1) + abs(y2 - y1)
+                if run > inset:
+                    x2 -= (x2 - x1) / run * inset
+                    y2 -= (y2 - y1) / run * inset
+            if radius is None:
+                _stroke(x1, y1, x2, y2, end_marker)
+            else:
+                held.append([float(x1), float(y1), float(x2), float(y2),
+                             end_marker])
 
         # Labels are deferred so they can dodge every wire in the scope.
         label_jobs: List[Callable[[], None]] = []
@@ -208,6 +418,12 @@ class Bus:
                 job()
 
         def _done() -> Optional[Callable[[], None]]:
+            if held:
+                self._draw_with_corners(
+                    canvas, held, radius, stroke=col, width=sw,
+                    dasharray=dasharray, draw=_stroke,
+                    keep=self._sink_stub(theme))
+                del held[:]
             if defer_label:
                 return _finish if label_jobs else None
             _finish()
@@ -344,7 +560,7 @@ class Bus:
                 # clamp normally has room; when it does not, a spine
                 # pressed against the SOURCE cluster still reads better
                 # than an invisible arrow.
-                stub = theme.arrow_stub_px
+                stub = self._sink_stub(theme)
                 sink_edge = gap_lo if source_below else gap_hi
                 spine_y = (gap_lo + gap_hi) / 2
                 if source_below:
@@ -513,6 +729,17 @@ class Bus:
                 dst_edge = lambda b: (b[0] + b[2], b[1] + b[3] / 2)
             if gap_lo < gap_hi:
                 spine_x = (gap_lo + gap_hi) / 2
+                if self.arrow and getattr(self, "min_shaft", None) is not None:
+                    # An author-set shaft: the spine keeps the head and
+                    # that shaft from the arrowed edge while the gap
+                    # allows, and never leaves the gap (a gap too narrow
+                    # presses it against the source cluster; the shaft
+                    # check then reports the short arm).
+                    stub = self._sink_stub(theme)
+                    if source_left:
+                        spine_x = max(gap_lo, min(spine_x, gap_hi - stub))
+                    else:
+                        spine_x = min(gap_hi, max(spine_x, gap_lo + stub))
             else:
                 if source_left:
                     spine_x = (max(b[0] + b[2] for b in src_boxes)

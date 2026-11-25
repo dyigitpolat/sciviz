@@ -125,14 +125,20 @@ class Flowed(Element):
                 # we don't know which boundary the flow will attach to.
                 # Pinned sides reserve caption-sized corridors (labels
                 # are part of the route contract).
+                # An end whose room the author set (``src_room`` /
+                # ``dst_room``) reserves exactly that.
+                src_room = getattr(flow, "src_room", None)
+                dst_room = getattr(flow, "dst_room", None)
                 if src is not None and flow.src_side != "auto":
                     src._bump_margin(
                         flow.src_side,
+                        src_room if src_room is not None else
                         label_corridor_reservation(
                             flow, theme, flow.src_side, flow.dst_side, m))
                 if dst is not None and flow.dst_side != "auto":
                     dst._bump_margin(
                         flow.dst_side,
+                        dst_room if dst_room is not None else
                         label_corridor_reservation(
                             flow, theme, flow.dst_side, flow.src_side, m))
             elif isinstance(flow, Bus):
@@ -219,7 +225,7 @@ class Flowed(Element):
             self.child.render(canvas, x, y, theme)
         finally:
             _anchor_stack.reset(token)
-        self._assign_edge_shares(my_registry)
+        self._assign_edge_shares(my_registry, theme)
         # Two-phase: wires first, labels after (see connect._resolver).
         label_passes = []
         for flow in self.flows:
@@ -230,8 +236,8 @@ class Flowed(Element):
         for finish in label_passes:
             finish()
 
-    def _assign_edge_shares(self, registry: dict) -> None:
-        _assign_edge_shares(self.flows, registry)
+    def _assign_edge_shares(self, registry: dict, theme=None) -> None:
+        _assign_edge_shares(self.flows, registry, theme)
 
 
 # ---------------------------------------------------------------------------

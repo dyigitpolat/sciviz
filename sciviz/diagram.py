@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import warnings
 from pathlib import Path
 from typing import Optional, Union
@@ -28,6 +29,7 @@ from .core import (
     FontRegistry, outline_svg_text,
 )
 from .core._aspect import AspectSpec
+from .core._measure_memo import measure_memo
 from .layout._aspect import collect_aspect_goals
 
 class Diagram:
@@ -116,6 +118,19 @@ class Diagram:
     # spacing density.
     _FIT_MIN_WRAP = 0.5
     _FIT_TOLERANCE = 1.05
+    # When the density fixed-point stalls above the target (width is not
+    # monotone in spacing), the fit brackets the target between the
+    # spacing floor and the looser trials, then bisects at most
+    # ``_FIT_SCAN_BISECT`` times towards the looser side, stopping once
+    # the bracket is narrower than a tenth of ``_FIT_SCAN_STEP`` (the
+    # density resolution of the search).
+    _FIT_SCAN_STEP = 0.05
+    _FIT_SCAN_BISECT = 4
+    _FIT_SECANT_STEPS = 3
+    # A wrap-budget trial that narrows the figure by less than this many
+    # points is no progress: the wrap continuation stops instead of
+    # creeping on a width that re-wrapping cannot move.
+    _FIT_MIN_GAIN = 0.5
     # Aspect fitting compresses in gentler geometric steps than width
     # fitting (height responds sub-linearly to spacing density).
     _FIT_ASPECT_STEP = 0.85
@@ -159,6 +174,8 @@ class Diagram:
         # Lazily-resolved layout-compressed theme (``target_width_pt``
         # fitting); ``None`` until the first measure/render resolves it.
         self._fitted_theme: Optional[Theme] = None
+        # Bookkeeping of the last target fit (see :meth:`fit_report`).
+        self._fit_stats: dict = {}
         self._fit_warned = False
         self._floor_warned = False
         self._last_render_size: Optional[BBox] = None
@@ -237,32 +254,60 @@ class Diagram:
         if self.target_width_pt is None:
             return self.theme
         if self._fitted_theme is None:
+            start = time.perf_counter()
+            self._fit_stats = {"trials": 0}
+            # The unmeasured tree, for :meth:`fit_report`'s width
+            # drivers (layout stretches siblings to shared widths).
+            try:
+                self._pristine_body = copy.deepcopy(self.body)
+            except Exception:  # pragma: no cover -- uncopyable tree
+                self._pristine_body = None
             self._fitted_theme = self._fit_theme_to_target()
+            self._fit_stats["seconds"] = time.perf_counter() - start
         return self._fitted_theme
 
     def _title_height(self) -> float:
         return self._title_height_for(self._layout_theme())
 
+    def page_size(self) -> BBox:
+        """Size of the exported page: the canvas :meth:`render` produces.
+
+        :meth:`measure` reports the laid-out box. Routed connectors, their
+        captions and margin detours can paint outside it, and the render
+        pass grows (then trims, then pins to ``target_width_pt``) the
+        canvas around that ink -- so the page an SVG/PDF/PNG export
+        carries can differ from :meth:`measure`. This is the size to
+        report or check against a page budget (in points when
+        ``target_width_pt`` is set).
+        """
+        if self._last_render_size is None:
+            self.render(embed_fonts=False)
+        return self._last_render_size
+
     def measure(self) -> BBox:
-        """Measure total diagram size (including margins, title, footer)."""
-        theme = self._layout_theme()
-        m = self._margin()
-        body_sz = self._body_for_render().measure(theme)
-        footer_sz = self._footer_size(theme, body_sz.w)
-        content_w = max(body_sz.w, footer_sz.w)
-        if self.title:
-            tw = theme.text_width(self.title, "title", bold=True)
-            content_w = max(content_w, tw)
-        if self.subtitle:
-            sw = theme.text_width(self.subtitle, "subtitle")
-            content_w = max(content_w, sw)
-        title_h = self._title_height()
-        body_gap = theme.unit * 2.0 if self.footer else 0.0
-        total_w = content_w + 2 * m
-        total_h = (title_h + body_sz.h
-                   + body_gap + footer_sz.h
-                   + 2 * m)
-        return BBox(total_w, total_h)
+        """Measure total diagram size (including margins, title, footer).
+
+        This is the laid-out box; see :meth:`page_size` for the exported
+        page, which also holds connector ink outside the layout."""
+        with measure_memo():
+            theme = self._layout_theme()
+            m = self._margin()
+            body_sz = self._body_for_render().measure(theme)
+            footer_sz = self._footer_size(theme, body_sz.w)
+            content_w = max(body_sz.w, footer_sz.w)
+            if self.title:
+                tw = theme.text_width(self.title, "title", bold=True)
+                content_w = max(content_w, tw)
+            if self.subtitle:
+                sw = theme.text_width(self.subtitle, "subtitle")
+                content_w = max(content_w, sw)
+            title_h = self._title_height()
+            body_gap = theme.unit * 2.0 if self.footer else 0.0
+            total_w = content_w + 2 * m
+            total_h = (title_h + body_sz.h
+                       + body_gap + footer_sz.h
+                       + 2 * m)
+            return BBox(total_w, total_h)
 
     def _footer_size(self, theme: Theme, body_width: float,
                      footer: Optional[Element] = None) -> BBox:
@@ -285,7 +330,8 @@ class Diagram:
 
     def _margin_for(self, theme: Theme) -> float:
         if self.chrome in ("none", "footer-only"):
-            return theme.unit * 0.5
+            return theme.elastic(theme.unit * 0.5,
+                                 theme.authored_unit_px * 0.5)
         return theme.diagram_margin
 
     # ------------------------------------------------------------------
@@ -304,12 +350,21 @@ class Diagram:
         as content. ``wrap_scale`` additionally compresses the wrap
         budget alone -- the fitter's continuation once the spacing
         density floor is reached.
+
+        Compression is elastic: the theme records the authored unit
+        (:attr:`Theme.authored_unit`), so gap tokens, paddings and the
+        margin stop at their print floor (:meth:`Theme.elastic`,
+        :attr:`Theme.min_space`) instead of shrinking towards zero while
+        strokes, arrowheads and fonts stay fixed.
         """
         base = self.theme
         return base.with_overrides(
             unit=base.unit * density,
-            panel_padding=base.panel_padding * density,
-            diagram_margin=base.diagram_margin * density,
+            authored_unit=base.authored_unit_px,
+            panel_padding=base.elastic(base.panel_padding * density,
+                                       base.panel_padding),
+            diagram_margin=base.elastic(base.diagram_margin * density,
+                                        base.diagram_margin),
             wrap_budget=base.wrap_budget * wrap_scale,
         )
 
@@ -376,8 +431,21 @@ class Diagram:
         """
         if not min_text or self.min_effective_font_pt <= 0.0:
             return target * self._FIT_TOLERANCE
-        return max(target * self._FIT_TOLERANCE,
-                   target * float(min_text) / self.min_effective_font_pt)
+        return target * float(min_text) / self.min_effective_font_pt
+
+    def _width_allowance(self, target: float,
+                         min_text: Optional[float]) -> float:
+        """Widest canvas that still counts as fitting ``target_width_pt``.
+
+        The fitter tolerates a small overshoot (:attr:`_FIT_TOLERANCE`),
+        which the export absorbs by scaling the figure down -- but a
+        scale-down shrinks the type, so the tolerance may never carry the
+        smallest text below ``min_effective_font_pt``. An author who
+        authors at the floor has asked for no scale-down at all, and
+        gets a canvas no wider than the target.
+        """
+        return min(target * self._FIT_TOLERANCE,
+                   max(target, self._legible_width_ceiling(target, min_text)))
 
     def _trial(self, theme: Theme,
                assignment=()) -> tuple[BBox, float, Optional[float]]:
@@ -399,56 +467,177 @@ class Diagram:
         smallest authored text size the trial inked, which turns the
         author's ``min_effective_font_pt`` into a width ceiling.
         """
-        from .connect._resolver import _FlowResolver
-        from .composition import Flowed
+        with measure_memo():
+            from .connect._resolver import _FlowResolver
+            from .composition import Flowed
 
-        try:
-            body = copy.deepcopy(self.body)
-            footer = copy.deepcopy(self.footer) if self.footer else None
-        except Exception:  # pragma: no cover -- uncopyable author tree
-            body = self.body
-            footer = self.footer
-        if assignment:
-            probes: list = []
-            self._collect_reflowables(body, probes)
-            for elem, choice in zip(probes, assignment):
-                elem._apply_reflow(choice)
-        content = body
-        if not isinstance(body, (Flowed, _FlowResolver)):
-            body = _FlowResolver(body)
-        sz = body.measure(theme)
-        w, h = sz.w, sz.h
-        local_pen = self._local_aspect_penalty(content, theme)
-        # Routed connectors, their labels, and margin detours paint ink
-        # outside the measured layout box; a measure-only trial would
-        # under-report the exported size (the render pass grows the
-        # canvas around ink). Render the throwaway copy onto a scratch
-        # canvas and widen the trial by any overflow so the fitter
-        # optimises the true footprint.
-        min_text = None
-        try:
-            scratch = Canvas(default_font_family=theme.font_family,
-                             text_stroke_ratio=theme.text_stroke_ratio)
-            body.render(scratch, 0.0, 0.0, theme)
-            ink = scratch.ink_bbox
-            min_text = scratch.min_text_size
-        except Exception:  # pragma: no cover -- unrenderable trial copy
-            ink = None
-        if ink is not None:
-            x0, y0, x1, y1 = ink
-            w += max(0.0, -x0) + max(0.0, x1 - sz.w)
-            h += max(0.0, -y0) + max(0.0, y1 - sz.h)
-        if footer is not None:
-            fsz = self._footer_size(theme, w, footer)
-            w = max(w, fsz.w)
-            h += fsz.h + theme.unit * 2.0
-        if self.title:
-            w = max(w, theme.text_width(self.title, "title", bold=True))
-        if self.subtitle:
-            w = max(w, theme.text_width(self.subtitle, "subtitle"))
-        m = self._margin_for(theme)
-        return (BBox(w + 2 * m, h + 2 * m + self._title_height_for(theme)),
-                local_pen, min_text)
+            try:
+                body = copy.deepcopy(self.body)
+                footer = copy.deepcopy(self.footer) if self.footer else None
+            except Exception:  # pragma: no cover -- uncopyable author tree
+                body = self.body
+                footer = self.footer
+            if assignment:
+                probes: list = []
+                self._collect_reflowables(body, probes)
+                for elem, choice in zip(probes, assignment):
+                    elem._apply_reflow(choice)
+            content = body
+            if not isinstance(body, (Flowed, _FlowResolver)):
+                body = _FlowResolver(body)
+            sz = body.measure(theme)
+            w, h = sz.w, sz.h
+            local_pen = self._local_aspect_penalty(content, theme)
+            # Routed connectors, their labels, and margin detours paint ink
+            # outside the measured layout box; a measure-only trial would
+            # under-report the exported size (the render pass grows the
+            # canvas around ink). Render the throwaway copy onto a scratch
+            # canvas and widen the trial by any overflow so the fitter
+            # optimises the true footprint.
+            min_text = None
+            try:
+                scratch = Canvas(default_font_family=theme.font_family,
+                                 text_stroke_ratio=theme.text_stroke_ratio)
+                body.render(scratch, 0.0, 0.0, theme)
+                ink = scratch.ink_bbox
+                min_text = scratch.min_text_size
+            except Exception:  # pragma: no cover -- unrenderable trial copy
+                ink = None
+            if ink is not None:
+                x0, y0, x1, y1 = ink
+                w += max(0.0, -x0) + max(0.0, x1 - sz.w)
+                h += max(0.0, -y0) + max(0.0, y1 - sz.h)
+            if footer is not None:
+                fsz = self._footer_size(theme, w, footer)
+                w = max(w, fsz.w)
+                h += fsz.h + theme.unit * 2.0
+            if self.title:
+                w = max(w, theme.text_width(self.title, "title", bold=True))
+            if self.subtitle:
+                w = max(w, theme.text_width(self.subtitle, "subtitle"))
+            m = self._margin_for(theme)
+            return (BBox(w + 2 * m, h + 2 * m + self._title_height_for(theme)),
+                    local_pen, min_text)
+
+    def _fit_trial(self, theme: Theme, assignment=()):
+        """One fitter trial (:meth:`_trial`), counted for
+        :meth:`fit_report`."""
+        self._fit_stats["trials"] = self._fit_stats.get("trials", 0) + 1
+        return self._trial(theme, assignment)
+
+    def _density_trial(self, dens: float, assignment, tried: dict):
+        """Trial at spacing density ``dens``, memoised in ``tried``
+        (density -> ``(theme, size, local_pen, min_text)``)."""
+        key = round(dens, 4)
+        for d, res in tried.items():
+            if abs(d - key) < 1e-4:
+                return res
+        theme = self._compressed_theme(dens)
+        size, pen, small = self._fit_trial(theme, assignment)
+        tried[key] = (theme, size, pen, small)
+        return tried[key]
+
+    def _fit_limit(self, target: float, min_text: Optional[float]) -> float:
+        """Widest trial the width fit accepts as landed: the half-point
+        snap window of :meth:`_finalize_target_width`, or the overshoot
+        :meth:`_width_allowance` tolerates when that is wider. A figure
+        whose smallest text is above the legibility floor may keep its
+        spacing and take a small scale-down at export; one authored at
+        the floor must land on the target itself."""
+        return max(target + 0.5, self._width_allowance(target, min_text))
+
+    def _scan_density(self, target: float, assignment, tried: dict):
+        """Width fit for content whose width does not fall steadily as
+        spacing compresses.
+
+        The density fixed-point assumes that less spacing means a
+        narrower canvas. Discrete layout decisions break that: a wire
+        caption that no longer fits on its leg is set beside the wire, a
+        label re-wraps, a routed lane moves outward -- so a tighter
+        candidate can come out *wider*, and the fixed-point stalls above
+        the target although some density fits. After a few secant steps
+        (steady content that merely converges slowly) this brackets the
+        target with the spacing floor: when the floor lands, the bracket
+        is bisected towards the looser side (:meth:`_recover_spacing`),
+        so no spacing is given up needlessly and width jumps in between
+        are harmless; when the floor does not land, nothing looser can,
+        and the narrowest candidate seen is returned without scanning.
+        ``tried`` (density -> trial) is reused and extended, so no
+        density is measured twice.
+
+        Returns ``(density, (theme, size, local_pen, min_text))``.
+        """
+        def trial(dens: float):
+            return self._density_trial(dens, assignment, tried)
+
+        def lands(res) -> bool:
+            return res[1].w <= self._fit_limit(target, res[3])
+
+        # Steady content whose fixed-point merely converges slowly (a
+        # large share of the width does not scale with spacing): a few
+        # secant steps on the last two trials land it without a scan.
+        order = sorted(tried)
+        if len(order) >= 2:
+            d_lo, d_hi = order[0], order[1]
+            for _ in range(self._FIT_SECANT_STEPS):
+                w_lo, w_hi = tried[d_lo][1].w, tried[d_hi][1].w
+                if not (w_hi > w_lo > target) or d_hi - d_lo < 1e-4:
+                    break
+                slope = (w_hi - w_lo) / (d_hi - d_lo)
+                aim = target - 0.25
+                dens = max(self._FIT_MIN_DENSITY,
+                           d_lo - (w_lo - aim) / slope)
+                res = trial(dens)
+                if lands(res):
+                    return round(dens, 4), res
+                if res[1].w >= w_lo:
+                    break  # not steady after all: scan
+                d_lo, d_hi = round(dens, 4), d_lo
+
+        # Bracket: the spacing floor is the narrowest spacing the fit may
+        # use. When it lands, the target lies between it and the looser
+        # trials; bisecting from there returns the least-compressed
+        # landing density found, whatever jumps lie in between. When it
+        # does not land and the trials were monotone, nothing looser can
+        # land either; width need not be monotone (a caption set beside
+        # its wire can make the floor wider than an interior density),
+        # so the narrowest trial, not the floor, is returned for the
+        # overflow report.
+        res = trial(self._FIT_MIN_DENSITY)
+        if lands(res):
+            return self._recover_spacing(target, tried, trial, lands)
+        narrowest = min(tried, key=lambda d: (tried[d][1].w, -d))
+        return narrowest, tried[narrowest]
+
+    def _recover_spacing(self, target: float, tried: dict, trial, lands):
+        """Loosen a landed fit towards the least compressed landing
+        density.
+
+        A trial that lands with slack to spare (a jump in width put it
+        well under the target) is bisected against the tightest looser
+        trial that did not land, at most :attr:`_FIT_SCAN_BISECT` times,
+        so spacing is not given up needlessly. The result is the highest
+        landing density *found*: with several landing intervals the
+        bisection follows the bracket it starts in. It never returns a
+        density that does not land.
+
+        Returns ``(density, (theme, size, local_pen, min_text))``.
+        """
+        landing = [d for d in tried if lands(tried[d])]
+        lo = max(landing)
+        slack = target - tried[lo][1].w
+        looser = [d for d in tried if d > lo and not lands(tried[d])]
+        if looser and slack > 1.0:
+            hi = min(looser)
+            for _ in range(self._FIT_SCAN_BISECT):
+                if hi - lo < self._FIT_SCAN_STEP / 10.0:
+                    break
+                mid = round((lo + hi) / 2.0, 4)
+                if lands(trial(mid)):
+                    lo = mid
+                else:
+                    hi = mid
+        return lo, trial(lo)
 
     def _title_height_for(self, theme: Theme) -> float:
         h = 0.0
@@ -460,7 +649,7 @@ class Diagram:
             h += theme.unit * 1.2
         return h
 
-    def _fit_density(self, target: float, assignment=()):
+    def _fit_density(self, target: float, assignment=(), first=None):
         """Width-then-aspect fixed-point iteration for one reflow
         assignment.  Returns
         ``(theme, size, density, local_pen, min_text)``.
@@ -472,30 +661,69 @@ class Diagram:
         is ``h / max(w, target)``), spacing keeps compressing -- height
         shrinks with it, width only gets safer -- and component-level
         goals are scored alongside the figure-level one.
+
+        ``first`` optionally passes in the authored-spacing trial when
+        the caller already measured it.
         """
         theme = self.theme
         density = 1.0
-        size, local_pen, min_text = self._trial(theme, assignment)
+        size, local_pen, min_text = (first if first is not None
+                                     else self._fit_trial(theme, assignment))
+        tried = {density: (theme, size, local_pen, min_text)}
         for _ in range(self._FIT_PASSES):
             if size.w <= target or density <= self._FIT_MIN_DENSITY:
                 break
             density = max(self._FIT_MIN_DENSITY, density * target / size.w)
             theme = self._compressed_theme(density)
-            size, local_pen, min_text = self._trial(theme, assignment)
+            size, local_pen, min_text = self._fit_trial(theme, assignment)
+            tried[density] = (theme, size, local_pen, min_text)
+        if size.w > self._fit_limit(target, min_text):
+            density, (theme, size, local_pen, min_text) = \
+                self._scan_density(target, assignment, tried)
+        elif size.w <= target and target - size.w > 1.0:
+            # Landed with slack, typically past a jump in width: take
+            # back the spacing the last fixed-point step gave up, as far
+            # as the width still lands on the target itself (spending the
+            # export tolerance here would only hand the overshoot to the
+            # wrap continuation below).
+            def lands(res):
+                return res[1].w <= target
+
+            density, (theme, size, local_pen, min_text) = \
+                self._recover_spacing(
+                    target, tried,
+                    lambda dens: self._density_trial(dens, assignment, tried),
+                    lands)
         # Phase 1b: the spacing floor alone could not reach the target,
         # so keep the fixed-point going on the wrap budget only.  Fonts
         # and paddings stay; wrap-enabled labels re-flow onto more lines
         # (their longest-word floor still applies), so width converges
         # to the true text floor instead of giving up at the spacing
         # floor.
+        # Two steps in a row that each narrow the figure by less than
+        # ``_FIT_MIN_GAIN`` mean re-wrapping cannot move this width (the
+        # wide content does not wrap): the continuation stops there
+        # instead of creeping to the wrap floor, and a fit that does not
+        # land keeps its narrowest trial, least wrap compression first.
         wrap_scale = 1.0
+        best = (size.w, wrap_scale, theme, size, local_pen, min_text)
+        stalled = 0
         for _ in range(self._FIT_PASSES):
-            if size.w <= target or wrap_scale <= self._FIT_MIN_WRAP:
+            if (size.w <= target or wrap_scale <= self._FIT_MIN_WRAP
+                    or stalled >= 2):
                 break
+            prev_w = size.w
             wrap_scale = max(self._FIT_MIN_WRAP,
                              wrap_scale * target / size.w)
             theme = self._compressed_theme(density, wrap_scale)
-            size, local_pen, min_text = self._trial(theme, assignment)
+            size, local_pen, min_text = self._fit_trial(theme, assignment)
+            if size.w < best[0]:
+                best = (size.w, wrap_scale, theme, size, local_pen, min_text)
+            stalled = stalled + 1 if prev_w - size.w < self._FIT_MIN_GAIN \
+                else 0
+        if size.w > target:
+            _, wrap_scale, theme, size, local_pen, min_text = best
+        self._fit_stats.update(density=density, wrap_scale=wrap_scale)
         if self._has_aspect_goal():
             # Compression is not monotone in height (a tighter wrap
             # budget reflows text onto MORE lines, so cards get
@@ -505,14 +733,14 @@ class Diagram:
             hi = (self.target_aspect[1] if self.target_aspect is not None
                   else float("inf"))
 
-            def rank(sz: BBox, dens: float, pen: float):
+            def rank(sz: BBox, dens: float, pen: float, small):
                 aspect = sz.h / max(sz.w, target)
                 over = 0.0 if hi == float("inf") else max(0.0, aspect - hi)
-                return (max(0.0, sz.w - target * self._FIT_TOLERANCE),
+                return (max(0.0, sz.w - self._width_allowance(target, small)),
                         over, pen, -dens, sz.h)
 
-            best = (rank(size, density, local_pen), theme, size, density,
-                    local_pen, min_text)
+            best = (rank(size, density, local_pen, min_text), theme, size,
+                    density, local_pen, min_text)
             steps = (self._FIT_ASPECT_STEP, self._FIT_ASPECT_STEP ** 2,
                      1.0 / self._FIT_ASPECT_STEP,
                      1.0 / self._FIT_ASPECT_STEP ** 2)
@@ -523,9 +751,9 @@ class Diagram:
                     continue
                 probed.add(round(dens, 3))
                 cand_theme = self._compressed_theme(dens, wrap_scale)
-                cand_size, cand_pen, cand_min = self._trial(
+                cand_size, cand_pen, cand_min = self._fit_trial(
                     cand_theme, assignment)
-                cand = (rank(cand_size, dens, cand_pen), cand_theme,
+                cand = (rank(cand_size, dens, cand_pen, cand_min), cand_theme,
                         cand_size, dens, cand_pen, cand_min)
                 if cand[0] < best[0]:
                     best = cand
@@ -560,9 +788,10 @@ class Diagram:
         target = float(self.target_width_pt)
         if not self._has_aspect_goal():
             theme = self.theme
-            if self._trial_size(theme).w <= target:
+            first = self._fit_trial(theme)
+            if first[0].w <= target:
                 return theme
-            theme, _, _, _, _ = self._fit_density(target)
+            theme, _, _, _, _ = self._fit_density(target, first=first)
             return theme
 
         lo, hi = self.target_aspect if self.target_aspect is not None \
@@ -579,7 +808,8 @@ class Diagram:
                 theme=theme, assignment=assignment, size=size,
                 density=density, local_pen=local_pen, min_text=min_text,
                 aspect_pen=aspect_pen,
-                width_pen=max(0.0, size.w - target * self._FIT_TOLERANCE),
+                width_pen=max(0.0, size.w - self._width_allowance(
+                    target, min_text)),
                 legible_pen=max(0.0, size.w - self._legible_width_ceiling(
                     target, min_text)),
             ))
@@ -782,45 +1012,77 @@ class Diagram:
 
     def render(self, *, embed_fonts: bool = True) -> str:
         """Produce SVG source for the diagram."""
-        size = self.measure()
-        offset_x = 0.0
-        offset_y = 0.0
-        canvas = self._render_canvas(size)
-        if self.auto_fit:
-            for _ in range(self.max_fit_passes - 1):
-                ink = canvas.ink_bbox
-                if ink is None:
-                    break
-                x0, y0, x1, y1 = ink
-                grow_l = max(0.0, -x0)
-                grow_t = max(0.0, -y0)
-                grow_r = max(0.0, x1 - size.w)
-                grow_b = max(0.0, y1 - size.h)
-                if max(grow_l, grow_t, grow_r, grow_b) <= 0.5:
-                    break
-                # ``_render_canvas`` centres the body on the new canvas,
-                # which already absorbs the symmetric half of the
-                # growth; the explicit offset must carry only the
-                # asymmetric residue or the body lands double-shifted
-                # and the pass never converges.
-                offset_x += (grow_l - grow_r) / 2.0
-                # Bodies are horizontally centred but vertically top-aligned.
-                # Growing the bottom therefore needs no y shift; growing the
-                # top needs the full amount. The old symmetric half-shift
-                # moved bottom-overflowing figures upward and clipped them.
-                offset_y += grow_t
-                size = BBox(size.w + grow_l + grow_r,
-                            size.h + grow_t + grow_b)
-                canvas = self._render_canvas(size, offset_x=offset_x,
-                                             offset_y=offset_y)
-        if self.auto_trim:
-            size, offset_x, offset_y, canvas = self._auto_trim_render(
-                size, offset_x, offset_y, canvas)
-        if self.target_width_pt is not None:
-            size, canvas = self._finalize_target_width(
-                size, offset_x, offset_y, canvas)
-        self._last_render_size = size
-        return self._svg_from_canvas(canvas, size, embed_fonts=embed_fonts)
+        with measure_memo():
+            size = self.measure()
+            offset_x = 0.0
+            offset_y = 0.0
+            canvas = self._render_canvas(size)
+            if self.auto_fit:
+                for _ in range(self.max_fit_passes - 1):
+                    ink = canvas.ink_bbox
+                    if ink is None:
+                        break
+                    x0, y0, x1, y1 = ink
+                    grow_l = max(0.0, -x0)
+                    grow_t = max(0.0, -y0)
+                    grow_r = max(0.0, x1 - size.w)
+                    grow_b = max(0.0, y1 - size.h)
+                    if max(grow_l, grow_t, grow_r, grow_b) <= 0.5:
+                        break
+                    # ``_render_canvas`` centres the body on the new canvas,
+                    # which already absorbs the symmetric half of the
+                    # growth; the explicit offset must carry only the
+                    # asymmetric residue or the body lands double-shifted
+                    # and the pass never converges.
+                    offset_x += (grow_l - grow_r) / 2.0
+                    # Bodies are horizontally centred but vertically top-aligned.
+                    # Growing the bottom therefore needs no y shift; growing the
+                    # top needs the full amount. The old symmetric half-shift
+                    # moved bottom-overflowing figures upward and clipped them.
+                    offset_y += grow_t
+                    size = BBox(size.w + grow_l + grow_r,
+                                size.h + grow_t + grow_b)
+                    canvas = self._render_canvas(size, offset_x=offset_x,
+                                                 offset_y=offset_y)
+            if self.auto_trim:
+                size, offset_x, offset_y, canvas = self._auto_trim_render(
+                    size, offset_x, offset_y, canvas)
+            if self.target_width_pt is not None:
+                size, canvas = self._finalize_target_width(
+                    size, offset_x, offset_y, canvas)
+            self._last_render_size = size
+            return self._svg_from_canvas(canvas, size, embed_fonts=embed_fonts)
+
+    def fit_report(self) -> "FitReport":
+        """What the target-width fit did and what holds the width up.
+
+        Returns a :class:`~sciviz.FitReport`: the exported page size, the
+        spacing density and wrap scale the fit chose, how many trials it
+        ran and how long it took, the ink that lies outside the laid-out
+        box (by kind and side), and the width drivers -- the elements
+        and authored numeric gaps on the width-critical path, widest
+        first. When a figure cannot reach ``target_width_pt`` the
+        drivers name what to shorten; ``print(d.fit_report())`` gives a
+        readable summary.
+        """
+        from ._fit_report import build_fit_report
+        with measure_memo():
+            return build_fit_report(self)
+
+    def arrow_ends(self) -> list:
+        """Every arrowhead this diagram draws, with the straight run that
+        enters it (:class:`sciviz._arrow_check.ArrowEnd`: tip, last bend,
+        run, head length and the shaft left visible behind the head), in
+        canvas units (printed points for a paper figure)."""
+        from ._arrow_check import arrow_ends
+        return arrow_ends(self.render(embed_fonts=False))
+
+    def short_shafts(self, min_shaft: float) -> list:
+        """The shaft check: the arrowheads whose entering shaft, between
+        the last bend and the head's base, is shorter than ``min_shaft``.
+        An empty list means no arrow of the figure is a stub."""
+        return [e for e in self.arrow_ends()
+                if e.shaft < float(min_shaft) - 1e-6]
 
     def _auto_trim_render(self, size: BBox, offset_x: float, offset_y: float,
                           canvas: Canvas):

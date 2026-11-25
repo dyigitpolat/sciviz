@@ -48,6 +48,17 @@ class Connect(Element):
         curvature: float = 0.5,
         detour: float = 24.0,
         clearance: Optional[float] = None,
+        ports: str = "centred",
+        label_style: str = "beside",
+        src_at: Optional[str] = None,
+        dst_at: Optional[str] = None,
+        label_side: str = "auto",
+        label_frame: Optional[str] = None,
+        src_room: Optional[float] = None,
+        dst_room: Optional[float] = None,
+        # Least straight shaft (px) visible between the last bend and the
+        # base of an arrowhead (routed and bus modes). None: as before.
+        min_shaft: Optional[float] = None,
         # Inline-mode options --------------------------------------------
         direction: Optional[str] = None,
         length: Optional[Union[str, float]] = None,
@@ -55,6 +66,12 @@ class Connect(Element):
         size: Union[str, float] = "small",
         # Bus-mode options -----------------------------------------------
         orientation: str = "auto",
+        # How a bus turns where two of its strokes meet (px; 0: sharp and
+        # closed). None: every stroke its own segment, as before.
+        corner_radius: Optional[float] = None,
+        # True: a bus's arrowed strokes end inside their heads (no square
+        # stroke end beside the tip). False: as before.
+        flush_head: bool = False,
     ):
         # Auto-routing is the default for every connector type. When the
         # caller does not pin ``style`` explicitly, ``auto_route`` picks
@@ -131,6 +148,11 @@ class Connect(Element):
                 head=head,
                 orientation=orientation,
                 auto_route=auto_route,
+                min_shaft=min_shaft,
+                src_room=src_room,
+                dst_room=dst_room,
+                corner_radius=corner_radius,
+                flush_head=flush_head,
             )
         else:  # routed
             label_str = label if isinstance(label, str) or label is None else label[0]
@@ -148,7 +170,20 @@ class Connect(Element):
                 curvature=curvature,
                 detour=detour,
                 clearance=clearance,
+                ports=ports,
+                label_style=label_style,
+                src_at=src_at,
+                dst_at=dst_at,
+                label_side=label_side,
+                label_frame=label_frame,
+                src_room=src_room,
+                dst_room=dst_room,
+                min_shaft=min_shaft,
             )
+            # a capsule caption takes the theme's capsule ink unless the
+            # author chose a caption colour
+            self._impl._flow.capsule_ink_authored = (
+                label_color is not Connect._COLOR_UNSET)
 
     # ------------------------------------------------------------------
     # Element protocol
