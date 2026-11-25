@@ -174,7 +174,7 @@ def test_fan_in_rail_bus_enters_sink_at_face_center():
 
 
 def test_fan_in_west_rail_bus_enters_sink_at_south_center():
-    """The AgentEvolve system-overview topology: a tall sink card with a
+    """A system-overview topology: a tall sink card with a
     column of five variable-width chips below it, the chip cluster
     sitting slightly EAST of the sink's centre so the side rail exits on
     the WEST.  The bus must climb the west collector rail, jog east

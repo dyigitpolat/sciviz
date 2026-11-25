@@ -259,19 +259,32 @@ class EqualGrid(Element):
                 apply(target)
 
     def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
+        """Record an outer floor; the cells receive it once the theme is
+        known (:meth:`_apply_inflate`), less the gaps between them, so
+        the grid's outer width equals the floor rather than exceeding it
+        by its own gaps."""
         if not self.children:
+            return
+        self._floor = (max(getattr(self, "_floor", (0.0, 0.0))[0], float(min_w)),
+                       max(getattr(self, "_floor", (0.0, 0.0))[1], float(min_h)))
+        self._cell = None
+
+    def _apply_inflate(self, theme: Theme) -> None:
+        min_w, min_h = getattr(self, "_floor", (0.0, 0.0))
+        if min_w <= 0.0 and min_h <= 0.0:
             return
         cols = self._columns()
         rows = (len(self.children) + cols - 1) // cols
-        child_w = min_w / cols if cols else 0.0
-        child_h = min_h / rows if rows else 0.0
+        gap = theme.gap_px(self.gap)
+        child_w = max(0.0, min_w - (cols - 1) * gap) / cols if cols else 0.0
+        child_h = max(0.0, min_h - (rows - 1) * gap) / rows if rows else 0.0
         for child in self.children:
             child.inflate_to(child_w, child_h)
-        self._cell = None
 
     def measure(self, theme: Theme) -> BBox:
         if not self.children:
             return BBox(0, 0)
+        self._apply_inflate(theme)
         sizes = self._normalise(theme)
         cols = self._columns()
         rows = (len(self.children) + cols - 1) // cols
@@ -298,6 +311,7 @@ class EqualGrid(Element):
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         if not self.children:
             return
+        self._apply_inflate(theme)
         sizes = self._normalise(theme)
         cols = self._columns()
         rows = (len(self.children) + cols - 1) // cols
@@ -346,27 +360,43 @@ class EqualGrid(Element):
 
 
 class Stripe(Element):
-    """Subtle role-coloured grouping rail around a list of items."""
+    """Subtle role-coloured grouping rail around a list of items.
+
+    By default the items sit on a soft tint of ``role`` with a solid rail
+    on the left. ``surface`` replaces the tint with any paint (``"white"``
+    turns the stripe into a *slip*: an excerpt set off from a tinted
+    container by its own page-coloured ground, the rail naming whose it
+    is), ``outline=False`` drops the hairline frame, and ``align`` sets
+    how the items line up (``"start"`` for lines of text that should read
+    flush left rather than centred).
+    """
 
     def __init__(self, *items: Element | Sequence[Element], role,
                  orientation: str = "vertical", gap="sm", padding="xs",
-                 rail: bool = True):
+                 rail: bool = True, surface=None, outline: bool = True,
+                 align: str = "center"):
         if len(items) == 1 and isinstance(items[0], (list, tuple)):
             self.items = [i for i in items[0] if i is not None]
         else:
             self.items = [i for i in items if i is not None]
+        if align not in ("start", "center", "end"):
+            raise ValueError(f"Stripe align must be start/center/end; got {align!r}")
         self.role = role
         self.orientation = orientation
         self.gap = gap
         self.padding = padding
         self.rail = rail
+        self.surface = surface
+        self.outline = bool(outline)
+        self.align = align
         self._min_w = 0.0
         self._min_h = 0.0
 
     def _inner(self) -> Element:
         if self.orientation == "horizontal":
             return Row(*self.items, gap=self.gap, align="center")
-        return Column(*self.items, gap=self.gap, align="center", equal_widths=True)
+        return Column(*self.items, gap=self.gap, align=self.align,
+                      equal_widths=self.align == "center")
 
     def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
         self._min_w = max(self._min_w, min_w)
@@ -386,16 +416,35 @@ class Stripe(Element):
         size = self.measure(theme)
         pad = _pad_px(theme, self.padding)
         rail_w = theme.unit * 0.55 if self.rail else 0.0
-        canvas.rect(x, y, size.w, size.h, fill=_soft(theme, self.role),
-                    stroke=theme.color_of(self.role), stroke_width=theme.hairline,
-                    rx=theme.panel_radius, opacity=0.55)
+        if self.surface is None:
+            canvas.rect(x, y, size.w, size.h, fill=_soft(theme, self.role),
+                        stroke=(theme.color_of(self.role) if self.outline
+                                else "none"),
+                        stroke_width=theme.hairline,
+                        rx=theme.panel_radius, opacity=0.55)
+            ground = _soft(theme, self.role)
+        else:
+            ground = theme.paint_of(self.surface)
+            canvas.rect(x, y, size.w, size.h, fill=ground,
+                        stroke=(theme.color_of(self.role) if self.outline
+                                else "none"),
+                        stroke_width=theme.hairline, rx=theme.panel_radius)
         if self.rail:
             canvas.rect(x, y, rail_w, size.h, fill=theme.color_of(self.role),
                         stroke="none", rx=theme.panel_radius)
         inner = self._inner()
         inner_size = inner.measure(theme)
-        inner.render(canvas, x + rail_w + pad + (size.w - rail_w - 2 * pad - inner_size.w) / 2,
-                     y + pad + (size.h - 2 * pad - inner_size.h) / 2, theme)
+        free = size.w - rail_w - 2 * pad - inner_size.w
+        offset = {"start": 0.0, "center": free / 2, "end": free}[self.align]
+        # A slip on its own surface is the ground its text reads against.
+        if self.surface is not None:
+            theme.push_bg(ground)
+        try:
+            inner.render(canvas, x + rail_w + pad + offset,
+                         y + pad + (size.h - 2 * pad - inner_size.h) / 2, theme)
+        finally:
+            if self.surface is not None:
+                theme.pop_bg()
 
 
 class StepCell(Element):

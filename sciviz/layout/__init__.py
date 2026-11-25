@@ -15,6 +15,7 @@ from ._aligned_stack import AlignedStack
 from ._aspect import Aspect, collect_aspect_goals
 from ._column import Column
 from ._panel import Panel
+from ._rhythm import Rhythm
 from ._row import Row
 from ._simple_grid import Grid
 from ._spacer import FixedSize, Spacer
@@ -22,5 +23,5 @@ from ._wraprow import WrapRow
 
 __all__ = [
     "Aspect", "Spacer", "FixedSize", "Row", "Column", "Grid", "Panel",
-    "AlignedStack", "WrapRow", "collect_aspect_goals",
+    "AlignedStack", "WrapRow", "Rhythm", "collect_aspect_goals",
 ]

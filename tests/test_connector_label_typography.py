@@ -16,3 +16,12 @@ def test_connector_prose_is_upright_but_symbols_remain_italic():
     assert 'font-style="italic"' not in _svg_for("Reward Modeling")
     assert 'font-style="italic"' in _svg_for("O")
     assert 'font-style="italic"' in _svg_for("z_i")
+
+
+def test_a_phrase_quoting_an_operator_stays_upright():
+    # Two or more words make a phrase; the operator is part of the prose.
+    assert 'font-style="italic"' not in _svg_for("dose per kilogram, ×0.25 to ×4")
+    assert 'font-style="italic"' not in _svg_for("flow rate × duration")
+    # Symbolic captions keep their italic.
+    assert 'font-style="italic"' in _svg_for("W x + b")
+    assert 'font-style="italic"' in _svg_for("λ × g")

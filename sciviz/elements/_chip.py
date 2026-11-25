@@ -21,6 +21,13 @@ _PAD_X_EM = 0.72
 _PAD_Y_EM = 0.36
 
 
+def chip_padding(theme: Theme) -> tuple:
+    """``(pad_x, pad_y)`` of a chip, as fractions of its font size
+    (``Theme.chip_pad_x`` / ``chip_pad_y``)."""
+    return (float(getattr(theme, "chip_pad_x", _PAD_X_EM)),
+            float(getattr(theme, "chip_pad_y", _PAD_Y_EM)))
+
+
 class Chip(Element):
     """A small text pill.
 
@@ -66,8 +73,9 @@ class Chip(Element):
         sz = theme.size_px(self.text_size)
         bold = self.text_weight in ("bold", "600", "700")
         text_w = theme.text_width(self.label, self.text_size, bold=bold)
-        w = text_w + 2 * _PAD_X_EM * sz
-        h = sz * 1.15 + 2 * _PAD_Y_EM * sz
+        pad_x, pad_y = chip_padding(theme)
+        w = text_w + 2 * pad_x * sz
+        h = sz * 1.15 + 2 * pad_y * sz
         # A pill can never be narrower than it is tall (its two end caps).
         return BBox(max(w, h), h)
 

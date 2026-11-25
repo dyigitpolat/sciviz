@@ -56,10 +56,17 @@ class LegendItem(Element):
             return theme.gap_px(self.gap)
         return theme.size_px(self.text_size) * self._LABEL_BEARING
 
+    #: A shared swatch slot, set by a vertical :class:`Legend` so every
+    #: label in the key starts at one x whatever its swatch's own width.
+    _slot_w: Optional[float] = None
+
     def _row(self, theme: Theme):
-        from ..layout import Row
+        from ..layout import FixedSize, Row
+        swatch = self.swatch
+        if self._slot_w:
+            swatch = FixedSize(self.swatch, width=self._slot_w)
         return Row(
-            self.swatch,
+            swatch,
             Text(self.text, size=self.text_size, color=self.text_color),
             gap=self._gap_px(theme), align="center",
         )
@@ -125,7 +132,7 @@ class Legend(Element):
             return list(zip(picks, labels))
         return []
 
-    def _positional_container(self):
+    def _positional_container(self, theme: Optional[Theme] = None):
         """The legend's title is not another item, and is not spaced like one.
 
         Inserting the title into the item run gave it the SAME gap as the gap
@@ -137,23 +144,33 @@ class Legend(Element):
         from ..layout import Column, Row, WrapRow
         horizontal = self.orientation == "horizontal"
         cls = Row if horizontal else Column
+        # A vertical key is a list: its entries share a left edge and their
+        # swatches share one slot, so every label starts at the same x
+        # (centred entries of unequal length read as a ragged column).
+        along = "center" if horizontal else "start"
+        if not horizontal and theme is not None:
+            slot = max((c.swatch.measure(theme).w for c in self._children
+                        if isinstance(c, LegendItem)), default=0.0)
+            for c in self._children:
+                if isinstance(c, LegendItem):
+                    c._slot_w = slot
         if horizontal and self.max_width is not None:
             items = WrapRow(*self._children, gap=self.gap,
                             line_gap="xs", max_width=self.max_width,
                             align="center")
         else:
-            items = cls(*self._children, gap=self.gap, align="center")
+            items = cls(*self._children, gap=self.gap, align=along)
         if not self.label:
             return items
         return cls(
             Text(self.label, size="small", color="text", weight="700"),
             items,
-            gap="md", align="center",
+            gap="md", align=along,
         )
 
     def measure(self, theme: Theme) -> BBox:
         if self._children:
-            return self._positional_container().measure(theme)
+            return self._positional_container(theme).measure(theme)
         items = self._resolved_items(theme)
         sw = self.swatch_size
         pad = theme.unit * 0.6
@@ -181,7 +198,7 @@ class Legend(Element):
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         if self._children:
-            self._positional_container().render(canvas, x, y, theme)
+            self._positional_container(theme).render(canvas, x, y, theme)
             return
         items = self._resolved_items(theme)
         sw = self.swatch_size

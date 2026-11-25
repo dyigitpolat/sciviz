@@ -47,7 +47,11 @@ def draw_marker(canvas: Canvas, shape: str, cx: float, cy: float,
         stroke_width = theme.line
     else:
         fill = color
-        stroke = "white"
+        # A solid marker is haloed in white so it separates from lines it
+        # sits on -- unless its own fill is too pale to show on the page,
+        # when the halo would erase it: it then takes the contrast edge.
+        edge = theme.edge_for_fill(color)
+        stroke = edge or "white"
         stroke_width = theme.hairline
     if shape == "circle":
         canvas.circle(cx, cy, radius, fill=fill, stroke=stroke,

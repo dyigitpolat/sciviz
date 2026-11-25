@@ -37,6 +37,9 @@ def test_shared_outer_region_is_not_needlessly_escaped():
     assert max(y for _x, y in plan.waypoints) < outer.bottom
 
 
-def test_simplification_preserves_endpoint_escape_uturn():
-    points = [(0, 0), (0, 20), (0, 10), (30, 10)]
+def test_simplification_preserves_escape_uturn_behind_the_start():
+    # A stub folding back short of its start is a spur and is removed
+    # (tests/test_router_no_spur.py); one turning back behind the start
+    # is kept, since dropping it would start the path into its own box.
+    points = [(0, 0), (0, 20), (0, -10), (30, -10)]
     assert _simplify(points, 0.5) == points

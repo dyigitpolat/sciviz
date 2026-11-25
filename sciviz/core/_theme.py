@@ -12,7 +12,8 @@ the values here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Tuple, Union
+from numbers import Real
+from typing import List, Optional, Tuple, Union
 
 
 @dataclass
@@ -111,6 +112,21 @@ class Theme:
     # re-wrapping labels onto more lines narrows the figure without
     # touching font sizes or paddings.
     wrap_budget: float = 16.0
+    # Print floors (opt-in). Smallest whitespace, in points, that still
+    # reads as separation in print. ``0.0`` (the default) means no print
+    # floor: the target-width fitter compresses spacing proportionally
+    # with ``unit``. A positive value switches every print floor on at
+    # once: a gap token keeps at least ``min(authored, min_space)`` (an
+    # author value below the floor is never raised, see :meth:`gap_px`),
+    # paddings and the margin stop at the same floor, a wire end keeps
+    # its arrowhead plus ``min_space`` on both sides
+    # (:meth:`arrow_gutter_px`) and a wire keeps ``min_space`` from the
+    # cards it passes. At the authored unit no floor ever binds.
+    min_space: float = 0.0
+    # The ``unit`` the author wrote, recorded by the fitter when it
+    # compresses ``unit`` (``None`` means ``unit`` itself is authored).
+    # Only the elastic floors read it; layout code keeps using ``unit``.
+    authored_unit: Optional[float] = None
     # -- stroke weights (all diagrams default to hairlines) ---------------
     hairline: float = 0.6
     # Outline weight of a ``Chip``. 0.0 (the default) keeps the hairline; a
@@ -118,12 +134,24 @@ class Theme:
     # (a chip's colour is read off its outline) at a heavier weight sets this
     # once in its theme instead of per chip.
     chip_stroke: float = 0.0
+    # A Chip's (and a capsule caption's) padding either side of its text
+    # and above/below it, as fractions of its font size.
+    chip_pad_x: float = 0.72
+    chip_pad_y: float = 0.36
     line: float = 0.9
     thick: float = 1.3
     # Connectors should read as relationships, not as a second set of box
     # borders.  A modest step above ``line`` survives print reduction while
     # keeping dense workflows calm.
     connector: float = 1.15
+
+    # A filled mark (a dot, a cell, a swatch) whose fill contrasts with the
+    # ground it sits on by less than this WCAG ratio gets a hairline edge
+    # (see :meth:`edge_for_fill`). 1.5 separates the pale greys a
+    # categorical palette uses for its quietest classes (#ededed prints at
+    # 1.17:1 on white, #d6d6d6 at 1.46:1) from the light-but-legible tints
+    # (#b9b9b9 at 1.96:1, #9dbad6 at 2.0:1), which read as marks unaided.
+    mark_edge_contrast: float = 1.5
 
     # Fixed arrowhead marker size keeps every arrow in a diagram visually
     # consistent regardless of which connector primitive draws it.
@@ -150,6 +178,15 @@ class Theme:
     # dense multi-panel overview figures may override it down one step
     # (e.g. "tiny") so edge captions stay subordinate to node labels.
     connector_label_size: str = "small"
+
+    # Connector caption frame: ``"none"`` sets captions as plain text;
+    # ``"capsule"`` sets every caption line as its own rounded pill in
+    # the two colours below (a data token riding its wire). Opt-in per
+    # figure, or per connector through ``Connect(label_frame=...)``.
+    connector_label_frame: str = "none"
+    label_capsule_fill: str = "#f6d5e0"
+    label_capsule_stroke: str = "#d98ca8"
+    label_capsule_text: str = "text"
 
     # -- palettes (paper-appropriate: desaturated, print-safe) ------------
     sequential_blues: List[str] = field(default_factory=lambda: [
@@ -565,16 +602,100 @@ class Theme:
         higher WCAG contrast ratio against the fill."""
         return self.text_inverse if self.prefers_light_text(fill) else self.text
 
+    def edge_for_fill(self, fill, ground=None,
+                      min_contrast: Optional[float] = None) -> Optional[str]:
+        """The edge a filled mark needs to stay visible on its ground.
+
+        A small mark in a pale fill (the lightest classes of a categorical
+        palette) vanishes on a white page: its shape is carried by nothing.
+        This returns a darker shade of the fill itself -- so the edge reads
+        as the mark's own outline, not as a second colour -- when the WCAG
+        contrast between ``fill`` and ``ground`` is under ``min_contrast``
+        (default :attr:`mark_edge_contrast`), and ``None`` when the fill
+        carries the shape on its own.
+
+        ``ground`` defaults to the container being painted (the top of the
+        background stack) or the page. Marks that are not plain
+        ``#rrggbb`` paint (``none``, gradients) never get an edge.
+        """
+        def _hex(spec) -> Optional[str]:
+            paint = self.paint_of(spec)
+            if (isinstance(paint, str) and paint.startswith("#")
+                    and len(paint) in (4, 7)):
+                return paint
+            return None
+
+        paint = _hex(fill)
+        if paint is None:
+            return None
+        ground_paint = _hex(ground if ground is not None
+                            else (self.current_bg() or self.bg)) or self.bg
+        threshold = (self.mark_edge_contrast if min_contrast is None
+                     else float(min_contrast))
+        if self.contrast_ratio(paint, ground_paint) >= threshold:
+            return None
+        # A pale fill on a pale ground darkens; a dark fill on a dark
+        # ground (a dark-mode page) lightens instead.
+        if self._relative_luminance(paint) >= 0.18:
+            return self._darken(paint, 0.45)
+        return self._lighten(paint, 0.55)
+
     _GAP_MAP = {
         "none": 0.0, "xs": 0.5, "sm": 1.0, "md": 1.75,
         "lg": 3.0, "xl": 4.5, "2xl": 6.5, "3xl": 10.0,
     }
 
     def gap_px(self, gap: Union[str, float]) -> float:
-        """Resolve ``"lg"``-style gap to px, multiples of :attr:`unit`."""
+        """Resolve ``"lg"``-style gap to px, multiples of :attr:`unit`.
+
+        Token gaps are elastic: under target-width compression (a
+        ``unit`` smaller than :attr:`authored_unit`) they shrink with
+        ``unit`` but stop at ``min(authored, min_space)`` -- the floor
+        that keeps bordered neighbours visibly apart. At the authored
+        unit the result is exactly ``token * unit``. Numeric gaps are
+        the author's own number and pass through unchanged.
+        """
         if isinstance(gap, (int, float)):
             return float(gap)
-        return self._GAP_MAP.get(gap, 2.0) * self.unit
+        if not isinstance(gap, (str, Real)):
+            raise TypeError(
+                f"gap {gap!r} is neither a spacing token nor a number; "
+                f"only Row and Column take a Rhythm")
+        k = self._GAP_MAP.get(gap, 2.0)
+        return self.elastic(k * self.unit, k * self.authored_unit_px)
+
+    @property
+    def authored_unit_px(self) -> float:
+        """The author's ``unit`` before any fitter compression."""
+        return self.unit if self.authored_unit is None else self.authored_unit
+
+    def elastic(self, compressed: float, authored: float) -> float:
+        """A compressed spacing held at its print floor.
+
+        ``compressed`` is the spacing the current (possibly compressed)
+        theme produces and ``authored`` the value the author wrote. The
+        result never falls below ``min(authored, min_space)``: slack
+        above the floor compresses, the floor does not, and an authored
+        value already under the floor is kept as written.
+        """
+        return max(compressed, min(authored, max(0.0, self.min_space)))
+
+    @property
+    def print_floors(self) -> bool:
+        """Whether print floors are on (:attr:`min_space` > 0)."""
+        return self.min_space > 0.0
+
+    def arrow_gutter_px(self) -> float:
+        """Smallest gutter a routed wire may cross between two faces:
+        its arrowhead plus :attr:`min_space` of clearance on both sides.
+
+        A structural floor, unlike the elastic token floor: a wire leg
+        shorter than its own head reads as a stub. Callers apply it
+        (``max(spacing, arrow_gutter_px())``) only when print floors are
+        on (:attr:`print_floors`); with the default ``min_space = 0``
+        spacing compresses proportionally, as it always has. Obstacle
+        clearance takes the same form with :attr:`min_space` alone."""
+        return self.arrow_head_px + 2.0 * max(0.0, self.min_space)
 
     def wrap_budget_px(self) -> float:
         """Pixel budget for one wrapped label line (see :attr:`wrap_budget`)."""

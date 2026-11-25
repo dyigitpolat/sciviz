@@ -109,7 +109,10 @@ class MatrixCell:
 
     ``value`` drives numeric colour independently from ``label`` and
     ``detail``.  ``role`` overrides numeric colour for categorical states.
-    ``mark`` may be a short string or any measured :class:`Element`.
+    ``mark`` may be a short string, any measured :class:`Element`, or a
+    sequence of them: several marks (events that fell in one cell) are set
+    side by side, and the column widens to carry them rather than letting
+    one mark stand for all.
     """
 
     value: Optional[float] = None
@@ -117,7 +120,7 @@ class MatrixCell:
     detail: Optional[str] = None
     role: Any = None
     emphasis: bool = False
-    mark: Optional[Union[str, Element]] = None
+    mark: Optional[Union[str, Element, Sequence[Union[str, Element]]]] = None
 
     def __post_init__(self) -> None:
         if self.value is not None:
@@ -129,8 +132,16 @@ class MatrixCell:
             object.__setattr__(self, "label", str(self.label))
         if self.detail is not None:
             object.__setattr__(self, "detail", str(self.detail))
-        if self.mark is not None and not isinstance(self.mark, (str, Element)):
-            raise TypeError("MatrixCell.mark must be str, Element, or None")
+        if isinstance(self.mark, (list, tuple)):
+            marks = tuple(self.mark)
+            if not all(isinstance(m, (str, Element)) for m in marks):
+                raise TypeError(
+                    "MatrixCell.mark sequence members must be str or Element")
+            object.__setattr__(self, "mark", marks if marks else None)
+        elif self.mark is not None and not isinstance(self.mark, (str, Element)):
+            raise TypeError(
+                "MatrixCell.mark must be str, Element, a sequence of them, "
+                "or None")
 
 
 @dataclass(frozen=True)
@@ -384,6 +395,12 @@ class Matrix(Element):
                     if isinstance(cell, MatrixCell) and isinstance(cell.mark, Element):
                         mark_size = cell.mark.measure(theme)
                         size = max(size, mark_size.w + 4.0, mark_size.h + 4.0)
+                    elif isinstance(cell, MatrixCell) and isinstance(cell.mark, tuple):
+                        # A run of marks sets the row height only; its width
+                        # is the column's business (``_col_widths``).
+                        for m in cell.mark:
+                            if isinstance(m, Element):
+                                size = max(size, m.measure(theme).h + 4.0)
         return size
 
     def _col_widths(self, theme: Theme) -> List[float]:
@@ -402,6 +419,24 @@ class Matrix(Element):
         if labels and abs(self.col_label_angle) < 0.5:
             for j, lbl in enumerate(labels):
                 widths[j] = max(widths[j], theme.text_width(lbl, "small") + pad)
+        # A run of marks is carried side by side at full size.
+        for row in self.data:
+            for j, cell in enumerate(row[:self.cols]):
+                if isinstance(cell, MatrixCell) and isinstance(cell.mark, tuple):
+                    widths[j] = max(widths[j],
+                                    self._mark_run_width(cell.mark, theme) + 4.0)
+        # An authored cell label is carried too: a label wider than its cell
+        # widens the column (by the estimate the cell renderer fits with)
+        # instead of being shrunk below its size. Auto value labels of a
+        # heat map (``show_values``) still shrink, so a heat map stays square.
+        for row in self.data:
+            for j, cell in enumerate(row[:self.cols]):
+                if not isinstance(cell, MatrixCell):
+                    continue
+                for text, size in ((cell.label, "tiny"), (cell.detail, "micro")):
+                    if text:
+                        need = len(str(text)) * theme.size_px(size) * 0.62 + 4.0
+                        widths[j] = max(widths[j], need)
         for group in self.col_groups:
             span = sum(widths[group.start:group.stop]) - pad
             need = max(
@@ -742,6 +777,19 @@ class Matrix(Element):
             return preferred
         return max(1.0, available / (len(text) * 0.62))
 
+    @staticmethod
+    def _mark_gap(theme: Theme) -> float:
+        return theme.unit * 0.35
+
+    def _mark_width(self, mark, theme: Theme) -> float:
+        if isinstance(mark, Element):
+            return mark.measure(theme).w
+        return theme.text_width(self._mark_text(mark), "tiny", bold=True)
+
+    def _mark_run_width(self, marks, theme: Theme) -> float:
+        return (sum(self._mark_width(m, theme) for m in marks)
+                + self._mark_gap(theme) * max(0, len(marks) - 1))
+
     def _render_mark(
         self,
         canvas: Canvas,
@@ -755,6 +803,24 @@ class Matrix(Element):
         has_text: bool,
     ) -> None:
         if cell.mark is None:
+            return
+        if isinstance(cell.mark, tuple):
+            run = self._mark_run_width(cell.mark, theme)
+            x = (cx + max(1.0, cw - run - 2.0)) if has_text \
+                else cx + (cw - run) / 2
+            size_px = theme.size_px("tiny")
+            for m in cell.mark:
+                w = self._mark_width(m, theme)
+                if isinstance(m, Element):
+                    h = m.measure(theme).h
+                    py = cy + 1.5 if has_text else cy + (ch - h) / 2
+                    m.render(canvas, x, py, theme)
+                else:
+                    py = (cy + size_px + 1.0) if has_text \
+                        else cy + ch / 2 + size_px * 0.33
+                    canvas.text(x, py, self._mark_text(m), size=size_px,
+                                fill=color, weight="700", anchor="start")
+                x += w + self._mark_gap(theme)
             return
         if isinstance(cell.mark, Element):
             size = cell.mark.measure(theme)

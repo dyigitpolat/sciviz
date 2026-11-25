@@ -15,6 +15,11 @@ class Timeline(Element):
     ----------
     lanes : list of tuples
         Each lane is ``(lane_label, [(start, duration, task_label, color?), ...])``.
+        A task whose duration is ``None`` is a point event: a marker at
+        ``start`` -- the fourth field may be a :class:`Marker` (its shape,
+        colour, size and fill are used) or a colour. Repeats of one event
+        (same lane, time and task label) draw one marker with a ``×k``
+        count; give different events at one time their own lanes.
     t_min, t_max : float
         Time range.  Bars' ``start`` and ``duration`` are in the same units.
     width : float
@@ -23,6 +28,16 @@ class Timeline(Element):
         Height per lane in px.
     tick_every : float, optional
         Tick spacing.  None = auto (10 ticks).
+    label_size : str
+        Size token of the lane labels (default ``"label"``); a timeline
+        inside a card speaks at the card's type size.
+    axis_size : str, optional
+        Size token of the tick labels, used for both the drawn text and the
+        reserved axis band. ``None`` keeps the historical pairing (tiny
+        text in a band sized for small text).
+    tick_labels : str
+        ``"all"`` (default) labels every tick; ``"ends"`` labels only the
+        first and the last, for a compact step axis.
     """
 
     _WIDTH_UNITS = {
@@ -49,7 +64,16 @@ class Timeline(Element):
                  t_unit: str = "",
                  auto_color: bool = True,
                  color_by: str = "label",
-                 milestones: Optional[Sequence[tuple]] = None):
+                 milestones: Optional[Sequence[tuple]] = None,
+                 label_size: str = "label",
+                 axis_size: Optional[str] = None,
+                 tick_labels: str = "all"):
+        if tick_labels not in ("all", "ends"):
+            raise ValueError(
+                f"Timeline.tick_labels must be 'all' or 'ends'; got {tick_labels!r}")
+        self.label_size = label_size
+        self.axis_size = axis_size
+        self.tick_labels = tick_labels
         self.lanes = list(lanes)
         self.t_min = float(t_min)
         self.t_max = float(t_max)
@@ -85,13 +109,28 @@ class Timeline(Element):
 
     def _lane_height(self, theme: Theme) -> float:
         if isinstance(self.lane_h, (int, float)):
-            return float(self.lane_h)
-        if self.lane_h not in self._LANE_HEIGHT_UNITS:
+            base = float(self.lane_h)
+        elif self.lane_h not in self._LANE_HEIGHT_UNITS:
             allowed = ", ".join(self._LANE_HEIGHT_UNITS)
             raise ValueError(
                 f"Timeline.lane_h must be numeric or one of {allowed}"
             )
-        return theme.unit * self._LANE_HEIGHT_UNITS[self.lane_h]
+        else:
+            base = theme.unit * self._LANE_HEIGHT_UNITS[self.lane_h]
+        # A lane is never shorter than its tallest point event, so a
+        # marker never inks outside the measured box.
+        r = self._event_radius(theme)
+        return max(base, 2 * r + 1) if r else base
+
+    def _event_radius(self, theme: Theme) -> float:
+        """The largest point-event marker radius (0 without point events)."""
+        from ..elements._marker import Marker, marker_radius
+        radii = [marker_radius(t[3].size, theme)
+                 if len(t) > 3 and isinstance(t[3], Marker)
+                 else marker_radius("xs", theme)
+                 for _label, tasks in self.lanes for t in tasks
+                 if len(t) >= 3 and t[1] is None]
+        return max(radii, default=0.0)
 
     def _lane_label_width(self, theme: Theme) -> float:
         if isinstance(self.lane_label_width, (int, float)):
@@ -101,7 +140,7 @@ class Timeline(Element):
                 "Timeline.lane_label_width must be numeric or 'auto'"
             )
         label_w = max(
-            (theme.text_width(str(label), "label", bold=True)
+            (theme.text_width(str(label), self.label_size, bold=True)
              for label, _tasks in self.lanes),
             default=0.0,
         )
@@ -112,7 +151,8 @@ class Timeline(Element):
 
     def measure(self, theme: Theme) -> BBox:
         n = len(self.lanes)
-        axis_h = theme.text_height("small") + 6 if self.show_axis else 0
+        axis_h = (theme.text_height(self.axis_size or "small") + 6
+                  if self.show_axis else 0)
         lane_h = self._lane_height(theme)
         H = n * lane_h + axis_h + theme.unit
         W = (self._lane_label_width(theme) + self._plot_width(theme)
@@ -143,9 +183,9 @@ class Timeline(Element):
             ly = y + i * lane_h
             # lane label (left)
             canvas.text(x + label_width - theme.unit * 0.5,
-                       ly + lane_h / 2 + theme.size_px("label") * 0.33,
+                       ly + lane_h / 2 + theme.size_px(self.label_size) * 0.33,
                        lane_label,
-                       size=theme.size_px("label"),
+                       size=theme.size_px(self.label_size),
                        fill=theme.color_of("text"),
                        weight="500", anchor="end")
             # thin lane baseline
@@ -153,7 +193,15 @@ class Timeline(Element):
                        x0 + plot_width, ly + lane_h - 1,
                        stroke=theme.color_of("border"),
                        stroke_width=theme.hairline)
+            seen_points: dict = {}
             for t in tasks:
+                if len(t) >= 3 and t[1] is None:
+                    key = (float(t[0]), t[2])
+                    if key in seen_points:
+                        seen_points[key][1] += 1
+                    else:
+                        seen_points[key] = [t, 1]
+                    continue
                 if len(t) == 3:
                     start, dur, label = t
                     col = None
@@ -185,6 +233,10 @@ class Timeline(Element):
                                label, size=theme.size_px("small"),
                                fill=text_hex,
                                weight="600", anchor="middle")
+
+            self._draw_points(canvas, theme, list(seen_points.values()),
+                              x0, ly, lane_h, plot_width, i, lane_label,
+                              key_to_role)
 
         # Milestone guides are semantic time boundaries (phase ends,
         # synchronization points), drawn after bars so they remain legible.
@@ -220,18 +272,51 @@ class Timeline(Element):
             dt = self.tick_every
             if dt is None:
                 dt = (self.t_max - self.t_min) / 10
+            tick_size = theme.size_px(self.axis_size or "tiny")
             t = self.t_min
             while t <= self.t_max + 1e-6:
                 tx = x0 + self._time_to_x(t, plot_width)
                 canvas.line(tx, axis_y, tx, axis_y + 3,
                            stroke=theme.color_of("text"),
                            stroke_width=theme.hairline)
-                label = f"{t:g}{self.t_unit}"
-                canvas.text(tx, axis_y + 3 + theme.size_px("tiny") * 1.1,
-                           label, size=theme.size_px("tiny"),
-                           fill=theme.color_of("text_muted"),
-                           anchor="middle")
+                end = (t - self.t_min < 1e-6) or (t + dt > self.t_max + 1e-6)
+                if self.tick_labels == "all" or end:
+                    label = f"{t:g}{self.t_unit}"
+                    canvas.text(tx, axis_y + 3 + tick_size * 1.1,
+                               label, size=tick_size,
+                               fill=theme.color_of("text_muted"),
+                               anchor="middle")
                 t += dt
+
+    def _draw_points(self, canvas: Canvas, theme: Theme, points, x0: float,
+                     ly: float, lane_h: float, plot_width: float,
+                     lane_idx: int, lane_label, key_to_role) -> None:
+        """Point events of one lane: a marker each, ``×k`` for repeats."""
+        from ..elements._marker import Marker, draw_marker, marker_radius
+        cy = ly + (lane_h - 1) / 2
+        for task, count in points:
+            mark = task[3] if len(task) > 3 else None
+            if isinstance(mark, Marker):
+                shape, fill_mode = mark.shape, mark.fill
+                color = theme.color_of(mark.color)
+                r = marker_radius(mark.size, theme)
+            else:
+                shape, fill_mode = "circle", "solid"
+                r = marker_radius("xs", theme)
+                key = self._color_key(lane_idx, lane_label, task)
+                if mark is not None:
+                    color = theme.color_of(mark)
+                elif key is not None and key in key_to_role:
+                    color = theme.role(key_to_role[key], "stroke")
+                else:
+                    color = theme.color_of("primary")
+            cx = x0 + self._time_to_x(float(task[0]), plot_width)
+            draw_marker(canvas, shape, cx, cy, r, color, theme, fill_mode)
+            if count > 1:
+                size = theme.size_px("tiny")
+                canvas.text(cx + r + theme.unit * 0.2, cy + size * 0.33,
+                            f"\u00d7{count}", size=size,
+                            fill=theme.color_of("text_muted"), anchor="start")
 
     def _color_key(self, lane_idx, lane_label, task):
         """Return the cache-key used by auto-coloring for a given task."""

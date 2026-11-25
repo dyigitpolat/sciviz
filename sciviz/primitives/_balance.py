@@ -112,14 +112,31 @@ class Balance(Element):
                    len(self._caption_lines(self.right)))
         return rows * theme.text_height(self.text_size) * 1.02
 
+    def _extent(self, theme: Theme) -> float:
+        """The drawn width: the authored width, or wider when the two pans'
+        captions, set side by side under their pans, need more room.
+
+        The captions hang from the two extremes, so two long names on a
+        narrow beam would run into each other; the beam lengthens instead
+        (the tilt is an angle, so the verdict it shows is unchanged).
+        """
+        def caption_w(pan: BalancePan) -> float:
+            return max((theme.text_width(line, self.text_size)
+                        for line in self._caption_lines(pan)), default=0.0)
+
+        need = (caption_w(self.left) + caption_w(self.right)
+                + theme.size_px(self.text_size))
+        return max(self.width, need)
+
     def measure(self, theme: Theme) -> BBox:
-        return BBox(self.width, self.height + self._caption_h(theme))
+        return BBox(self._extent(theme), self.height + self._caption_h(theme))
 
     # -- render --------------------------------------------------------
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
         ink = theme.color_of("border_strong")
-        cx = x + self.width / 2
+        width = self._extent(theme)
+        cx = x + width / 2
         base_y = y + self.height
 
         # The instrument is sized from its extremes inward, so no tilt in
@@ -127,15 +144,15 @@ class Balance(Element):
         # arm keeps half a pan's width clear of each side, and the pivot
         # sits exactly one full tilt travel below the top edge, leaving
         # the hanger just enough room to reach the base at the other end.
-        pan_w = self.width * 0.28
-        arm = (self.width - pan_w) / 2
+        pan_w = width * 0.28
+        arm = (width - pan_w) / 2
         bowl = pan_w * 0.30
         travel = arm * math.sin(math.radians(self.max_tilt))
         pivot_y = y + travel + theme.hairline
         drop = max(2.0, base_y - pivot_y - travel - bowl)
 
         # stand: a pillar on a foot, the fixed part of the instrument
-        foot_w = self.width * 0.20
+        foot_w = width * 0.20
         canvas.line(cx, pivot_y, cx, base_y - theme.hairline,
                     stroke=ink, stroke_width=theme.line)
         canvas.line(cx - foot_w / 2, base_y, cx + foot_w / 2, base_y,
@@ -155,7 +172,7 @@ class Balance(Element):
 
         size = theme.size_px(self.text_size)
         for pan, px, anchor in ((self.left, x, "start"),
-                                (self.right, x + self.width, "end")):
+                                (self.right, x + width, "end")):
             color = (theme.color_of(pan.color) if pan.color is not None
                      else theme.color_of("text_muted"))
             for i, line in enumerate(self._caption_lines(pan)):

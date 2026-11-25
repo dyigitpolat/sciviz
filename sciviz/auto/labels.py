@@ -40,6 +40,10 @@ class LabelBox:
     theme: Optional[Theme] = field(default=None, compare=False, repr=False)
     size: str = field(default="small", compare=False, repr=False)
     bold: bool = field(default=False, compare=False, repr=False)
+    #: ``"none"`` or ``"capsule"``: a capsule caption sets every line as
+    #: its own pill (see :func:`capsule_geometry`), so the box includes
+    #: the pills' padding and the gaps between them.
+    frame: str = "none"
 
     def __post_init__(self):
         if not self.lines:
@@ -61,7 +65,9 @@ class LabelBox:
         broke the caption by hand: authored ``"\\n"`` is content, and the
         layout does not overrule it.
         """
-        if self.theme is None or budget <= 0.0 or "\n" in self.source:
+        if (self.theme is None or budget <= 0.0 or "\n" in self.source
+                or self.frame == "capsule"):
+            # A capsule is one datum: its words never re-wrap into two.
             return self
         text = wrap_label(self.source, self.theme, self.size,
                           max_width=budget, bold=self.bold)
@@ -116,9 +122,22 @@ class PlacedLabel:
         return ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
 
 
+def capsule_geometry(theme: Theme, size="small") -> Tuple[float, float, float]:
+    """``(pad_x, pill_h, gap)`` of a capsule caption at ``size``: the
+    pill's padding either side of its text, the pill's height and the
+    gap between stacked pills. A capsule caption is drawn exactly as a
+    :class:`~sciviz.Chip` of the same size, so a data token on a wire
+    and one inside a card read as the same mark."""
+    from ..elements._chip import chip_padding
+    pad_x, pad_y = chip_padding(theme)
+    px = theme.size_px(size)
+    return (pad_x * px, px * 1.15 + 2.0 * pad_y * px, 0.3 * px)
+
+
 def measure_label(text: str, theme: Theme, size="small", *,
                   bold: bool = False,
-                  source: Optional[str] = None) -> LabelBox:
+                  source: Optional[str] = None,
+                  frame: str = "none") -> LabelBox:
     """Measure a connector label; ``"\\n"`` splits it into stacked lines.
 
     Multi-line labels measure as a block (widest line by the summed line
@@ -132,16 +151,25 @@ def measure_label(text: str, theme: Theme, size="small", *,
     """
     lines = tuple(text.split("\n"))
     line_h = theme.text_height(size)
+    width = max(theme.text_width(line, size, bold=bold) for line in lines)
+    height = line_h * len(lines) * (1.0 if len(lines) == 1 else 1.12)
+    if frame == "capsule":
+        pad_x, pill_h, gap = capsule_geometry(theme, size)
+        width = max(width + 2.0 * pad_x, pill_h)
+        height = len(lines) * pill_h + (len(lines) - 1) * gap
+    elif frame != "none":
+        raise ValueError(f"label frame must be 'none' or 'capsule'; got {frame!r}")
     return LabelBox(
         text=text,
-        width=max(theme.text_width(line, size, bold=bold) for line in lines),
-        height=line_h * len(lines) * (1.0 if len(lines) == 1 else 1.12),
+        width=width,
+        height=height,
         size_px=theme.size_px(size),
         lines=lines,
         source=source if source is not None else text,
         theme=theme,
         size=size,
         bold=bold,
+        frame=frame,
     )
 
 
@@ -206,7 +234,7 @@ class CaptionFit:
 def fitted_caption(text: str, theme: Theme, size="small", *,
                    src_side: str, dst_side: str,
                    neighbour_extent: Optional[float] = None,
-                   bold: bool = False) -> LabelBox:
+                   bold: bool = False, frame: str = "none") -> LabelBox:
     """The caption as it will actually be set.
 
     This is the single place the orientation/wrapping question is
@@ -226,13 +254,13 @@ def fitted_caption(text: str, theme: Theme, size="small", *,
     return caption_fit(text, theme, size, src_side=src_side,
                        dst_side=dst_side,
                        neighbour_extent=neighbour_extent,
-                       bold=bold).label
+                       bold=bold, frame=frame).label
 
 
 def caption_fit(text: str, theme: Theme, size="small", *,
                 src_side: str, dst_side: str,
                 neighbour_extent: Optional[float] = None,
-                bold: bool = False) -> CaptionFit:
+                bold: bool = False, frame: str = "none") -> CaptionFit:
     """Resolve caption wrapping and orientation in one place.
 
     On a facing pair the caption is wrapped to its narrowest block so it
@@ -243,7 +271,11 @@ def caption_fit(text: str, theme: Theme, size="small", *,
     turned across the wire, which costs the corridor nothing.
     """
     sides = {src_side, dst_side}
-    one_line = measure_label(text, theme, size, bold=bold)
+    one_line = measure_label(text, theme, size, bold=bold, frame=frame)
+    if frame == "capsule":
+        # Capsules are set as authored -- one pill per line, upright --
+        # and are never re-wrapped or turned: a pill is one datum.
+        return CaptionFit(one_line, True)
     if sides == {"left", "right"}:
         # A left/right corridor is narrow horizontally and tall
         # vertically: wrapping the caption narrow buys exactly the
@@ -345,7 +377,8 @@ def rotated_caption(label: LabelBox, arm_length: float,
     and the caller keeps the caption upright beside the wire instead.
     """
     budget = arm_length - 2.0 * gap
-    if budget <= 0.0:
+    if budget <= 0.0 or label.frame == "capsule":
+        # A capsule is a data token and is always read upright.
         return None
     fitted = label.set_to(budget)
     return fitted if len(fitted.lines) == 1 else None
@@ -444,8 +477,31 @@ def place_polyline_label(points: Sequence[Point], label: LabelBox,
                          gap: float = 6.0,
                          allow_rotation: bool = True,
                          wire_width: float = 0.0,
-                         bounds: Optional[Rect] = None) -> PlacedLabel:
+                         bounds: Optional[Rect] = None,
+                         foreign_segments: Sequence[
+                             Tuple[float, float, float, float]] = (),
+                         side: Optional[str] = None,
+                         ) -> PlacedLabel:
     """Place a connector label along the best segment of a polyline.
+
+    ``side`` (``"left"``/``"right"``/``"above"``/``"below"``, or None for
+    automatic) is the author's side for the caption, the vocabulary of
+    :class:`Arrow`'s ``label_side``. It names a leg orientation as well as
+    a side: ``"left"``/``"right"`` put the caption beside a vertical leg
+    (vertical legs are tried first), ``"above"``/``"below"`` beside a
+    horizontal one. Sibling wires given one side read as a set: their
+    captions sit on the same side of their wires, upright, and level with
+    each other where their legs span the same gutter. A leg where that
+    side is blocked still falls back to the automatic choice.
+
+    ``foreign_segments`` are the other wires in the scope (bus trunks
+    included). A beside placement that sits at least as near one of them
+    as its own leg is *ambiguous* -- it reads as the other wire's caption
+    -- and ranks right after overlap: an unambiguous home on another leg
+    wins, and when every clear beside home is ambiguous the caption goes
+    on its own wire (unambiguous by construction) if a leg carries it.
+    Foreign wires that cross the caption's own leg under the caption are
+    not counted; every home near a crossing would otherwise be ambiguous.
 
     Generalises :func:`place_segment_label` from "the longest segment"
     to "whichever segment admits a collision-free offset placement":
@@ -501,16 +557,30 @@ def place_polyline_label(points: Sequence[Point], label: LabelBox,
     # Horizontal reading is substantially faster in dense research figures.
     # Prefer it only when the segment can actually carry the label; tiny
     # endpoint stubs must never steal captions from a useful vertical run.
-    seg_indices.sort(key=lambda t: (not t[2], -t[0]))
+    side_vertical = (None if side is None
+                     else side in ("left", "right"))
+
+    def _leg_is_vertical(i):
+        (ax, ay), (bx, by) = points[i], points[i + 1]
+        return abs(bx - ax) < abs(by - ay)
+
+    if side_vertical is None:
+        seg_indices.sort(key=lambda t: (not t[2], -t[0]))
+    else:
+        seg_indices.sort(key=lambda t: (
+            _leg_is_vertical(t[1]) != side_vertical, not t[2], -t[0]))
 
     best: Optional[Tuple[float, int, float, PlacedLabel]] = None
+    best_score = None
     for length, i, _horizontal_caption_lane in seg_indices:
         seg = (points[i], points[i + 1])
         others = [r for j, r in enumerate(own_rects) if j != i]
         cand_obstacles = list(obstacles) + others
         p1, p2 = seg
         is_horizontal = abs(p2[0] - p1[0]) >= abs(p2[1] - p1[1])
-        seg_prefer = _route_side_preference(points, i, prefer)
+        seg_prefer = (side if side_vertical is not None
+                      and (not is_horizontal) == side_vertical
+                      else _route_side_preference(points, i, prefer))
         # THE ROTATED-LABEL WRAP BUDGET. Rotation turns the arm into the
         # caption's reading width, so the caption is re-set to THIS arm
         # before this arm is judged: a long run gets the words back on one
@@ -523,7 +593,8 @@ def place_polyline_label(points: Sequence[Point], label: LabelBox,
         rotated = (label if is_horizontal
                    else rotated_caption(label, length, gap))
         attempts: list[Tuple[int, float]] = [(0, 0.0)]  # (pref_pen, rotation)
-        if is_horizontal and allow_rotation and len(label.lines) == 1:
+        if (is_horizontal and allow_rotation and len(label.lines) == 1
+                and label.frame != "capsule"):
             # A horizontal hand-off between two side-by-side nodes lives
             # in a tall, narrow corridor: there is plenty of room ACROSS
             # the wire and almost none along it. A rotated caption needs
@@ -540,7 +611,10 @@ def place_polyline_label(points: Sequence[Point], label: LabelBox,
             # orientation stays consistent with sibling edges in the same
             # stack (whose longer labels resolve horizontal anyway).
             carries_rotated = length >= rotated.width + 2.0 * gap
-            if carries_rotated:
+            # An author-given side sets a caption beside its wire, read
+            # upright like its siblings; turning only the short words
+            # that happen to fit along their leg breaks the set.
+            if carries_rotated and side_vertical is None:
                 attempts = [(0, 90.0), (1, 0.0)]
             else:
                 attempts = [(0, 0.0), (1, 90.0)]
@@ -556,14 +630,20 @@ def place_polyline_label(points: Sequence[Point], label: LabelBox,
                     seg_prefer, gap, bounds=bounds)
             placed = PlacedLabel(rect=rect, anchor=anchor, rotation=rotation,
                                  label=set_label)
-            if overlap <= 0.0 and pref_pen == 0:
+            ambiguous = _ambiguous(rect, seg, foreign_segments, gap)
+            if overlap <= 0.0 and pref_pen == 0 and not ambiguous:
                 return placed
-            score = (overlap, pref_pen, -length)
-            if best is None or score < (best[0], best[1], -best[2]):
-                best = (overlap, pref_pen, length, placed)
-            if overlap <= 0.0:
+            score = (overlap, ambiguous, pref_pen, -length)
+            if best is None or score < best_score:
+                best, best_score = (overlap, pref_pen, length, placed), score
+            if overlap <= 0.0 and not ambiguous:
                 break
     assert best is not None
+    if best[0] <= 0.0 and best_score[1]:
+        inline = _place_inline(points, own_rects, label, obstacles, gap,
+                               bounds=bounds)
+        if inline is not None:
+            return inline
     if best[0] > 0.5:
         # Walled corridor: every offset candidate collides with a card,
         # another wire, or free text. Fall back to the schematic
@@ -581,6 +661,89 @@ def place_polyline_label(points: Sequence[Point], label: LabelBox,
         from dataclasses import replace as _replace
         return _clamp_into(_replace(best[3], overlapped=True), bounds)
     return _clamp_into(best[3], bounds)
+
+
+def _rect_seg_distance(rect: Rect, seg) -> float:
+    """Distance from an axis-aligned segment to a rectangle (0 inside)."""
+    x0, y0, x1, y1 = rect
+    (ax, ay), (bx, by) = seg
+    sx0, sx1 = min(ax, bx), max(ax, bx)
+    sy0, sy1 = min(ay, by), max(ay, by)
+    dx = max(0.0, max(x0, sx0) - min(x1, sx1))
+    dy = max(0.0, max(y0, sy0) - min(y1, sy1))
+    return (dx * dx + dy * dy) ** 0.5
+
+
+def _ambiguous(rect: Rect, seg, foreign, gap: float) -> bool:
+    """Whether a caption at ``rect`` reads as belonging to a foreign wire:
+    one lies no further from it than its own leg ``seg`` (plus half a
+    gap). Foreign wires crossing the own leg within the caption's extent
+    along it are skipped."""
+    if not foreign:
+        return False
+    d_own = _rect_seg_distance(rect, seg)
+    (ax, ay), (bx, by) = seg
+    horizontal = abs(bx - ax) >= abs(by - ay)
+    x0, y0, x1, y1 = rect
+    for (fx1, fy1, fx2, fy2) in foreign:
+        f = ((fx1, fy1), (fx2, fy2))
+        f_horizontal = abs(fx2 - fx1) >= abs(fy2 - fy1)
+        if horizontal != f_horizontal:
+            # a perpendicular wire crossing the own leg under the caption
+            if horizontal and x0 <= fx1 <= x1 \
+                    and min(fy1, fy2) <= ay <= max(fy1, fy2):
+                continue
+            if not horizontal and y0 <= fy1 <= y1 \
+                    and min(fx1, fx2) <= ax <= max(fx1, fx2):
+                continue
+        if _rect_seg_distance(rect, f) < d_own + 0.5 * gap:
+            return True
+    return False
+
+
+def place_on_wire_label(points: Sequence[Point], label: LabelBox,
+                        obstacles: Sequence[Rect], *,
+                        gap: float = 6.0,
+                        wire_width: float = 0.0,
+                        bounds: Optional[Rect] = None) -> Optional[PlacedLabel]:
+    """Centre a caption ON its own wire, the schematic convention.
+
+    The wire reads as passing behind the text (the renderer paints a
+    page-coloured halo), so a caption costs its own wire's lane rather
+    than a lane beside it: two labelled wires in parallel lanes need one
+    caption height between them, not two. The longest leg that carries
+    the caption clear of every foreign obstacle wins; ``None`` when no leg
+    can, so the caller falls back to :func:`place_polyline_label`.
+    """
+    if len(points) < 2:
+        return None
+    pad = max(0.5, wire_width)
+    own_rects = []
+    for i in range(len(points) - 1):
+        (x1, y1), (x2, y2) = points[i], points[i + 1]
+        own_rects.append((min(x1, x2) - pad, min(y1, y2) - pad,
+                          max(x1, x2) + pad, max(y1, y2) + pad))
+    return _place_inline(points, own_rects, label, obstacles, gap,
+                         bounds=bounds)
+
+
+def on_wire_stub(leg_length: float, gap: float) -> float:
+    """Wire that must stay visible at each end of an on-wire caption.
+
+    A caption centred on its wire hides the wire under its page-coloured
+    halo; when it covers nearly the whole leg the wire reads as two
+    disconnected stubs with floating text. So each side keeps at least
+    ``max(3 * gap, 0.25 * leg_length)`` of visible wire, so a caption
+    covers at most half its leg. One predicate for the placer
+    (:func:`_place_inline`) and the route planner's caption check
+    (``router._label_home_exists``).
+    """
+    return max(3.0 * gap, 0.25 * leg_length)
+
+
+def on_wire_fits(leg_length: float, along: float, gap: float) -> bool:
+    """Whether a caption ``along`` long may ride centred on a leg."""
+    return leg_length >= along + 2.0 * on_wire_stub(leg_length, gap)
 
 
 def _place_inline(points: Sequence[Point], own_rects: Sequence[Rect],
@@ -617,20 +780,22 @@ def _place_inline(points: Sequence[Point], own_rects: Sequence[Rect],
         # The wire must genuinely carry the text: the along-axis extent
         # of the label plus a small margin must fit inside the leg.
         along = w if is_horizontal else h
-        if length < along + gap:
+        if not on_wire_fits(length, along, gap):
             continue
+        stub = on_wire_stub(length, gap)
         for t in (0.5, 0.4, 0.6, 0.3, 0.7):
             cx = p1[0] + (p2[0] - p1[0]) * t
             cy = p1[1] + (p2[1] - p1[1]) * t
             rect = (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
             # Keep the whole rect within the leg's along-axis span.
+            # Keep a visible stub of wire on both sides of the caption.
             if is_horizontal:
                 lo, hi = sorted((p1[0], p2[0]))
-                if rect[0] < lo or rect[2] > hi:
+                if rect[0] < lo + stub or rect[2] > hi - stub:
                     continue
             else:
                 lo, hi = sorted((p1[1], p2[1]))
-                if rect[1] < lo or rect[3] > hi:
+                if rect[1] < lo + stub or rect[3] > hi - stub:
                     continue
             if not _rect_within(rect, bounds):
                 continue

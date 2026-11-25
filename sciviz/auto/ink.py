@@ -88,3 +88,27 @@ def rects_excluding_endpoints(rects: Sequence[Rect],
         if not hit:
             out.append((x0, y0, x1, y1))
     return out
+
+
+def overflow_items(canvas, box: Rect, *, eps: float = 0.5
+                   ) -> List[Tuple[str, str, float]]:
+    """Ink a canvas painted outside ``box``, as ``(kind, side, extent)``.
+
+    ``box`` is ``(x0, y0, x1, y1)`` -- typically the laid-out box an
+    element measured. Each ink kind the canvas ledger records
+    (``"text"``, ``"shape"``) reports its deepest overshoot past each
+    side (``"left"``, ``"top"``, ``"right"``, ``"bottom"``), in canvas
+    units, widest first; overshoots of ``eps`` or less are ignored.
+    Routed wire detours and wire captions set outside the layout are
+    the usual sources: an element whose ``render()`` paints outside its
+    ``measure()`` breaks the bbox contract and shows up here too.
+    """
+    x0, y0, x1, y1 = box
+    worst: dict = {}
+    for (a, b, c, d, kind) in canvas.ink_items():
+        for side, ext in (("left", x0 - a), ("top", y0 - b),
+                          ("right", c - x1), ("bottom", d - y1)):
+            if ext > eps and ext > worst.get((kind, side), 0.0):
+                worst[(kind, side)] = ext
+    return sorted(((k, s, e) for (k, s), e in worst.items()),
+                  key=lambda t: -t[2])

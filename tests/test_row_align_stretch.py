@@ -1,7 +1,7 @@
 """``Row(align="stretch")`` should give side-by-side siblings a common outer
 height and centre each inflated child in its enlarged content area.
 
-Motivating case (AgentEvolve rebuttal, Figure 1): two ``Panel``\\ s sit in a
+Motivating case: two ``Panel``\\ s sit in a
 Row -- panel (a) holds a short reflective loop, panel (b) a tall 6-level
 mapping. With ``align="center"`` the shorter panel's *border* stays short and
 its content hugs the header, so the two framed boxes don't line up and a

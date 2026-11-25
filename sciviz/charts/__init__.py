@@ -19,7 +19,7 @@ from ..elements import Text
 from ._donut import DonutChart, GroupSummary, Part
 
 __all__ = [
-    "Table", "AlignedColumns", "BarChart",
+    "Table", "TableSpan", "AlignedColumns", "BarChart",
     "Part", "GroupSummary", "DonutChart",
 ]
 
@@ -27,6 +27,82 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Table
 # ---------------------------------------------------------------------------
+
+class TableSpan:
+    """A :class:`Table` cell that covers several adjacent columns.
+
+    The typeset-table spanning cell: a group title over its columns, a
+    one-line note under a block, the ``+ 7 more`` row that closes a
+    truncated list. A span is sized after the ordinary cells: it widens
+    the columns it covers only when its content is wider than they are
+    together, and then shares the excess over them in proportion to their
+    natural widths.
+
+    Parameters
+    ----------
+    content : Element or str
+        The cell. A string becomes a :class:`Text` styled by the style of
+        the span's first column merged with ``style``.
+    columns : int, optional
+        Number of columns covered; ``None`` covers the rest of the row.
+    align : str, optional
+        ``"start"``, ``"center"`` or ``"end"`` inside the covered range;
+        defaults to the first column's alignment.
+    style : dict, optional
+        Text keyword arguments laid over the column style.
+    rule_above : bool
+        ``False`` suppresses the body rule drawn above this cell's row, so
+        a footnote-like row reads as part of the block above it.
+    """
+
+    def __init__(self, content, columns: Optional[int] = None, *,
+                 align: Optional[str] = None,
+                 style: Optional[dict] = None,
+                 rule_above: bool = True):
+        if columns is not None and int(columns) < 1:
+            raise ValueError("TableSpan.columns must be at least 1")
+        self.content = content
+        self.columns = None if columns is None else int(columns)
+        self.align = align
+        self.style = dict(style) if style else {}
+        self.rule_above = bool(rule_above)
+
+    def with_content(self, content) -> "TableSpan":
+        """A copy of this span holding ``content``."""
+        return TableSpan(content, self.columns, align=self.align,
+                         style=self.style, rule_above=self.rule_above)
+
+
+def _span_of(cell) -> Optional[int]:
+    """Columns a raw cell covers: 1 for a plain cell, ``None`` for a
+    rest-of-row span."""
+    if isinstance(cell, TableSpan):
+        return cell.columns
+    return 1
+
+
+def _table_rows_with_overflow(raw_rows, header: bool,
+                              max_rows: Optional[int], more):
+    """Cut the body to ``max_rows`` rows and close it with a spanning
+    ``more`` row that says how many were left out."""
+    if max_rows is None:
+        return raw_rows
+    head = raw_rows[:1] if header else []
+    body = raw_rows[1:] if header else raw_rows
+    if len(body) <= max_rows:
+        return raw_rows
+    hidden = len(body) - int(max_rows)
+    if isinstance(more, TableSpan):
+        text = more.content
+        span = more
+    else:
+        text = more
+        span = TableSpan("", None, rule_above=False,
+                         style={"color": "text_muted", "italic": True})
+    if isinstance(text, str):
+        text = text.format(n=hidden)
+    return head + body[:max_rows] + [[span.with_content(text)]]
+
 
 class Table(Element):
     """A grid of elements with per-column widths fixed to the column max.
@@ -77,6 +153,25 @@ class Table(Element):
     pad_x, pad_y : str or float
         Inner cell padding, the room between a band's edge and the cell
         content; added to every column width and row height.
+    row_styles : dict or sequence of dict, optional
+        Text keyword arguments per row (``{row index: style}`` or one dict
+        per row), laid over the column style: the row-wise twin of
+        ``column_styles``, e.g. to type the source row and the target row
+        of a mapping differently.
+    rules_after : sequence of int, optional
+        Row indices after which a hairline in the border colour is drawn,
+        to separate groups of rows (one kind of row, then another).
+    max_rows : int, optional
+        Show at most this many body rows (the header is not counted) and
+        close the table with one spanning row that says how many were
+        left out.
+    more : str or TableSpan
+        That closing row: a ``str.format`` template given ``n`` (default
+        ``"+ {n} more"``, set muted and italic with no rule above it), or a
+        :class:`TableSpan` whose string content is the template.
+
+    A row may hold :class:`TableSpan` cells; the columns a row covers
+    (spans counted by their width) must equal the table's column count.
     """
 
     def __init__(self, rows: Sequence[Sequence], *,
@@ -93,16 +188,29 @@ class Table(Element):
                  zebra: Optional[str] = None,
                  row_fills: Optional[dict] = None,
                  pad_x: Union[str, float] = 0.0,
-                 pad_y: Union[str, float] = 0.0):
-        raw_rows = [list(r) for r in rows]
+                 pad_y: Union[str, float] = 0.0,
+                 row_styles=None,
+                 rules_after: Sequence[int] = (),
+                 max_rows: Optional[int] = None,
+                 more: Union[str, "TableSpan"] = "+ {n} more"):
+        raw_rows = _table_rows_with_overflow(
+            [list(r) for r in rows], header, max_rows, more)
         if not raw_rows:
             self.n_cols = 0
         else:
-            widths = {len(r) for r in raw_rows}
+            closed = [sum(_span_of(c) for c in r) for r in raw_rows
+                      if all(_span_of(c) is not None for c in r)]
+            if not closed:
+                raise ValueError(
+                    "Table needs one row without a rest-of-row TableSpan "
+                    "to fix its column count")
+            widths = set(closed)
             if len(widths) != 1:
                 raise ValueError(
                     f"Table rows must all have equal length; got {widths}")
-            self.n_cols = len(raw_rows[0])
+            self.n_cols = closed[0]
+        # (first column, columns covered) of every cell, row by row.
+        self._slots = [self._row_slots(r) for r in raw_rows]
         self.col_align = list(col_align) if col_align else ["start"] * self.n_cols
         if len(self.col_align) != self.n_cols:
             raise ValueError("col_align length must equal number of columns")
@@ -142,8 +250,24 @@ class Table(Element):
         self.row_fills = dict(row_fills) if row_fills else {}
         self.pad_x = pad_x
         self.pad_y = pad_y
+        if row_styles is None:
+            self.row_styles = {}
+        elif isinstance(row_styles, dict):
+            self.row_styles = {int(i): dict(s or {})
+                               for i, s in row_styles.items()}
+        else:
+            self.row_styles = {i: dict(s or {})
+                               for i, s in enumerate(row_styles)}
+        self.rules_after = {int(i) for i in rules_after}
+        self._span_align = [
+            [c.align if isinstance(c, TableSpan) else None for c in r]
+            for r in raw_rows]
+        self._rule_above = [
+            all(c.rule_above for c in r if isinstance(c, TableSpan))
+            for r in raw_rows]
         self.rows = [
-            [self._coerce_cell(cell, j, i) for j, cell in enumerate(r)]
+            [self._coerce_cell(cell, slot[0], i)
+             for cell, slot in zip(r, self._slots[i])]
             for i, r in enumerate(raw_rows)
         ]
         # Per-column widths forced by a containing AlignedStack. When set,
@@ -160,6 +284,25 @@ class Table(Element):
         if min_w > self._min_width:
             self._min_width = float(min_w)
 
+    def _row_slots(self, row) -> List[Tuple[int, int]]:
+        """``(first column, columns covered)`` of each cell in ``row``."""
+        fixed = sum(_span_of(c) or 0 for c in row)
+        slots, j = [], 0
+        for c in row:
+            n = _span_of(c)
+            if n is None:
+                n = self.n_cols - fixed
+                if n < 1:
+                    raise ValueError(
+                        "a rest-of-row TableSpan has no column left to cover")
+            slots.append((j, n))
+            j += n
+        if j != self.n_cols:
+            raise ValueError(
+                f"Table rows must all have equal length; got "
+                f"{ {j, self.n_cols} }")
+        return slots
+
     def _coerce_cell(self, cell, col_idx: int, row_idx: int = 0) -> Element:
         """String cells become ``Text`` (or a wrapped ``TextBlock`` in a
         column with a wrap budget), styled by the column's style and, on
@@ -168,6 +311,9 @@ class Table(Element):
         Element cells are always passed through unchanged so authors can
         override the column default by explicitly constructing the cell.
         """
+        span = cell if isinstance(cell, TableSpan) else None
+        if span is not None:
+            cell = span.content
         if isinstance(cell, Element):
             return cell
         if not isinstance(cell, str):
@@ -177,8 +323,12 @@ class Table(Element):
         style = {}
         if self.column_styles is not None:
             style = dict(self.column_styles[col_idx] or {})
+        style.update(self.row_styles.get(row_idx, {}))
         if self.header and row_idx == 0:
             style.setdefault("weight", "700")
+        if span is not None:
+            style.update(span.style)
+            return Text(cell, **style)
         budget = self.col_widths[col_idx] if self.col_widths else None
         if budget:
             style.pop("font", None)
@@ -194,12 +344,15 @@ class Table(Element):
         col_w = [0.0] * self.n_cols
         row_h = [0.0] * len(self.rows)
         sizes = []
+        spans = []
         for i, row in enumerate(self.rows):
             row_sizes = []
-            for j, cell in enumerate(row):
+            for cell, (j, n) in zip(row, self._slots[i]):
                 s = cell.measure(theme)
                 row_sizes.append(s)
-                if s.w + 2 * px > col_w[j]:
+                if n > 1:
+                    spans.append((j, n, s.w + 2 * px))
+                elif s.w + 2 * px > col_w[j]:
                     col_w[j] = s.w + 2 * px
                 if s.h + 2 * py > row_h[i]:
                     row_h[i] = s.h + 2 * py
@@ -208,6 +361,16 @@ class Table(Element):
             for j in range(min(len(col_w), len(self._forced_col_w))):
                 if self._forced_col_w[j] > col_w[j]:
                     col_w[j] = self._forced_col_w[j]
+        if spans:
+            gx = theme.gap_px(self.gap_x)
+            for j, n, need in sorted(spans, key=lambda t: t[1]):
+                have = sum(col_w[j:j + n]) + gx * (n - 1)
+                if need <= have + 1e-9:
+                    continue
+                extra, part = need - have, sum(col_w[j:j + n])
+                for k in range(j, j + n):
+                    col_w[k] += (extra * col_w[k] / part if part > 0.0
+                                 else extra / n)
         if fill_width and self._min_width > 0.0 and self.n_cols:
             gx = theme.gap_px(self.gap_x)
             natural = sum(col_w) + gx * (self.n_cols - 1)
@@ -291,16 +454,22 @@ class Table(Element):
                 canvas.line(x, rule_y, x + total_w, rule_y,
                             stroke=theme.color_of("text"),
                             stroke_width=theme.hairline)
-            elif self.row_rules and (i > 0 or not self.header_rule):
+            elif ((self.row_rules and (i > 0 or not self.header_rule))
+                  or i in self.rules_after) and self._rule_above[i + 1]:
                 canvas.line(x, rule_y, x + total_w, rule_y,
                             stroke=theme.color_of("border"),
                             stroke_width=theme.hairline)
         for i, row in enumerate(self.rows):
             inner_h = row_h[i] - 2 * py
-            for j, cell in enumerate(row):
-                s = sizes[i][j]
-                inner_w = col_w[j] - 2 * px
-                a = self.col_align[j]
+            for k, cell in enumerate(row):
+                j, n = self._slots[i][k]
+                s = sizes[i][k]
+                if n > 1:
+                    inner_w = (col_x[j + n - 1] + col_w[j + n - 1]
+                               - col_x[j] - 2 * px)
+                else:
+                    inner_w = col_w[j] - 2 * px
+                a = self._span_align[i][k] or self.col_align[j]
                 if a == "start":
                     dx = 0.0
                 elif a == "end":
@@ -410,6 +579,19 @@ class BarChart(Element):
         Theme size tokens for the two text columns. A chart that lives
         inside a card has to speak at the card's type size, so both are
         author-set rather than fixed to the body defaults.
+    mark : str
+        ``"bar"`` (default) draws a proportional bar; ``"units"`` draws
+        one :class:`MiniRaster` cell per unit of the value, so a count
+        reads as a countable run (the members of each group). Unit
+        runs start at one shared x, wrap every ``wrap`` cells, and take
+        the item colour, else ``color``, else the primary role.
+    cell : float, optional
+        Pitch of one unit cell in px (``mark="units"``; default 3.6).
+    wrap : int, optional
+        Cells per line before a unit run wraps (``mark="units"``).
+    rules_after : sequence of int
+        Item indices after which a hairline separates groups of rows
+        (``mark="units"``; passed to the underlying :class:`Table`).
     """
 
     def __init__(self, items: Sequence[tuple], *,
@@ -426,7 +608,22 @@ class BarChart(Element):
                  gap_y: Union[str, float] = "xs",
                  highlight_first: bool = False,
                  color: Optional[str] = None,
-                 auto_color: bool = False):
+                 auto_color: bool = False,
+                 mark: str = "bar",
+                 cell: Optional[float] = None,
+                 wrap: Optional[int] = None,
+                 rules_after: Sequence[int] = ()):
+        if mark not in ("bar", "units"):
+            raise ValueError(f"BarChart.mark must be 'bar' or 'units'; got {mark!r}")
+        if mark == "bar" and (cell is not None or wrap is not None
+                              or tuple(rules_after)):
+            raise ValueError(
+                "BarChart cell, wrap and rules_after shape unit runs; "
+                "pass them with mark='units'")
+        self.mark = mark
+        self.cell = 3.6 if cell is None else float(cell)
+        self.wrap = None if wrap is None else max(1, int(wrap))
+        self.rules_after = tuple(rules_after)
         # normalise items
         norm = []
         for it in items:
@@ -462,12 +659,28 @@ class BarChart(Element):
         self.color = color
         self.auto_color = auto_color
 
+    def _units_table(self) -> "Table":
+        """The ``mark="units"`` chart: a Table of label | unit run | value."""
+        from ..specialized._mini import MiniRaster
+        rows = []
+        for lbl, v, vt, col in self.items:
+            paint = col if col is not None else (self.color or "primary")
+            n = max(0, int(round(v)))
+            run = MiniRaster.from_counts([(n, paint)], columns=self.wrap or max(n, 1),
+                                         cell=self.cell)
+            rows.append([Text(lbl, size=self.label_size), run,
+                         Text(vt, size=self.value_size, color="text_muted")])
+        return Table(rows, col_align=[self.label_align, "start", self.value_align],
+                     gap_x=self.gap_x, gap_y=self.gap_y, rules_after=self.rules_after)
+
     def _vmax_resolved(self) -> float:
         if self._vmax is not None:
             return float(self._vmax)
         return max((v for _, v, _, _ in self.items), default=1.0) or 1.0
 
     def measure(self, theme: Theme) -> BBox:
+        if self.mark == "units":
+            return self._units_table().measure(theme)
         # Column widths: labels, bar area, values
         label_w = max((theme.text_width(lbl, self.label_size, bold=False)
                        for lbl, _, _, _ in self.items), default=0.0)
@@ -483,6 +696,9 @@ class BarChart(Element):
         return BBox(W, H)
 
     def render(self, canvas: Canvas, x: float, y: float, theme: Theme) -> None:
+        if self.mark == "units":
+            self._units_table().render(canvas, x, y, theme)
+            return
         vmax = self._vmax_resolved()
         label_w = max((theme.text_width(lbl, self.label_size, bold=False)
                        for lbl, _, _, _ in self.items), default=0.0)

@@ -1,8 +1,8 @@
 """Axis titles wrap to their own gutter instead of escaping the chart box.
 
-Motivating case (AgentEvolve AAAI-27 gain-anatomy figure): two small
-single-column panels whose x titles were prose ("members, ranked by realised
-gain"). ``measure()`` reported only ``left + plot + right``, so the centred
+Motivating case: two small single-column panels whose x titles were
+prose ("samples, ranked by measured yield"). ``measure()`` reported only
+``left + plot + right``, so the centred
 title drew straight through the neighbouring panel's frame -- ink outside the
 measured bbox, which the layout engine cannot see and cannot route around.
 
@@ -85,7 +85,7 @@ def test_long_y_title_ink_stays_inside_the_measured_box():
 
 
 def test_unbreakable_title_grows_the_box_instead_of_spilling():
-    word = "hypervolume" * 4
+    word = "photosynthesis" * 4
     titled = _chart(x_label=word)
     box = titled.measure(THEME)
     assert box.w > _chart().measure(THEME).w
@@ -94,7 +94,7 @@ def test_unbreakable_title_grows_the_box_instead_of_spilling():
 
 
 def test_short_titles_are_unchanged():
-    chart = _chart(x_label="evaluations", y_label="gain")
+    chart = _chart(x_label="iterations", y_label="yield")
     box = chart.measure(THEME)
     x0, y0, x1, y1 = _ink_bbox(chart)
     assert x0 >= -0.5 and x1 <= box.w + 0.5

@@ -1,7 +1,7 @@
 """The chart marker vocabulary is reusable as a legend swatch.
 
-Motivating case (AgentEvolve AAAI-27 chance-baseline figure): five
-allocation policies distinguished only by marker shape and fill. The
+Motivating case: a comparison figure in which five allocation
+policies are distinguished only by marker shape and fill. The
 legend had no way to show the plotted glyph -- authors were reduced to
 embedding a one-point chart per legend entry, which drags an axis and
 tick labels along with it. :class:`Marker` is the glyph itself, and the
@@ -60,11 +60,11 @@ def test_hollow_and_solid_differ():
 
 def test_legend_item_accepts_a_marker():
     legend = Legend(
-        LegendItem(Marker("triangle", color=Palette.gray), "incumbent"),
+        LegendItem(Marker("triangle", color=Palette.gray), "baseline"),
         LegendItem(Marker("diamond", color=Palette.red, fill="hollow"), "ours"),
     )
     svg = _svg(legend)
-    assert "incumbent" in svg and "ours" in svg
+    assert "baseline" in svg and "ours" in svg
     assert "<polygon" in svg
 
 

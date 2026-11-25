@@ -85,6 +85,29 @@ class Element:
         """
         return None
 
+    def port_bbox(self, theme: Theme, side: str
+                  ) -> "Optional[tuple[float, float, float, float]]":
+        """Return the *body* rectangle wires attach to on ``side``.
+
+        The tuple is ``(x, y, w, h)`` in the element's local frame, like
+        :meth:`content_bbox` and :meth:`primary_anchor_bbox`. The three
+        hooks answer different questions: ``content_bbox`` is the face
+        siblings *align* on, ``primary_anchor_bbox`` the sub-region a grid
+        *centres* on, and ``port_bbox`` the drawing a connector *lands*
+        on. An element whose measured box includes its own decorations
+        (a caption beside a funnel's taper, the label of a
+        :class:`Labeled`) returns its body here so an arrow meets the
+        drawing instead of stopping at the caption's edge.
+
+        ``None`` (the default) means the whole measured box. A wrapper
+        must forward this hook, or nesting silently drops the body port.
+        The caller keeps the layout box for obstacles and only moves the
+        tap: the stub first crosses the element's own margin, and when
+        that run would cross the element's own text the caller falls
+        back to the layout box on that side.
+        """
+        return None
+
     def inflate_to(self, min_w: float = 0.0, min_h: float = 0.0) -> None:
         """Request that this element render at least ``min_w`` x ``min_h``.
 

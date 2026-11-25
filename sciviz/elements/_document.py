@@ -14,6 +14,11 @@ class Document(Element):
     semantic label and an optional size tier; the silhouette stays recognisably
     document-like even for very short labels and grows for mathematical or
     multiline content without authored width/height coordinates.
+
+    ``padding`` is the sheet's inner margin as a spacing token (``"sm"``,
+    the default, suits a short centred name; a sheet that carries a page
+    of content -- a quote, headed sections -- reads as a page with
+    ``"md"``).
     """
 
     _SIZE_UNITS = {
@@ -25,7 +30,11 @@ class Document(Element):
 
     def __init__(self, label: str | Element, *, size: str = "md",
                  fill="bg_subtle", stroke="border_strong",
-                 text_color="text", text_size="small"):
+                 text_color="text", text_size="small",
+                 padding="sm", valign: str = "center"):
+        if valign not in ("center", "start"):
+            raise ValueError("Document.valign must be 'center' or 'start'")
+        self.valign = valign
         if size not in self._SIZE_UNITS:
             allowed = ", ".join(self._SIZE_UNITS)
             raise ValueError(f"Document.size must be one of {allowed}")
@@ -42,6 +51,7 @@ class Document(Element):
                 align="center", weight="600",
             )
         self.size = size
+        self.padding = padding
         self.fill = fill
         self.stroke = stroke
         self.min_width = 0.0
@@ -55,8 +65,7 @@ class Document(Element):
     def _geometry(self, theme: Theme):
         label = self.label.measure(theme)
         min_w_u, min_h_u = self._SIZE_UNITS[self.size]
-        pad_x = theme.unit * 1.0
-        pad_y = theme.unit * 1.0
+        pad_x = pad_y = theme.gap_px(self.padding)
         w = max(theme.unit * min_w_u, label.w + 2 * pad_x, self.min_width)
         h = max(
             theme.unit * min_h_u,
@@ -109,6 +118,8 @@ class Document(Element):
         self.label.render(
             canvas,
             x + (usable_w - label.w) / 2,
-            y + (h - label.h) / 2 + fold * 0.12,
+            (y + theme.gap_px(self.padding) + fold * 0.12
+             if self.valign == "start"
+             else y + (h - label.h) / 2 + fold * 0.12),
             theme,
         )
